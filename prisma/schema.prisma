@@ -1,0 +1,309 @@
+// Orbit Control Center — API relay cost & profit schema
+// SQLite for lightweight personal deployment
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// Upstream API relay provider
+/// type: NEWAPI | SUB2API | SUB2_ADMIN | ONEAPI | OTHER
+/// SUB2API = 第三方面板（邮箱密码/JWT）
+/// SUB2_ADMIN = 自建 Sub2API（管理员 X-API-Key）
+model UpstreamProvider {
+  id                   String    @id @default(cuid())
+  name                 String
+  baseUrl              String
+  /// Encrypted credential:
+  /// - SUB2API: JWT / 可空（有邮箱密码时）
+  /// - SUB2_ADMIN: Admin API Key（x-api-key）
+  /// - NEWAPI: access token
+  apiKey               String    @default("")
+  type                 String    @default("NEWAPI")
+  accountEmail         String?
+  accountPassword      String?
+  refreshToken         String?
+  tokenExpiresAt       DateTime?
+  /// 购入成本：人民币 / 面值单位（第三方上游）
+  discountRate         Float     @default(7.2)
+  currency             String    @default("USD")
+  alertThreshold       Float     @default(10)
+  quotaPerDollar       Float     @default(500000)
+  enabled              Boolean   @default(true)
+  notes                String?
+  lastBalance          Float?
+  lastConsumed         Float?
+  lastBusinessConsumed Float?
+  lastSyncAt           DateTime?
+  lastError            String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  snapshots    SnapshotLog[]
+  apiKeys      UpstreamApiKey[]
+  recharges    UpstreamRechargeLog[]
+  adminGroups  SelfHostedGroup[]
+  adminAccounts SelfHostedAccount[]
+}
+
+/// 第三方 Sub2API 用户侧 API Key（邮箱密码登录那套）
+model UpstreamApiKey {
+  id              String    @id @default(cuid())
+  providerId      String
+  remoteKeyId     String
+  name            String    @default("")
+  keyPreview      String    @default("")
+  groupId         Int?
+  groupName       String?
+  rateMultiplier  Float?
+  status          String    @default("active")
+  countAsCost     Boolean   @default(false)
+  totalActualCost Float     @default(0)
+  todayActualCost Float     @default(0)
+  lastSyncAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  provider UpstreamProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, remoteKeyId])
+  @@index([providerId, countAsCost])
+}
+
+/// 自建 Sub2API 的分组（卖出倍率 + 是否纳入统计）
+model SelfHostedGroup {
+  id                String   @id @default(cuid())
+  providerId        String
+  remoteGroupId     Int
+  name              String
+  description       String?
+  platform          String   @default("")
+  /// 卖给下游的倍率：官方 1 刀面值 × sellRate = 卖出人民币（1:1 时）
+  sellRate          Float    @default(0.4)
+  /// 是否纳入自建上游成本/收入统计
+  track             Boolean  @default(false)
+  status            String   @default("active")
+  /// 官方计价累计 total_cost（美元面值）
+  lastOfficialCost  Float    @default(0)
+  /// 今日官方计价
+  todayOfficialCost Float    @default(0)
+  lastRequests      Int      @default(0)
+  todayRequests     Int      @default(0)
+  lastSyncAt        DateTime?
+  notes             String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  provider UpstreamProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, remoteGroupId])
+  @@index([providerId, track])
+}
+
+/// 自建 Sub2API 上游账号（反代号），各自设定买号成本
+model SelfHostedAccount {
+  id               String   @id @default(cuid())
+  providerId       String
+  remoteAccountId  Int
+  name             String
+  platform         String   @default("")
+  accountType      String   @default("")
+  status           String   @default("active")
+  /// 买这个号花了多少人民币
+  purchaseCostRmb  Float    @default(0)
+  /// 是否纳入统计
+  track            Boolean  @default(false)
+  /// JSON number[] 所属分组
+  groupIds         String   @default("[]")
+  groupNames       String   @default("")
+  /// 官方计价累计（从 usage 按 account_id 汇总，可选）
+  lastOfficialCost Float    @default(0)
+  todayOfficialCost Float   @default(0)
+  lastUsedAt       DateTime?
+  extra            String?
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  provider UpstreamProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, remoteAccountId])
+  @@index([providerId, track])
+}
+
+/// 第三方 Sub2API 用户侧使用明细
+model UpstreamUsageLog {
+  id              String   @id @default(cuid())
+  providerId      String
+  remoteId        String
+  remoteKeyId     String?
+  keyName         String?
+  model           String?
+  groupId         Int?
+  groupName       String?
+  actualCost      Float    @default(0)
+  standardCost    Float    @default(0)
+  rateMultiplier  Float?
+  inputTokens     Int      @default(0)
+  outputTokens    Int      @default(0)
+  cacheReadTokens Int      @default(0)
+  totalTokens     Int      @default(0)
+  requestType     String?
+  stream          Boolean  @default(false)
+  durationMs      Int?
+  requestAt       DateTime
+  day             String
+  raw             String?
+  createdAt       DateTime @default(now())
+
+  @@unique([providerId, remoteId])
+  @@index([providerId, requestAt])
+  @@index([providerId, remoteKeyId, requestAt])
+  @@index([providerId, day])
+  @@index([providerId, model])
+}
+
+model UpstreamUsageDaily {
+  id           String   @id @default(cuid())
+  providerId   String
+  remoteKeyId  String   @default("")
+  keyName      String   @default("")
+  day          String
+  requests     Int      @default(0)
+  actualCost   Float    @default(0)
+  standardCost Float    @default(0)
+  totalTokens  Int      @default(0)
+  inputTokens  Int      @default(0)
+  outputTokens Int      @default(0)
+  costRmb      Float    @default(0)
+  countAsCost  Boolean  @default(false)
+  updatedAt    DateTime @updatedAt
+
+  @@unique([providerId, remoteKeyId, day])
+  @@index([providerId, day])
+  @@index([providerId, countAsCost, day])
+}
+
+/// 自建 Sub2API 按日×分组 官方用量聚合
+model SelfHostedGroupDaily {
+  id              String   @id @default(cuid())
+  providerId      String
+  remoteGroupId   Int
+  groupName       String   @default("")
+  day             String
+  requests        Int      @default(0)
+  /// 官方 API 计价（美元面值 total_cost）
+  officialCost    Float    @default(0)
+  actualCost      Float    @default(0)
+  totalTokens     Int      @default(0)
+  /// 卖出收入估算 RMB = officialCost * sellRate（1:1 面值人民币假设）
+  sellRevenueRmb  Float    @default(0)
+  track           Boolean  @default(false)
+  updatedAt       DateTime @updatedAt
+
+  @@unique([providerId, remoteGroupId, day])
+  @@index([providerId, day])
+  @@index([providerId, track, day])
+}
+
+model UpstreamRechargeLog {
+  id             String   @id @default(cuid())
+  providerId     String
+  paidRmb        Float    @default(0)
+  creditGained   Float    @default(0)
+  balanceBefore  Float?
+  balanceAfter   Float?
+  consumedBefore Float?
+  consumedAfter  Float?
+  source         String   @default("manual")
+  status         String   @default("confirmed")
+  note           String?
+  rechargedAt    DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  provider UpstreamProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@index([providerId, rechargedAt])
+  @@index([providerId, status])
+}
+
+model DownstreamSite {
+  id              String    @id @default(cuid())
+  name            String
+  baseUrl         String
+  adminKey        String
+  adminUserId     Int       @default(1)
+  quotaPerDollar  Float     @default(500000)
+  revenueCurrency String    @default("CNY")
+  excludeUserIds  String    @default("[]")
+  enabled         Boolean   @default(true)
+  notes           String?
+  lastConsumed    Float?
+  lastRevenue     Float?
+  lastSyncAt      DateTime?
+  lastError       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  snapshots DownstreamSnapshot[]
+}
+
+model SnapshotLog {
+  id            String   @id @default(cuid())
+  upstreamId    String
+  balance       Float
+  consumed      Float    @default(0)
+  deltaConsumed Float    @default(0)
+  costRmb       Float    @default(0)
+  raw           String?
+  timestamp     DateTime @default(now())
+
+  upstream UpstreamProvider @relation(fields: [upstreamId], references: [id], onDelete: Cascade)
+
+  @@index([upstreamId, timestamp])
+  @@index([timestamp])
+}
+
+model DownstreamSnapshot {
+  id              String    @id @default(cuid())
+  downstreamId    String
+  consumed        Float     @default(0)
+  revenue         Float     @default(0)
+  revenueCurrency String    @default("CNY")
+  periodStart     DateTime?
+  periodEnd       DateTime?
+  raw             String?
+  timestamp       DateTime  @default(now())
+
+  downstream DownstreamSite @relation(fields: [downstreamId], references: [id], onDelete: Cascade)
+
+  @@index([downstreamId, timestamp])
+  @@index([timestamp])
+}
+
+model AppSetting {
+  id    String @id @default(cuid())
+  key   String @unique
+  value String
+}
+
+/// 浏览器扩展注入 JWT 的长期 token
+model ExtensionInjectToken {
+  id         String    @id @default(cuid())
+  token      String    @unique
+  providerId String?
+  label      String    @default("")
+  enabled    Boolean   @default(true)
+  lastUsedAt DateTime?
+  useCount   Int       @default(0)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([providerId])
+  @@index([enabled])
+}

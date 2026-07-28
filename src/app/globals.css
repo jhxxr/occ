@@ -1,0 +1,131 @@
+@import "tailwindcss";
+
+:root {
+  /* Orbit Control — ground-station dark console */
+  --void: #070b10;
+  --bg: #0b1118;
+  --surface: #121a24;
+  --surface-2: #182231;
+  --surface-3: #1e2b3d;
+  --border: #2a3a50;
+  --border-subtle: #1c2838;
+  --text: #e8eef6;
+  --text-secondary: #9aabbf;
+  --muted: #6b7c91;
+  --cyan: #4db2ff;
+  --cyan-dim: #2a7ab8;
+  --mint: #3ecf8e;
+  --mint-dim: #1f8a5a;
+  --amber: #f0b429;
+  --amber-dim: #b07d12;
+  --coral: #f07178;
+  --coral-dim: #c0454d;
+  --violet: #8b7cf6;
+
+  --background: var(--bg);
+  --foreground: var(--text);
+
+  /* Chart series (dark-validated categorical order) */
+  --series-1: #3987e5;
+  --series-2: #199e70;
+  --series-3: #c98500;
+  --series-4: #9085e9;
+  --series-5: #e66767;
+  --series-6: #d95926;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-void: var(--void);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-border: var(--border);
+  --color-border-subtle: var(--border-subtle);
+  --color-muted: var(--muted);
+  --color-secondary: var(--text-secondary);
+  --color-cyan: var(--cyan);
+  --color-cyan-dim: var(--cyan-dim);
+  --color-mint: var(--mint);
+  --color-mint-dim: var(--mint-dim);
+  --color-amber: var(--amber);
+  --color-amber-dim: var(--amber-dim);
+  --color-coral: var(--coral);
+  --color-coral-dim: var(--coral-dim);
+  --color-violet: var(--violet);
+  --color-series-1: var(--series-1);
+  --color-series-2: var(--series-2);
+  --color-series-3: var(--series-3);
+  --color-series-4: var(--series-4);
+  --color-series-5: var(--series-5);
+  --color-series-6: var(--series-6);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+* {
+  border-color: var(--border-subtle);
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans), system-ui, sans-serif;
+  min-height: 100vh;
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(77, 178, 255, 0.08), transparent),
+    radial-gradient(ellipse 60% 40% at 100% 100%, rgba(62, 207, 142, 0.04), transparent),
+    linear-gradient(180deg, var(--void) 0%, var(--bg) 40%, var(--bg) 100%);
+  background-attachment: fixed;
+}
+
+/* Subtle orbital grid behind main content */
+.orbit-grid {
+  background-image:
+    linear-gradient(rgba(42, 58, 80, 0.25) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(42, 58, 80, 0.25) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse at center, black 20%, transparent 75%);
+}
+
+.font-data {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Focus ring */
+:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--void);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

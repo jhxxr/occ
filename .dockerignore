@@ -1,0 +1,46 @@
+# dependencies and build output
+node_modules
+.next
+out
+build
+dist
+coverage
+*.tsbuildinfo
+*.log
+
+# local secrets, credentials, and databases
+.env
+.env.*
+!.env.example
+.deploy
+/data
+**/*.db
+**/*.db-journal
+**/*.db-shm
+**/*.db-wal
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.kubeconfig
+id_ed25519
+id_ed25519.pub
+
+# VCS, agent, and editor metadata
+.git
+.github
+.claude
+.agents
+.windsurf
+.vscode
+.idea
+
+# local-only material
+DOCKER.md
+compose.yml
+*.tar
+*.tar.gz
+.DS_Store
+Thumbs.db

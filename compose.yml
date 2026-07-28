@@ -1,0 +1,19 @@
+services:
+  orbit:
+    image: ${ORBIT_IMAGE:?Set ORBIT_IMAGE to the published GHCR image}
+    ports:
+      - "${ORBIT_PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: file:/app/data/orbit.db
+      ENCRYPTION_SECRET: ${ENCRYPTION_SECRET:?Set ENCRYPTION_SECRET}
+      AUTH_USERNAME: ${AUTH_USERNAME:?Set AUTH_USERNAME}
+      AUTH_PASSWORD: ${AUTH_PASSWORD:?Set AUTH_PASSWORD}
+      AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET}
+      DEFAULT_USD_CNY: ${DEFAULT_USD_CNY:-7.2}
+    volumes:
+      - orbit-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  orbit-data:

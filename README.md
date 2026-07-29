@@ -1,4 +1,4 @@
-# Orbit Control Center
+#AI Control Center
 
 轻量级个人仪表盘：聚合上游 API 中转站（NewAPI / Sub2API / OneAPI 等）的余额、消耗。
 

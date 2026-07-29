@@ -294,15 +294,16 @@ model AppSetting {
 
 /// 浏览器扩展注入 JWT 的长期 token
 model ExtensionInjectToken {
-  id         String    @id @default(cuid())
-  token      String    @unique
-  providerId String?
-  label      String    @default("")
-  enabled    Boolean   @default(true)
-  lastUsedAt DateTime?
-  useCount   Int       @default(0)
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
+  id          String    @id @default(cuid())
+  tokenHash   String    @unique
+  tokenPrefix String
+  providerId  String?
+  label       String    @default("")
+  enabled     Boolean   @default(true)
+  lastUsedAt  DateTime?
+  useCount    Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   @@index([providerId])
   @@index([enabled])

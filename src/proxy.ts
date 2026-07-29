@@ -3,13 +3,18 @@ import type { NextRequest } from "next/server";
 import { COOKIE_NAME, verifySessionTokenEdge } from "@/lib/auth-edge";
 
 const PUBLIC_PATHS = ["/login"];
-const PUBLIC_API = ["/api/auth/login", "/api/extension/inject"];
+const PUBLIC_API_PREFIXES = ["/api/auth/login"];
+const PUBLIC_API_EXACT = ["/api/extension/inject"];
 
 function isPublic(pathname: string): boolean {
   if (PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`))) {
     return true;
   }
-  if (PUBLIC_API.some((p) => pathname === p || pathname.startsWith(`${p}/`))) {
+  if (
+    PUBLIC_API_PREFIXES.some(
+      (p) => pathname === p || pathname.startsWith(`${p}/`),
+    ) || PUBLIC_API_EXACT.includes(pathname)
+  ) {
     return true;
   }
   if (
@@ -24,7 +29,7 @@ function isPublic(pathname: string): boolean {
   return false;
 }
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   if (isPublic(pathname)) {

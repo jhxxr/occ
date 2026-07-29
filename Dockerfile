@@ -18,8 +18,7 @@ COPY . .
 ENV NODE_ENV=production
 RUN npm run build \
   && test -f .next/standalone/server.js \
-  && test -d .next/static \
-  && npm install --no-save --package-lock=false postcss@8.5.23
+  && test -d .next/static
 
 FROM base AS runner
 ENV NODE_ENV=production \
@@ -39,7 +38,6 @@ COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/prisma ./node_modules/prisma
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@prisma ./node_modules/@prisma
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/postcss ./node_modules/next/node_modules/postcss
 COPY --chown=nextjs:nodejs docker-entrypoint.sh ./docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 

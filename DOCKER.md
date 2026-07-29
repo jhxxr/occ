@@ -50,6 +50,17 @@ docker compose up -d
 
 The named `orbit-data` volume persists SQLite at `/app/data/orbit.db`. The entrypoint runs `prisma migrate deploy` before starting Next.js and exits if a migration fails.
 
+## Upgrading extension tokens
+
+Before deploying an image that contains the `hash_extension_tokens` migration, back up the SQLite volume. The migration preserves application/provider data but intentionally revokes every legacy extension inject token because plaintext tokens cannot be safely converted to one-way hashes in SQLite migration SQL.
+
+After the upgrade:
+
+- Sign in and create replacement extension tokens.
+- Save each token when it is created; it is shown only once.
+- Configure extensions to send `X-Orbit-Token` or `Authorization: Bearer`.
+- Do not reuse old `?token=...` URLs; query-string authentication is no longer accepted.
+
 ## Operations
 
 - Back up the SQLite volume before changing image versions.

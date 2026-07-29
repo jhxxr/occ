@@ -1,24 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
-import { randomBytes } from "crypto";
 import { prisma } from "@/lib/db";
+import { createExtensionToken } from "@/lib/crypto";
 
-function makeToken(): string {
-  return `oct_${randomBytes(32).toString("hex")}`;
+const NO_STORE_HEADERS = {
+  "Cache-Control": "no-store",
+  Pragma: "no-cache",
+  "Referrer-Policy": "no-referrer",
+};
+
+function response(body: unknown, status = 200) {
+  return NextResponse.json(body, { status, headers: NO_STORE_HEADERS });
 }
 
-function publicOrigin(req: NextRequest): string {
-  const proto = req.headers.get("x-forwarded-proto") || "http";
-  const host =
-    req.headers.get("x-forwarded-host") ||
-    req.headers.get("host") ||
-    "localhost:3000";
-  return `${proto}://${host}`.replace(/\/+$/, "");
-}
-
-function toPublic(
+function toMetadata(
   row: {
     id: string;
-    token: string;
+    tokenPrefix: string;
     providerId: string | null;
     label: string;
     enabled: boolean;
@@ -27,13 +24,11 @@ function toPublic(
     createdAt: Date;
     updatedAt: Date;
   },
-  origin: string,
   providerName?: string | null,
 ) {
-  const injectUrl = `${origin}/api/extension/inject?token=${encodeURIComponent(row.token)}`;
   return {
     id: row.id,
-    token: row.token,
+    tokenPrefix: row.tokenPrefix,
     providerId: row.providerId,
     providerName: providerName ?? null,
     label: row.label,
@@ -42,13 +37,10 @@ function toPublic(
     useCount: row.useCount,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
-    /** 直接贴进扩展的完整注入链接（长期有效） */
-    injectUrl,
   };
 }
 
-export async function GET(req: NextRequest) {
-  const origin = publicOrigin(req);
+export async function GET() {
   const rows = await prisma.extensionInjectToken.findMany({
     orderBy: { createdAt: "desc" },
   });
@@ -62,8 +54,10 @@ export async function GET(req: NextRequest) {
       })
     : [];
   const nameMap = Object.fromEntries(providers.map((p) => [p.id, p.name]));
-  return NextResponse.json({
-    data: rows.map((r) => toPublic(r, origin, r.providerId ? nameMap[r.providerId] : null)),
+  return response({
+    data: rows.map((r) =>
+      toMetadata(r, r.providerId ? nameMap[r.providerId] : null),
+    ),
     providers: await prisma.upstreamProvider.findMany({
       orderBy: { createdAt: "asc" },
       select: { id: true, name: true, baseUrl: true, type: true },
@@ -82,15 +76,12 @@ export async function POST(req: NextRequest) {
       typeof body.label === "string" ? body.label.trim().slice(0, 100) : "";
 
     if (providerId) {
-      const p = await prisma.upstreamProvider.findUnique({
+      const provider = await prisma.upstreamProvider.findUnique({
         where: { id: providerId },
       });
-      if (!p) {
-        return NextResponse.json({ error: "上游不存在" }, { status: 404 });
-      }
+      if (!provider) return response({ error: "上游不存在" }, 404);
     }
 
-    // 同一 provider 已有 token 时轮换：旧的吊销，发新的（也可 body.rotate=false 允许多条）
     const rotate = body.rotate !== false;
     if (providerId && rotate) {
       await prisma.extensionInjectToken.updateMany({
@@ -99,57 +90,54 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    const secret = createExtensionToken();
     const created = await prisma.extensionInjectToken.create({
       data: {
-        token: makeToken(),
+        tokenHash: secret.tokenHash,
+        tokenPrefix: secret.tokenPrefix,
         providerId,
-        label:
-          label ||
-          (providerId ? "provider" : "global"),
+        label: label || (providerId ? "provider" : "global"),
         enabled: true,
       },
     });
 
-    let providerName: string | null = null;
-    if (providerId) {
-      const p = await prisma.upstreamProvider.findUnique({
-        where: { id: providerId },
-        select: { name: true },
-      });
-      providerName = p?.name ?? null;
-    }
+    const provider = providerId
+      ? await prisma.upstreamProvider.findUnique({
+          where: { id: providerId },
+          select: { name: true },
+        })
+      : null;
 
-    return NextResponse.json({
-      data: toPublic(created, publicOrigin(req), providerName),
+    return response({
+      data: {
+        ...toMetadata(created, provider?.name),
+        token: secret.token,
+        authentication: {
+          endpoint: "/api/extension/inject",
+          header: "X-Orbit-Token",
+          alternative: "Authorization: Bearer <token>",
+        },
+        warning: "该 token 仅显示一次，请立即安全保存。",
+      },
     });
-  } catch (e) {
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : "Create failed" },
-      { status: 500 },
+  } catch (error) {
+    return response(
+      { error: error instanceof Error ? error.message : "Create failed" },
+      500,
     );
   }
 }
 
 export async function DELETE(req: NextRequest) {
   try {
-    const { searchParams } = new URL(req.url);
-    const id = searchParams.get("id");
-    const token = searchParams.get("token");
-    if (!id && !token) {
-      return NextResponse.json({ error: "id or token required" }, { status: 400 });
-    }
-    if (id) {
-      await prisma.extensionInjectToken.delete({ where: { id } }).catch(() => null);
-    } else if (token) {
-      await prisma.extensionInjectToken
-        .delete({ where: { token } })
-        .catch(() => null);
-    }
-    return NextResponse.json({ success: true });
-  } catch (e) {
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : "Delete failed" },
-      { status: 500 },
+    const id = new URL(req.url).searchParams.get("id");
+    if (!id) return response({ error: "id required" }, 400);
+    await prisma.extensionInjectToken.delete({ where: { id } }).catch(() => null);
+    return response({ success: true });
+  } catch (error) {
+    return response(
+      { error: error instanceof Error ? error.message : "Delete failed" },
+      500,
     );
   }
 }

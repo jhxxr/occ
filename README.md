@@ -77,6 +77,19 @@ prisma/
 | POST | `/api/sync` | `{ target: "all" \| "upstream" \| "downstream", id? }` |
 | GET | `/api/dashboard` | 仪表盘聚合数据 |
 | GET/PUT | `/api/settings` | 汇率等设置 |
+| GET/POST/DELETE | `/api/extension/tokens` | 扩展注入 token 管理（需登录） |
+| GET/POST | `/api/extension/inject` | 扩展凭据注入（Header token） |
+
+## 浏览器扩展注入
+
+创建 token 时，明文只在 `POST /api/extension/tokens` 的响应中显示一次，数据库仅保存 SHA-256 verifier 和显示前缀。扩展调用注入接口时必须使用以下任一 Header：
+
+```text
+X-Orbit-Token: oct_...
+Authorization: Bearer oct_...
+```
+
+禁止把 token 放在 URL、日志、截图或问题报告中。升级到 hash-token migration 后，历史 query-string 注入链接会被全部撤销，需要登录控制台重新生成 token。
 
 ## 适配说明
 

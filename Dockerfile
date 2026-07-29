@@ -16,6 +16,7 @@ FROM base AS builder
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NODE_ENV=production
+ENV DATABASE_URL="mysql://placeholder:placeholder@localhost:3306/placeholder"
 RUN npm run build \
   && test -f .next/standalone/server.js \
   && test -d .next/static
@@ -23,8 +24,7 @@ RUN npm run build \
 FROM base AS runner
 ENV NODE_ENV=production \
     PORT=3000 \
-    HOSTNAME=0.0.0.0 \
-    DATABASE_URL=file:/app/data/orbit.db
+    HOSTNAME=0.0.0.0
 
 RUN addgroup --system --gid 1001 nodejs \
   && adduser --system --uid 1001 nextjs \

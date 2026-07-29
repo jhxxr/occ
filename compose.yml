@@ -1,6 +1,6 @@
 services:
   orbit:
-    image: ${ORBIT_IMAGE:?Set ORBIT_IMAGE to the published GHCR image}
+    image: ${ORBIT_IMAGE:-ghcr.io/jhxxr/occ:latest}
     ports:
       - "${ORBIT_PORT:-3000}:3000"
     environment:

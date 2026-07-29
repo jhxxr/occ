@@ -4,15 +4,13 @@ GitHub Actions publishes one multi-platform image for `linux/amd64` and `linux/a
 
 ## Image tags
 
-Replace `OWNER/REPOSITORY` with the lowercase GitHub repository path:
-
 ```text
-ghcr.io/owner/repository:main
-ghcr.io/owner/repository:sha-<commit>
-ghcr.io/owner/repository:<version>
+ghcr.io/jhxxr/occ:main
+ghcr.io/jhxxr/occ:sha-<commit>
+ghcr.io/jhxxr/occ:<version>
 ```
 
-`latest` is published only from `main` and stable semantic-version tags. SHA tags are recommended for reproducible deployments.
+`latest` is published from `main` and stable semantic-version tags. SHA tags are recommended for reproducible deployments.
 
 ## Required runtime configuration
 
@@ -32,7 +30,7 @@ Do not change `ENCRYPTION_SECRET` for an existing database unless stored credent
 Create a local `.env` that is never committed:
 
 ```dotenv
-ORBIT_IMAGE=ghcr.io/owner/repository:sha-0123456
+ORBIT_IMAGE=ghcr.io/jhxxr/occ:sha-0123456
 ORBIT_PORT=3000
 ENCRYPTION_SECRET=<random value>
 AUTH_USERNAME=admin

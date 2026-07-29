@@ -5,7 +5,7 @@ services:
       - "${ORBIT_PORT:-3000}:3000"
     environment:
       NODE_ENV: production
-      DATABASE_URL: file:/app/data/orbit.db
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL}
       ENCRYPTION_SECRET: ${ENCRYPTION_SECRET:?Set ENCRYPTION_SECRET}
       AUTH_USERNAME: ${AUTH_USERNAME:?Set AUTH_USERNAME}
       AUTH_PASSWORD: ${AUTH_PASSWORD:?Set AUTH_PASSWORD}

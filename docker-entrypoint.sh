@@ -21,10 +21,10 @@ else
   drop_priv=""
 fi
 
-echo "[orbit] applying database migrations..."
+echo "[orbit] syncing database schema..."
 # shellcheck disable=SC2086
-$drop_priv node /app/node_modules/prisma/build/index.js migrate deploy \
-  --schema=/app/prisma/schema.prisma
+$drop_priv node /app/node_modules/prisma/build/index.js db push \
+  --schema=/app/prisma/schema.prisma --skip-generate --accept-data-loss
 
 echo "[orbit] starting application..."
 # shellcheck disable=SC2086

@@ -3,6 +3,12 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { encryptSecret, maskSecret, decryptSecret } from "@/lib/crypto";
 import { sub2Login } from "@/lib/adapters";
+import { isSelfHosted, relayOnly } from "@/lib/provider-kinds";
+
+/** 自建站只能在 /api/self-hosted 管，避免把 Admin Key 记录改成第三方面板 */
+const SELF_HOSTED_REJECT = {
+  error: "这是自建 Sub2API，请到「自建上游」页面管理",
+} as const;
 
 const providerSchema = z
   .object({
@@ -76,6 +82,7 @@ function publicProvider(p: {
 
 export async function GET() {
   const providers = await prisma.upstreamProvider.findMany({
+    where: relayOnly,
     orderBy: { createdAt: "asc" },
   });
   return NextResponse.json({
@@ -165,6 +172,9 @@ export async function PUT(req: NextRequest) {
     const existing = await prisma.upstreamProvider.findUnique({ where: { id } });
     if (!existing) {
       return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+    if (isSelfHosted(existing.type)) {
+      return NextResponse.json(SELF_HOSTED_REJECT, { status: 400 });
     }
 
     const updates: Record<string, unknown> = {};
@@ -260,6 +270,10 @@ export async function DELETE(req: NextRequest) {
     const id = searchParams.get("id");
     if (!id) {
       return NextResponse.json({ error: "id required" }, { status: 400 });
+    }
+    const existing = await prisma.upstreamProvider.findUnique({ where: { id } });
+    if (existing && isSelfHosted(existing.type)) {
+      return NextResponse.json(SELF_HOSTED_REJECT, { status: 400 });
     }
     await prisma.upstreamProvider.delete({ where: { id } });
     return NextResponse.json({ success: true });

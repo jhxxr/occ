@@ -56,8 +56,10 @@ export async function POST(req: NextRequest) {
         baseUrl,
         apiKey: encryptSecret(adminKey),
         type: "SUB2_ADMIN",
+        // 自建站没有余额模型：不折算购入成本、不设余额预警
         discountRate: 1,
         quotaPerDollar: 1,
+        alertThreshold: 0,
         enabled: enabled ?? true,
         notes: notes ?? null,
       },
@@ -114,6 +116,8 @@ export async function PUT(req: NextRequest) {
         );
       }
       data.apiKey = encryptSecret(body.adminKey);
+      // 新 Key 验证通过，旧的鉴权报错（含误建成第三方时留下的 JWT 报错）不再成立
+      data.lastError = null;
     }
 
     const updated = await prisma.upstreamProvider.update({

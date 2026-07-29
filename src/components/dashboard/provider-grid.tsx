@@ -130,9 +130,9 @@ export function ProviderGrid({
       <Card>
         <CardContent className="flex flex-col items-center justify-center gap-2 py-12 text-center">
           <WifiOff className="h-8 w-8 text-muted" />
-          <p className="text-sm text-secondary">尚未配置上游站点</p>
+          <p className="text-sm text-secondary">尚未配置中转上游</p>
           <p className="text-xs text-muted">
-            前往「上游站点」添加 NewAPI / Sub2API 等账号
+            前往「上游站点」添加 NewAPI / 第三方 Sub2API 账号
           </p>
         </CardContent>
       </Card>

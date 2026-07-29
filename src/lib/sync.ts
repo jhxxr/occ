@@ -3,6 +3,11 @@ import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { fetchDownstreamStats, fetchUpstreamBalance } from "@/lib/adapters";
 import { syncSub2ApiKeys } from "@/lib/sub2/sync-keys";
 import { detectRechargeOnSync } from "@/lib/recharge";
+import { isSelfHosted, relayOnly, selfHostedOnly } from "@/lib/provider-kinds";
+import {
+  syncSelfHostedMeta,
+  syncSelfHostedGroupUsage,
+} from "@/lib/sub2-admin/sync";
 import {
   buildDailySeries,
   buildProviderShares,
@@ -14,7 +19,7 @@ import {
 export interface SyncResultItem {
   id: string;
   name: string;
-  kind: "upstream" | "downstream";
+  kind: "upstream" | "downstream" | "self-hosted";
   success: boolean;
   balance?: number;
   consumed?: number;
@@ -23,6 +28,9 @@ export interface SyncResultItem {
   tokenRefreshed?: boolean;
   businessCostRmb?: number;
   billableKeys?: number;
+  /** 自建站：同步到的分组 / 账号数 */
+  groups?: number;
+  accounts?: number;
 }
 
 export async function getUsdCnyRate(): Promise<number> {
@@ -34,10 +42,80 @@ export async function getUsdCnyRate(): Promise<number> {
   return Number(process.env.DEFAULT_USD_CNY || 7.2);
 }
 
+/** 最近 n 天的 Asia/Shanghai 日期区间 */
+function recentRange(days: number): { startDate: string; endDate: string } {
+  const fmt = (d: Date) =>
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(d);
+  const end = new Date();
+  const start = new Date();
+  start.setDate(end.getDate() - Math.max(0, days - 1));
+  return { startDate: fmt(start), endDate: fmt(end) };
+}
+
+/**
+ * 自建 Sub2API 同步 —— 走管理端 X-API-Key，跟中转上游那套完全无关。
+ *
+ * 不查余额（自建站没有余额）、不写 SnapshotLog、不跑充值检测。
+ * 只刷分组/账号元数据，再拉已勾选统计分组的用量。
+ */
+export async function syncSelfHostedProvider(
+  id: string,
+  opts: { usageDays?: number } = {},
+): Promise<SyncResultItem> {
+  const provider = await prisma.upstreamProvider.findUnique({ where: { id } });
+  if (!provider) {
+    return { id, name: "?", kind: "self-hosted", success: false, error: "Not found" };
+  }
+
+  if (!provider.apiKey) {
+    const error = "缺少 Admin API Key，请到「自建上游」补填";
+    await prisma.upstreamProvider.update({
+      where: { id },
+      data: { lastError: error, lastSyncAt: new Date() },
+    });
+    return { id, name: provider.name, kind: "self-hosted", success: false, error };
+  }
+
+  try {
+    const meta = await syncSelfHostedMeta(id);
+
+    // 顺手拉一次已追踪分组的用量，让「全量同步」对自建站也有实际产出
+    const { startDate, endDate } = recentRange(opts.usageDays ?? 7);
+    await syncSelfHostedGroupUsage(id, { startDate, endDate, maxPages: 40 });
+
+    return {
+      id,
+      name: provider.name,
+      kind: "self-hosted",
+      success: true,
+      consumed: meta.officialTotal,
+      groups: meta.groups,
+      accounts: meta.accounts,
+    };
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    await prisma.upstreamProvider.update({
+      where: { id },
+      data: { lastError: error.slice(0, 300), lastSyncAt: new Date() },
+    });
+    return { id, name: provider.name, kind: "self-hosted", success: false, error };
+  }
+}
+
 export async function syncUpstreamProvider(id: string): Promise<SyncResultItem> {
   const provider = await prisma.upstreamProvider.findUnique({ where: { id } });
   if (!provider) {
     return { id, name: "?", kind: "upstream", success: false, error: "Not found" };
+  }
+
+  // 自建站是另一个物种：改走管理端同步，别拿中转上游的余额探测去打它
+  if (isSelfHosted(provider.type)) {
+    return syncSelfHostedProvider(id);
   }
 
   const apiKey = provider.apiKey ? decryptSecret(provider.apiKey) : "";
@@ -263,14 +341,20 @@ export async function syncDownstreamSite(id: string): Promise<SyncResultItem> {
 
 /** Full sync of all enabled providers & sites */
 export async function syncAll(): Promise<SyncResultItem[]> {
-  const [upstreams, downstreams] = await Promise.all([
-    prisma.upstreamProvider.findMany({ where: { enabled: true } }),
+  const [relays, selfHosted, downstreams] = await Promise.all([
+    prisma.upstreamProvider.findMany({ where: { enabled: true, ...relayOnly } }),
+    prisma.upstreamProvider.findMany({
+      where: { enabled: true, ...selfHostedOnly },
+    }),
     prisma.downstreamSite.findMany({ where: { enabled: true } }),
   ]);
 
   const results: SyncResultItem[] = [];
-  for (const u of upstreams) {
+  for (const u of relays) {
     results.push(await syncUpstreamProvider(u.id));
+  }
+  for (const s of selfHosted) {
+    results.push(await syncSelfHostedProvider(s.id));
   }
   for (const d of downstreams) {
     results.push(await syncDownstreamSite(d.id));
@@ -297,12 +381,26 @@ export async function getDashboardData() {
   const todayDay = toDay(now);
   const seriesStartDay = toDay(seriesStart);
 
-  const [providers, sites, costSnaps, revSnaps, monthCosts, usageMonthAgg, usageDailies] =
+  // 先分身份：中转上游（余额/预警/成本占比）与自建站（独立一套账）
+  const [providers, selfHostedSites] = await Promise.all([
+    prisma.upstreamProvider.findMany({
+      where: relayOnly,
+      orderBy: { createdAt: "asc" },
+    }),
+    prisma.upstreamProvider.findMany({
+      where: selfHostedOnly,
+      orderBy: { createdAt: "asc" },
+    }),
+  ]);
+
+  // 成本口径只认中转上游。曾被误建成第三方的自建站可能留着旧快照，按 id 排除。
+  const relayIds = providers.map((p) => p.id);
+
+  const [sites, costSnaps, revSnaps, monthCosts, usageMonthAgg, usageDailies] =
     await Promise.all([
-      prisma.upstreamProvider.findMany({ orderBy: { createdAt: "asc" } }),
       prisma.downstreamSite.findMany({ orderBy: { createdAt: "asc" } }),
       prisma.snapshotLog.findMany({
-        where: { timestamp: { gte: seriesStart } },
+        where: { upstreamId: { in: relayIds }, timestamp: { gte: seriesStart } },
         orderBy: { timestamp: "asc" },
       }),
       prisma.downstreamSnapshot.findMany({
@@ -310,11 +408,12 @@ export async function getDashboardData() {
         orderBy: { timestamp: "asc" },
       }),
       prisma.snapshotLog.findMany({
-        where: { timestamp: { gte: monthStart } },
+        where: { upstreamId: { in: relayIds }, timestamp: { gte: monthStart } },
       }),
       // 本月：已勾选中转 Key 的使用记录成本
       prisma.upstreamUsageDaily.aggregate({
         where: {
+          providerId: { in: relayIds },
           countAsCost: true,
           day: { gte: monthStartDay, lte: todayDay },
         },
@@ -323,6 +422,7 @@ export async function getDashboardData() {
       }),
       prisma.upstreamUsageDaily.findMany({
         where: {
+          providerId: { in: relayIds },
           countAsCost: true,
           day: { gte: seriesStartDay, lte: todayDay },
         },
@@ -433,6 +533,7 @@ export async function getDashboardData() {
     const monthUsage = await prisma.upstreamUsageDaily.groupBy({
       by: ["providerId"],
       where: {
+        providerId: { in: relayIds },
         countAsCost: true,
         day: { gte: monthStartDay, lte: todayDay },
       },
@@ -484,6 +585,80 @@ export async function getDashboardData() {
     where: { countAsCost: true },
   });
 
+  // —— 自建上游：官方用量 × 卖出倍率 vs 账号采购成本 ——
+  const selfHostedIds = selfHostedSites.map((s) => s.id);
+  const [shGroups, shAccounts, shMonthDaily] = selfHostedIds.length
+    ? await Promise.all([
+        prisma.selfHostedGroup.findMany({
+          where: { providerId: { in: selfHostedIds } },
+        }),
+        prisma.selfHostedAccount.findMany({
+          where: { providerId: { in: selfHostedIds } },
+        }),
+        prisma.selfHostedGroupDaily.findMany({
+          where: {
+            providerId: { in: selfHostedIds },
+            track: true,
+            day: { gte: monthStartDay, lte: todayDay },
+          },
+        }),
+      ])
+    : [[], [], []];
+
+  const selfHosted = selfHostedSites.map((s) => {
+    const groups = shGroups.filter((g) => g.providerId === s.id);
+    const accounts = shAccounts.filter((a) => a.providerId === s.id);
+    const daily = shMonthDaily.filter((d) => d.providerId === s.id);
+    const trackedAccounts = accounts.filter((a) => a.track);
+
+    const monthOfficialCost = daily.reduce((sum, d) => sum + d.officialCost, 0);
+    const monthSellRevenueRmb = daily.reduce((sum, d) => sum + d.sellRevenueRmb, 0);
+    const monthRequests = daily.reduce((sum, d) => sum + d.requests, 0);
+    const accountPurchaseRmb = trackedAccounts.reduce(
+      (sum, a) => sum + (a.purchaseCostRmb || 0),
+      0,
+    );
+
+    return {
+      id: s.id,
+      name: s.name,
+      baseUrl: s.baseUrl,
+      enabled: s.enabled,
+      lastSyncAt: s.lastSyncAt,
+      lastError: s.lastError,
+      /** 管理端 dashboard 报的官方累计用量面值 */
+      lastConsumed: s.lastConsumed,
+      hasAdminKey: !!s.apiKey,
+      groupCount: groups.length,
+      accountCount: accounts.length,
+      trackedGroups: groups.filter((g) => g.track).length,
+      trackedAccounts: trackedAccounts.length,
+      monthOfficialCost,
+      monthSellRevenueRmb,
+      monthRequests,
+      accountPurchaseRmb,
+      /** 卖出收入 − 已追踪账号采购成本（采购是一次性支出，仅作参考） */
+      roughProfitRmb: monthSellRevenueRmb - accountPurchaseRmb,
+    };
+  });
+
+  const selfHostedTotals = selfHosted.reduce(
+    (acc, s) => ({
+      sites: acc.sites + 1,
+      monthOfficialCost: acc.monthOfficialCost + s.monthOfficialCost,
+      monthSellRevenueRmb: acc.monthSellRevenueRmb + s.monthSellRevenueRmb,
+      accountPurchaseRmb: acc.accountPurchaseRmb + s.accountPurchaseRmb,
+      monthRequests: acc.monthRequests + s.monthRequests,
+    }),
+    {
+      sites: 0,
+      monthOfficialCost: 0,
+      monthSellRevenueRmb: 0,
+      accountPurchaseRmb: 0,
+      monthRequests: 0,
+    },
+  );
+
   return {
     usdCny,
     metrics: {
@@ -528,6 +703,8 @@ export async function getDashboardData() {
       lastSyncAt: s.lastSyncAt,
       lastError: s.lastError,
     })),
+    selfHosted,
+    selfHostedTotals,
     dailySeries,
     providerShares,
     alerts,

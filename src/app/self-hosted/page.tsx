@@ -14,13 +14,17 @@ import {
   Trash2,
   Settings2,
   X,
+  RefreshCw,
+  KeyRound,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 interface Site {
   id: string;
   name: string;
   baseUrl: string;
   apiKey: string;
+  apiKeySet?: boolean;
   enabled: boolean;
   lastSyncAt: string | null;
   lastError: string | null;
@@ -40,6 +44,11 @@ export default function SelfHostedListPage() {
   const [baseUrl, setBaseUrl] = useState("https://sub2.example.com");
   const [adminKey, setAdminKey] = useState("");
   const [notes, setNotes] = useState("");
+
+  // 每站：同步 / 换 Key
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [keyEditId, setKeyEditId] = useState<string | null>(null);
+  const [keyDraft, setKeyDraft] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -88,6 +97,58 @@ export default function SelfHostedListPage() {
     if (!confirm("删除该自建上游？分组/账号配置会一并删除。")) return;
     await fetch(`/api/self-hosted?id=${id}`, { method: "DELETE" });
     await load();
+  }
+
+  async function syncOne(id: string) {
+    setBusyId(id);
+    setMsg(null);
+    setError(null);
+    try {
+      const res = await fetch("/api/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: "self-hosted", id }),
+      });
+      const json = await res.json();
+      const r = json.results?.[0];
+      if (r?.success) {
+        setMsg(`同步完成：${r.groups ?? 0} 分组 / ${r.accounts ?? 0} 账号`);
+      } else {
+        setError(r?.error || json.error || "同步失败");
+      }
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "同步失败");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function saveAdminKey(id: string) {
+    const key = keyDraft.trim();
+    if (key.length < 8) {
+      setError("Admin API Key 太短");
+      return;
+    }
+    setBusyId(id);
+    setMsg(null);
+    setError(null);
+    try {
+      const res = await fetch("/api/self-hosted", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, adminKey: key }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "更新失败");
+      setKeyEditId(null);
+      setKeyDraft("");
+      setMsg("Admin Key 已验证并保存，正在同步…");
+      await syncOne(id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "更新失败");
+      setBusyId(null);
+    }
   }
 
   return (
@@ -212,7 +273,7 @@ export default function SelfHostedListPage() {
                   </div>
                   <p className="text-xs text-muted truncate">{s.baseUrl}</p>
                   <p className="text-xs font-data text-secondary">
-                    Key: {s.apiKey}
+                    Key: {s.apiKey || <span className="text-coral">未设置</span>}
                     {s.lastConsumed != null && (
                       <> · 官方累计用量面值 {s.lastConsumed.toFixed(2)}</>
                     )}
@@ -225,6 +286,36 @@ export default function SelfHostedListPage() {
                       <span className="text-coral"> · {s.lastError}</span>
                     ) : null}
                   </p>
+
+                  {keyEditId === s.id && (
+                    <div className="flex flex-wrap items-center gap-2 pt-2">
+                      <Input
+                        type="password"
+                        value={keyDraft}
+                        onChange={(e) => setKeyDraft(e.target.value)}
+                        placeholder="admin-xxxxxxxx"
+                        autoComplete="off"
+                        className="h-8 w-56"
+                      />
+                      <Button
+                        size="sm"
+                        disabled={busyId === s.id}
+                        onClick={() => saveAdminKey(s.id)}
+                      >
+                        验证并保存
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setKeyEditId(null);
+                          setKeyDraft("");
+                        }}
+                      >
+                        取消
+                      </Button>
+                    </div>
+                  )}
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <a href={s.baseUrl} target="_blank" rel="noopener noreferrer">
@@ -233,6 +324,31 @@ export default function SelfHostedListPage() {
                       打开
                     </Button>
                   </a>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setKeyEditId(keyEditId === s.id ? null : s.id);
+                      setKeyDraft("");
+                    }}
+                  >
+                    <KeyRound className="h-3.5 w-3.5" />
+                    {s.apiKeySet ? "换 Key" : "补 Key"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={busyId === s.id}
+                    onClick={() => syncOne(s.id)}
+                  >
+                    <RefreshCw
+                      className={cn(
+                        "h-3.5 w-3.5",
+                        busyId === s.id && "animate-spin",
+                      )}
+                    />
+                    同步
+                  </Button>
                   <Link href={`/self-hosted/${s.id}`}>
                     <Button size="sm">
                       <Settings2 className="h-3.5 w-3.5" />

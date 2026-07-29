@@ -4,6 +4,10 @@ import { useCallback, useEffect, useState } from "react";
 import { TopBar } from "@/components/layout/top-bar";
 import { MetricsRow } from "@/components/dashboard/metric-cards";
 import { ProviderGrid, type ProviderCardData } from "@/components/dashboard/provider-grid";
+import {
+  SelfHostedGrid,
+  type SelfHostedCardData,
+} from "@/components/dashboard/self-hosted-grid";
 import { TrendChart, SharePie } from "@/components/dashboard/charts";
 import { AlertsBanner } from "@/components/dashboard/alerts-banner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -27,6 +31,14 @@ interface DashboardPayload {
     hasUsageCost?: boolean;
   };
   providers: ProviderCardData[];
+  selfHosted: SelfHostedCardData[];
+  selfHostedTotals: {
+    sites: number;
+    monthOfficialCost: number;
+    monthSellRevenueRmb: number;
+    accountPurchaseRmb: number;
+    monthRequests: number;
+  };
   sites: {
     id: string;
     name: string;
@@ -121,7 +133,7 @@ export function DashboardView() {
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-medium tracking-wide text-secondary">
-            上游站点
+            中转上游
           </h2>
           <span className="text-xs text-muted font-data">
             {data.providers.filter((p) => p.enabled).length} 在线配置
@@ -129,6 +141,26 @@ export function DashboardView() {
         </div>
         <ProviderGrid providers={data.providers} onSynced={load} />
       </section>
+
+      {data.selfHosted.length > 0 && (
+        <section className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-medium tracking-wide text-secondary">
+                自建上游
+              </h2>
+              <p className="text-[11px] text-muted">
+                自己部署的 Sub2API，管理员 Key 直连管理端 · 不计入上面的余额与净利润
+              </p>
+            </div>
+            <span className="text-xs text-muted font-data">
+              本月卖出 {formatRmb(data.selfHostedTotals.monthSellRevenueRmb)} ·
+              采购 {formatRmb(data.selfHostedTotals.accountPurchaseRmb)}
+            </span>
+          </div>
+          <SelfHostedGrid sites={data.selfHosted} onSynced={load} />
+        </section>
+      )}
 
       <section className="grid gap-4 xl:grid-cols-3">
         <TrendChart data={data.dailySeries} />

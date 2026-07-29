@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
     const res = NextResponse.json({
       data: { ok: true, username },
     });
-    const opt = sessionCookieOptions(token);
+    const opt = sessionCookieOptions(token, req);
     res.cookies.set(opt);
     return res;
   } catch (e) {
@@ -52,8 +52,8 @@ export async function GET(req: NextRequest) {
 }
 
 /** DELETE — 登出 */
-export async function DELETE() {
+export async function DELETE(req: NextRequest) {
   const res = NextResponse.json({ data: { ok: true } });
-  res.cookies.set(clearSessionCookieOptions());
+  res.cookies.set(clearSessionCookieOptions(req));
   return res;
 }

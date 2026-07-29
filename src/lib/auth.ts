@@ -88,25 +88,41 @@ export function validateCredentials(username: string, password: string): boolean
   }
 }
 
-export function sessionCookieOptions(token: string) {
+/**
+ * A Secure cookie is dropped by the browser over plain HTTP, which silently
+ * breaks login for HTTP deployments. Decide from the request's actual scheme
+ * (honouring X-Forwarded-Proto behind a reverse proxy) rather than NODE_ENV.
+ */
+function isSecureRequest(req?: Request): boolean {
+  if (!req) return process.env.NODE_ENV === "production";
+  const forwarded = req.headers.get("x-forwarded-proto");
+  if (forwarded) return forwarded.split(",")[0].trim() === "https";
+  try {
+    return new URL(req.url).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+export function sessionCookieOptions(token: string, req?: Request) {
   return {
     name: COOKIE_NAME,
     value: token,
     httpOnly: true,
     sameSite: "lax" as const,
-    secure: process.env.NODE_ENV === "production",
+    secure: isSecureRequest(req),
     path: "/",
     maxAge: SESSION_DAYS * 24 * 60 * 60,
   };
 }
 
-export function clearSessionCookieOptions() {
+export function clearSessionCookieOptions(req?: Request) {
   return {
     name: COOKIE_NAME,
     value: "",
     httpOnly: true,
     sameSite: "lax" as const,
-    secure: process.env.NODE_ENV === "production",
+    secure: isSecureRequest(req),
     path: "/",
     maxAge: 0,
   };

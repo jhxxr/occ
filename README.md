@@ -1,6 +1,6 @@
 # Orbit Control Center
 
-轻量级个人仪表盘：聚合上游 API 中转站（NewAPI / Sub2API / OneAPI 等）与下游自营中转站的余额、消耗与收益，核算真实毛利与资金风险。
+轻量级个人仪表盘：聚合上游 API 中转站（NewAPI / Sub2API / OneAPI 等）的余额、消耗。
 
 ## 功能
 
@@ -24,7 +24,8 @@ npm install
 
 # 配置环境变量
 cp .env.example .env
-# 编辑 ENCRYPTION_SECRET 为随机长字符串
+# 必填：ENCRYPTION_SECRET、AUTH_SECRET 各设为独立的随机长字符串
+#      AUTH_USERNAME、AUTH_PASSWORD 设为你的登录账号密码
 
 # 初始化数据库
 npx prisma migrate dev
@@ -37,11 +38,18 @@ npm run dev
 
 ## 环境变量
 
-| 变量 | 说明 |
-|------|------|
-| `DATABASE_URL` | SQLite 路径，默认 `file:./dev.db` |
-| `ENCRYPTION_SECRET` | 加密 API Key 的密钥材料 |
-| `DEFAULT_USD_CNY` | 默认美元兑人民币汇率 |
+| 变量 | 必填 | 说明 |
+|------|------|------|
+| `DATABASE_URL` | 否 | SQLite 路径，默认 `file:./dev.db` |
+| `ENCRYPTION_SECRET` | **是** | 加密存储 API Key / 密码的密钥材料，随机长字符串 |
+| `AUTH_USERNAME` | **是** | 登录用户名（固定单账号，无注册） |
+| `AUTH_PASSWORD` | **是** | 登录密码 |
+| `AUTH_SECRET` | **是** | 签名会话 Cookie 的密钥，与 `ENCRYPTION_SECRET` 用不同的随机值 |
+| `DEFAULT_USD_CNY` | 否 | 默认美元兑人民币汇率，默认 `7.2` |
+
+四个必填项缺任意一个都无法登录：`AUTH_SECRET` 缺失会在签发/校验会话时抛错，`AUTH_USERNAME` 或 `AUTH_PASSWORD` 缺失则所有登录请求一律失败。已有数据库不要改动 `ENCRYPTION_SECRET`，否则已存的凭据无法解密。
+
+Docker 部署的完整变量说明见 [DOCKER.md](DOCKER.md)。
 
 ## 利润计算
 
@@ -101,4 +109,13 @@ Authorization: Bearer oct_...
 
 ## 安全提示
 
-本项目面向**个人本地**使用。若暴露到公网，请自行增加鉴权（如 Basic Auth / 反向代理登录），并轮换所有已配置的 API Key。
+本项目面向**个人**使用，只有一个固定账号，没有注册和多用户隔离。
+
+全站页面与 API 默认需要登录（会话 Cookie，30 天有效期），唯一例外是浏览器扩展注入接口 `/api/extension/inject`，它不校验登录、改用 Header 中的扩展 token 鉴权。
+
+暴露到公网前请注意：
+
+- 前置 TLS 反向代理，`AUTH_PASSWORD` 用强密码。
+- 上游站点地址（`baseUrl`）由你自行填写，服务端会直接请求该地址，未对内网地址做限制。不要填入不受信任的地址。
+- 扩展 token 长期有效且无速率限制，不用时在设置中禁用或删除。
+- 登录接口没有失败次数限制，公网部署建议在反向代理层加限流。

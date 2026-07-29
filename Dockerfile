@@ -41,7 +41,9 @@ COPY --from=builder --chown=nextjs:nodejs /app/node_modules/.prisma ./node_modul
 COPY --chown=nextjs:nodejs docker-entrypoint.sh ./docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
-USER nextjs
+# Starts as root so the entrypoint can fix ownership of a bind-mounted
+# /app/data, then drops to nextjs (uid 1001) before running migrations or the
+# server. Pass --user to docker run to skip that and stay unprivileged.
 EXPOSE 3000
 VOLUME ["/app/data"]
 

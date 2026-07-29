@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { createExtensionToken } from "@/lib/crypto";
+import { isSelfHosted, relayOnly } from "@/lib/provider-kinds";
 
 const NO_STORE_HEADERS = {
   "Cache-Control": "no-store",
@@ -58,7 +59,9 @@ export async function GET() {
     data: rows.map((r) =>
       toMetadata(r, r.providerId ? nameMap[r.providerId] : null),
     ),
+    // 只列中转上游，自建站不进扩展绑定下拉
     providers: await prisma.upstreamProvider.findMany({
+      where: relayOnly,
       orderBy: { createdAt: "asc" },
       select: { id: true, name: true, baseUrl: true, type: true },
     }),
@@ -80,6 +83,12 @@ export async function POST(req: NextRequest) {
         where: { id: providerId },
       });
       if (!provider) return response({ error: "上游不存在" }, 404);
+      if (isSelfHosted(provider.type)) {
+        return response(
+          { error: "自建站用 Admin Key，不能绑扩展注入 token" },
+          400,
+        );
+      }
     }
 
     const rotate = body.rotate !== false;

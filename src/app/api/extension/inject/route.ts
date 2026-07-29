@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { encryptSecret, hashExtensionToken } from "@/lib/crypto";
 import { normalizeBaseUrl } from "@/lib/utils";
+import { isSelfHosted, relayOnly } from "@/lib/provider-kinds";
 
 function corsHeaders(req: NextRequest): HeadersInit {
   const origin = req.headers.get("origin") || "*";
@@ -22,10 +23,12 @@ function json(req: NextRequest, body: unknown, status = 200) {
 }
 
 function extractToken(req: NextRequest): string | null {
-  const token =
+  // 链接里 ?token=oct_… 最方便扩展粘贴；Header 给脚本调用
+  const fromQuery = req.nextUrl.searchParams.get("token");
+  const fromHeader =
     req.headers.get("x-orbit-token") ||
     req.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
-  return token?.trim() || null;
+  return (fromQuery || fromHeader || "").trim() || null;
 }
 
 async function findToken(req: NextRequest) {
@@ -128,30 +131,84 @@ export async function POST(req: NextRequest) {
           req,
           {
             error:
-              "此 token 未绑定上游，请在 body 提供 baseUrl/host，或重新生成绑定上游的 token",
+              "请在 body 提供 baseUrl/host，以便匹配或新建上游",
           },
           400,
         );
       }
       const host = hostOf(baseHint.startsWith("http") ? baseHint : `https://${baseHint}`);
+      // 只匹配中转上游。自建站用 Admin Key，不走 JWT 注入
       const providers = await prisma.upstreamProvider.findMany({
+        where: relayOnly,
         select: { id: true, baseUrl: true },
       });
       const match = providers.find((provider) => hostOf(provider.baseUrl) === host);
-      if (!match) {
+      if (match) {
+        providerId = match.id;
+      } else if (body.createIfMissing === true) {
+        // 扩展请求新建上游
+        const baseUrl = baseHint.startsWith("http") ? baseHint : `https://${baseHint}`;
+        const created = await prisma.upstreamProvider.create({
+          data: {
+            name: host,
+            baseUrl,
+            apiKey: encryptSecret(access),
+            type: "SUB2API",
+            discountRate: 1,
+            quotaPerDollar: 1,
+            enabled: true,
+          },
+        });
+        providerId = created.id;
+
+        if (refreshToken) {
+          await prisma.upstreamProvider.update({
+            where: { id: created.id },
+            data: { refreshToken: encryptSecret(refreshToken) },
+          });
+        }
+        if (expiresAt) {
+          await prisma.upstreamProvider.update({
+            where: { id: created.id },
+            data: { tokenExpiresAt: expiresAt },
+          });
+        }
+
+        await prisma.extensionInjectToken.update({
+          where: { id: row.id },
+          data: { lastUsedAt: new Date(), useCount: { increment: 1 } },
+        });
+
+        return json(req, {
+          ok: true,
+          created: true,
+          providerId: created.id,
+          providerName: created.name,
+          baseUrl: created.baseUrl,
+          type: created.type,
+          hasRefreshToken: !!refreshToken,
+          tokenExpiresAt: expiresAt,
+        });
+      } else {
         return json(
           req,
-          { error: `未找到 baseUrl 匹配 ${host} 的上游，请先在 Orbit 添加该站点` },
+          { error: `未找到 baseUrl 匹配 ${host} 的中转上游，请先在 Orbit「上游站点」添加` },
           404,
         );
       }
-      providerId = match.id;
     }
 
     const provider = await prisma.upstreamProvider.findUnique({
       where: { id: providerId },
     });
     if (!provider) return json(req, { error: "上游不存在（可能已删除）" }, 404);
+    if (isSelfHosted(provider.type)) {
+      return json(
+        req,
+        { error: "自建 Sub2API 使用 Admin API Key，不能通过扩展注入 JWT" },
+        400,
+      );
+    }
 
     const data: {
       apiKey: string;

@@ -27,17 +27,32 @@ Do not change `ENCRYPTION_SECRET` for an existing database unless stored credent
 
 ## Docker Compose
 
-Create a local `.env` that is never committed:
+A deployment is one self-contained directory. `compose.yml` and `.env` sit at the top; SQLite lives in `./data` next to them.
+
+```text
+occ/
+├── compose.yml
+├── .env          # secrets; never commit or share
+└── data/         # created on first start; holds orbit.db
+```
+
+Create the directory and fetch `compose.yml`:
+
+```bash
+mkdir -p ~/occ && cd ~/occ
+curl -fsSL https://raw.githubusercontent.com/jhxxr/occ/main/compose.yml -o compose.yml
+```
+
+Write a local `.env` that is never committed. Generate each secret separately, for example with `openssl rand -hex 32`:
 
 ```dotenv
-ORBIT_IMAGE=ghcr.io/jhxxr/occ:sha-0123456
-ORBIT_PORT=3000
 ENCRYPTION_SECRET=<random value>
 AUTH_USERNAME=admin
 AUTH_PASSWORD=<strong password>
 AUTH_SECRET=<different random value>
-DEFAULT_USD_CNY=7.2
 ```
+
+`ORBIT_IMAGE` and `ORBIT_PORT` are optional overrides. They default to `ghcr.io/jhxxr/occ:latest` and `3000`; set `ORBIT_IMAGE` to a SHA or version tag to pin production, and `ORBIT_PORT` to publish on a different host port. `DEFAULT_USD_CNY` defaults to `7.2`.
 
 Then start the service:
 
@@ -46,11 +61,13 @@ docker compose pull
 docker compose up -d
 ```
 
-The named `orbit-data` volume persists SQLite at `/app/data/orbit.db`. The entrypoint runs `prisma migrate deploy` before starting Next.js and exits if a migration fails.
+The bind mount at `./data` persists SQLite at `/app/data/orbit.db`, so backing up the deployment directory captures both configuration and data. The entrypoint runs `prisma migrate deploy` before starting Next.js and exits if a migration fails.
+
+If the container cannot write to `./data`, check `docker compose logs orbit` for a permission error and adjust ownership on the host directory to match the container user.
 
 ## Upgrading extension tokens
 
-Before deploying an image that contains the `hash_extension_tokens` migration, back up the SQLite volume. The migration preserves application/provider data but intentionally revokes every legacy extension inject token because plaintext tokens cannot be safely converted to one-way hashes in SQLite migration SQL.
+Before deploying an image that contains the `hash_extension_tokens` migration, back up `./data`. The migration preserves application/provider data but intentionally revokes every legacy extension inject token because plaintext tokens cannot be safely converted to one-way hashes in SQLite migration SQL.
 
 After the upgrade:
 
@@ -61,7 +78,8 @@ After the upgrade:
 
 ## Operations
 
-- Back up the SQLite volume before changing image versions.
+- Back up the deployment directory before changing image versions; archiving `occ/` captures `compose.yml`, `.env`, and `./data` together.
+- Moving a deployment is a directory copy plus `docker compose up -d` on the new host.
 - Run a single writable application instance per SQLite database.
 - Put a TLS-enabled reverse proxy in front of port 3000 before public exposure.
 - Pin a SHA or version tag for production; do not depend on a mutable tag for rollbacks.

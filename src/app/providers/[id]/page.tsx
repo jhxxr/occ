@@ -375,6 +375,12 @@ export default function Sub2ManagePage() {
   }
 
   /** 绑定这个 Key 卖到哪个下游站点/分组 —— 倍率法估算收入的依据 */
+  /**
+   * 绑定下游归属。
+   *
+   * 乐观更新：这是纯本地字段，不影响远端 Sub2API，所以直接改这一行就行。
+   * 之前每次选择都 load() 整页（含远端 Key 列表与用量），下拉框会闪、还慢。
+   */
   async function bindDownstream(
     key: ApiKeyRow,
     patch: {
@@ -383,9 +389,51 @@ export default function Sub2ManagePage() {
       downstreamRate?: number | null;
     },
   ) {
-    setBusy(`bind-${key.id}`);
-    setMsg(null);
+    const prev = {
+      downstreamSiteId: key.downstreamSiteId ?? null,
+      downstreamGroup: key.downstreamGroup ?? null,
+      downstreamRate: key.downstreamRate ?? null,
+      downstreamRateSource: key.downstreamRateSource,
+    };
+
+    // 换站点时清掉分组；倍率跟着新分组重新推导
+    const nextSiteId =
+      patch.downstreamSiteId !== undefined
+        ? patch.downstreamSiteId
+        : prev.downstreamSiteId;
+    const nextGroup =
+      patch.downstreamSiteId !== undefined
+        ? null
+        : patch.downstreamGroup !== undefined
+          ? patch.downstreamGroup
+          : prev.downstreamGroup;
+    const manualRate =
+      patch.downstreamRate !== undefined ? patch.downstreamRate : null;
+    const autoRate =
+      nextSiteId && nextGroup
+        ? (downstreamRates.find(
+            (r) =>
+              r.downstreamId === nextSiteId &&
+              r.groupName === nextGroup &&
+              r.known,
+          )?.ratio ?? null)
+        : null;
+
     setError(null);
+    setKeys((list) =>
+      list.map((k) =>
+        k.id === key.id
+          ? {
+              ...k,
+              downstreamSiteId: nextSiteId,
+              downstreamGroup: nextGroup,
+              downstreamRate: manualRate ?? autoRate,
+              downstreamRateSource: manualRate != null ? "manual" : "auto",
+            }
+          : k,
+      ),
+    );
+
     try {
       const res = await fetch(`/api/upstream/${id}/sub2/keys/${key.id}`, {
         method: "PUT",
@@ -395,11 +443,12 @@ export default function Sub2ManagePage() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "绑定失败");
       setMsg(`「${key.name}」下游归属已更新`);
-      await load();
     } catch (e) {
+      // 失败只回滚这一行，不动其它状态
+      setKeys((list) =>
+        list.map((k) => (k.id === key.id ? { ...k, ...prev } : k)),
+      );
       setError(e instanceof Error ? e.message : "绑定失败");
-    } finally {
-      setBusy(null);
     }
   }
 
@@ -835,7 +884,6 @@ export default function Sub2ManagePage() {
                           <Label className="text-[11px]">卖到下游站点</Label>
                           <Select
                             value={k.downstreamSiteId ?? ""}
-                            disabled={busy === `bind-${k.id}`}
                             onChange={(e) =>
                               bindDownstream(k, {
                                 downstreamSiteId: e.target.value || null,
@@ -856,9 +904,7 @@ export default function Sub2ManagePage() {
                           <Label className="text-[11px]">下游分组</Label>
                           <Select
                             value={k.downstreamGroup ?? ""}
-                            disabled={
-                              busy === `bind-${k.id}` || !k.downstreamSiteId
-                            }
+                            disabled={!k.downstreamSiteId}
                             onChange={(e) =>
                               bindDownstream(k, {
                                 downstreamGroup: e.target.value || null,

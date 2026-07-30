@@ -299,11 +299,22 @@ async function rebuildDailyForDay(
     buckets.set(kid, b);
   }
 
+  // 已入账的成本率保持原样：日后改站点折扣率不该把历史成本重算一遍
+  const existing = await prisma.upstreamUsageDaily.findMany({
+    where: { providerId, day },
+  });
+  const frozenRate = new Map(
+    existing
+      .filter((row) => row.costRateRmb > 0)
+      .map((row) => [row.remoteKeyId, row.costRateRmb]),
+  );
+
   // 清掉该日旧聚合再写（简单可靠）
   await prisma.upstreamUsageDaily.deleteMany({ where: { providerId, day } });
 
   for (const [remoteKeyId, b] of buckets) {
     const countAsCost = countAsCostByRemote.get(remoteKeyId) ?? false;
+    const rate = frozenRate.get(remoteKeyId) ?? discountRate;
     await prisma.upstreamUsageDaily.create({
       data: {
         providerId,
@@ -316,7 +327,9 @@ async function rebuildDailyForDay(
         totalTokens: b.totalTokens,
         inputTokens: b.inputTokens,
         outputTokens: b.outputTokens,
-        costRmb: countAsCost ? b.actualCost * discountRate : 0,
+        costRmb: countAsCost ? b.actualCost * rate : 0,
+        costRateRmb: rate,
+        costRateSource: frozenRate.has(remoteKeyId) ? "frozen" : "provider",
         countAsCost,
       },
     });
@@ -455,7 +468,12 @@ export async function queryUsageStats(
   };
 }
 
-/** 当 countAsCost 变更时，重算相关日聚合的 costRmb */
+/**
+ * 当 countAsCost 变更时，重算相关日聚合的 costRmb。
+ *
+ * 只改「算不算业务成本」，成本率沿用当日已冻结的值；
+ * 没有冻结值的历史行（迁移前写入的）才回退到站点当前折扣率。
+ */
 export async function recomputeCostFlags(providerId: string) {
   const provider = await prisma.upstreamProvider.findUnique({
     where: { id: providerId },
@@ -469,11 +487,14 @@ export async function recomputeCostFlags(providerId: string) {
   });
   for (const d of dailies) {
     const countAsCost = map.get(d.remoteKeyId) ?? false;
+    const rate = d.costRateRmb > 0 ? d.costRateRmb : provider.discountRate;
     await prisma.upstreamUsageDaily.update({
       where: { id: d.id },
       data: {
         countAsCost,
-        costRmb: countAsCost ? d.actualCost * provider.discountRate : 0,
+        costRmb: countAsCost ? d.actualCost * rate : 0,
+        costRateRmb: rate,
+        costRateSource: d.costRateRmb > 0 ? d.costRateSource : "legacy",
       },
     });
   }

@@ -80,3 +80,64 @@ export interface DownstreamUserRow {
   /** true if currently excluded from revenue */
   excluded?: boolean;
 }
+
+/**
+ * 下游按日实际消费
+ *
+ * 两个口径分开存，别混用：
+ * - quota：全部账号的消费（含测试号），跟上游成本对差值用
+ * - excludedQuota：其中被排除账号（测试号）烧掉的部分
+ *
+ * 收入 = quota − excludedQuota。测试号没人付钱，算进收入就是虚增利润。
+ */
+export interface DownstreamDailyRow {
+  /** Asia/Shanghai 日历日 */
+  day: string;
+  /** 全部账号的原始额度面值 */
+  quota: number;
+  /** 其中被排除账号消耗的额度面值 */
+  excludedQuota: number;
+  /** 请求数，来源不支持时为 0 */
+  requests: number;
+  /** 是否真的按账号拆出了排除项；false 表示拿不到逐账号数据 */
+  excludeResolved: boolean;
+}
+
+export interface DownstreamGroupDailyRow {
+  day: string;
+  quota: number;
+  requests: number;
+  groupName: string;
+}
+
+export interface DownstreamDailyUsageResult {
+  success: boolean;
+  /** 全站权威口径 */
+  totals: DownstreamDailyRow[];
+  /** 分组归因，接口不支持时为空 */
+  groups: DownstreamGroupDailyRow[];
+  /** log-stat = 逐日日志求和；data-export = 数据看板聚合 */
+  totalSource: "log-stat" | "data-export" | "none";
+  /** 是否拿到了整段区间 */
+  complete: boolean;
+  /** 拉取失败的日期 */
+  failedDays: string[];
+  /** 测试号是否真的被拆出来了；false 说明收入里还混着测试号消费 */
+  excludeResolved: boolean;
+  error?: string;
+}
+
+export interface DownstreamGroupRateRow {
+  groupName: string;
+  ratio: number;
+  /** ratio 是否为真实读到的值 */
+  known: boolean;
+}
+
+export interface DownstreamGroupRatesResult {
+  success: boolean;
+  rates: DownstreamGroupRateRow[];
+  /** option = 管理端 GroupRatio；user-groups = 可用分组倍率；group-list = 只拿到名字 */
+  source: "option" | "user-groups" | "group-list" | "none";
+  error?: string;
+}

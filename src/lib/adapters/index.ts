@@ -1,7 +1,13 @@
 import { normalizeBaseUrl } from "@/lib/utils";
+import { addDays, enumerateDays, shanghaiDay } from "@/lib/reporting-period";
 import type {
   DownstreamAdapterInput,
+  DownstreamDailyRow,
+  DownstreamDailyUsageResult,
   DownstreamFetchResult,
+  DownstreamGroupDailyRow,
+  DownstreamGroupRateRow,
+  DownstreamGroupRatesResult,
   DownstreamUserRow,
   UpstreamAdapterInput,
   UpstreamFetchResult,
@@ -774,6 +780,307 @@ export async function listDownstreamUsers(
     const msg = e instanceof Error ? e.message : String(e);
     return {
       success: false,
+      error: msg.includes("abort") ? "Request timeout" : msg,
+    };
+  }
+}
+
+/** 某个 Asia/Shanghai 日历日的 unix 秒区间（含首含尾，跟 NewAPI 的比较方式一致） */
+function shanghaiDayBounds(day: string): { start: number; end: number } {
+  const start = Math.floor(new Date(`${day}T00:00:00+08:00`).getTime() / 1000);
+  const end = Math.floor(new Date(`${addDays(day, 1)}T00:00:00+08:00`).getTime() / 1000) - 1;
+  return { start, end };
+}
+
+/**
+ * 下游按日实际消费。
+ *
+ * 存两个口径，别混用：
+ * - 全部账号消费（含测试号）：跟上游成本对差值，因为测试号也烧了上游额度
+ * - 付费账号消费：这才是收入。测试号没人付钱。
+ *
+ * 逐账号拆分只能靠 `/api/data/users`（按 username × 小时聚合）。
+ * 拿不到时退回全站口径，并把 excludeResolved 标成 false —— 让上层知道
+ * 这个数里还混着测试号，而不是假装已经扣干净了。
+ */
+export async function fetchDownstreamDailyUsage(
+  input: DownstreamAdapterInput & {
+    startDay: string;
+    endDay: string;
+    /** 被排除账号的用户名（测试号）；逐账号拆分要用名字而不是 id */
+    excludeUsernames?: string[];
+  },
+): Promise<DownstreamDailyUsageResult> {
+  const base = normalizeBaseUrl(input.baseUrl);
+  const userId = input.adminUserId && input.adminUserId > 0 ? input.adminUserId : 1;
+  const headers = newApiAdminHeaders(input.adminKey, userId);
+  const days = enumerateDays(input.startDay, input.endDay);
+  const failedDays: string[] = [];
+
+  if (!days.length) {
+    return {
+      success: false,
+      totals: [],
+      groups: [],
+      totalSource: "none",
+      complete: false,
+      failedDays: [],
+      excludeResolved: false,
+      error: "日期区间为空",
+    };
+  }
+
+  const excludeSet = new Set(
+    (input.excludeUsernames || []).map((n) => n.trim()).filter(Boolean),
+  );
+
+  try {
+    const rangeStart = shanghaiDayBounds(input.startDay).start;
+    const rangeEnd = shanghaiDayBounds(input.endDay).end;
+
+    // 1) 逐账号日消费：唯一能把测试号拆出来的来源
+    const perUser = new Map<string, { quota: number; excluded: number; requests: number }>();
+    let excludeResolved = false;
+    const usersRes = await fetchJson(
+      `${base}/api/data/users?start_timestamp=${rangeStart}&end_timestamp=${rangeEnd}`,
+      { method: "GET", headers, timeoutMs: 30_000 },
+    );
+    if (usersRes.ok) {
+      const rows = asRecord(usersRes.data)?.data;
+      if (Array.isArray(rows)) {
+        excludeResolved = true;
+        for (const row of rows) {
+          const r = asRecord(row);
+          if (!r) continue;
+          const createdAt = num(r.created_at);
+          if (createdAt == null) continue;
+          const day = shanghaiDay(createdAt * 1000);
+          if (day < input.startDay || day > input.endDay) continue;
+          const quota = num(r.quota) ?? 0;
+          const count = num(r.count) ?? 0;
+          const username = typeof r.username === "string" ? r.username : "";
+          const bucket =
+            perUser.get(day) || { quota: 0, excluded: 0, requests: 0 };
+          bucket.quota += quota;
+          bucket.requests += count;
+          if (excludeSet.has(username)) bucket.excluded += quota;
+          perUser.set(day, bucket);
+        }
+      }
+    }
+
+    // 2) 数据看板按模型/分组聚合：补分组归因（拿不到账号维度）
+    const dayQuotaFromData = new Map<string, { quota: number; requests: number }>();
+    const groupBuckets = new Map<string, DownstreamGroupDailyRow>();
+    let dataExportOk = false;
+    const dataRes = await fetchJson(
+      `${base}/api/data/?start_timestamp=${rangeStart}&end_timestamp=${rangeEnd}`,
+      { method: "GET", headers, timeoutMs: 30_000 },
+    );
+    if (dataRes.ok) {
+      const rows = asRecord(dataRes.data)?.data;
+      if (Array.isArray(rows)) {
+        dataExportOk = true;
+        for (const row of rows) {
+          const r = asRecord(row);
+          if (!r) continue;
+          const createdAt = num(r.created_at);
+          if (createdAt == null) continue;
+          const day = shanghaiDay(createdAt * 1000);
+          if (day < input.startDay || day > input.endDay) continue;
+          const quota = num(r.quota) ?? 0;
+          const count = num(r.count) ?? 0;
+          const bucket = dayQuotaFromData.get(day) || { quota: 0, requests: 0 };
+          bucket.quota += quota;
+          bucket.requests += count;
+          dayQuotaFromData.set(day, bucket);
+
+          const groupName = typeof r.use_group === "string" ? r.use_group : "";
+          const gk = `${day}|${groupName}`;
+          const g = groupBuckets.get(gk) || { day, groupName, quota: 0, requests: 0 };
+          g.quota += quota;
+          g.requests += count;
+          groupBuckets.set(gk, g);
+        }
+      }
+    }
+
+    // 3) 逐日 log/stat：全站消费的权威值
+    const totals: DownstreamDailyRow[] = [];
+    let statOkCount = 0;
+    for (const day of days) {
+      const { start, end } = shanghaiDayBounds(day);
+      const res = await fetchJson(
+        `${base}/api/log/stat?type=2&start_timestamp=${start}&end_timestamp=${end}`,
+        { method: "GET", headers },
+      );
+      const payload = res.ok
+        ? asRecord(asRecord(res.data)?.data) ?? asRecord(res.data)
+        : null;
+      const statQuota = payload ? num(payload.quota) : null;
+      const fromUsers = perUser.get(day);
+      const fromData = dayQuotaFromData.get(day);
+
+      const quota = statQuota ?? fromUsers?.quota ?? fromData?.quota ?? null;
+      if (quota == null) {
+        failedDays.push(day);
+        continue;
+      }
+      if (statQuota != null) statOkCount++;
+
+      // 排除额按逐账号数据算。若 log/stat 的全站口径与逐账号总量有偏差，
+      // 按比例缩放排除额，避免「排除额 > 全站消费」这种荒唐结果。
+      let excludedQuota = 0;
+      if (fromUsers && fromUsers.excluded > 0) {
+        excludedQuota =
+          fromUsers.quota > 0 && quota !== fromUsers.quota
+            ? (fromUsers.excluded / fromUsers.quota) * quota
+            : fromUsers.excluded;
+        if (excludedQuota > quota) excludedQuota = quota;
+      }
+
+      totals.push({
+        day,
+        quota,
+        excludedQuota,
+        requests: fromUsers?.requests ?? fromData?.requests ?? 0,
+        excludeResolved: excludeResolved || excludeSet.size === 0,
+      });
+    }
+
+    if (!totals.length) {
+      return {
+        success: false,
+        totals: [],
+        groups: [],
+        totalSource: "none",
+        complete: false,
+        failedDays,
+        excludeResolved: false,
+        error: "无法读取消费统计，请检查管理员令牌与 New-API-User",
+      };
+    }
+
+    return {
+      success: true,
+      totals,
+      groups: dataExportOk ? [...groupBuckets.values()] : [],
+      totalSource: statOkCount > 0 ? "log-stat" : "data-export",
+      complete: failedDays.length === 0,
+      failedDays,
+      excludeResolved: excludeResolved || excludeSet.size === 0,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      success: false,
+      totals: [],
+      groups: [],
+      totalSource: "none",
+      complete: false,
+      failedDays,
+      excludeResolved: false,
+      error: msg.includes("abort") ? "Request timeout" : msg,
+    };
+  }
+}
+
+/**
+ * 下游分组倍率（倍率法估算卖出收入用）。
+ *
+ * 依次尝试：
+ * 1. GET /api/option/ 的 GroupRatio（root 令牌，权威全量）
+ * 2. GET /api/user/self/groups 的可用分组倍率
+ * 3. GET /api/group/ 只有分组名，倍率标记为未知
+ */
+export async function fetchDownstreamGroupRates(
+  input: DownstreamAdapterInput,
+): Promise<DownstreamGroupRatesResult> {
+  const base = normalizeBaseUrl(input.baseUrl);
+  const userId = input.adminUserId && input.adminUserId > 0 ? input.adminUserId : 1;
+  const headers = newApiAdminHeaders(input.adminKey, userId);
+
+  try {
+    // 1) 管理端 option：GroupRatio 是权威的分组倍率表
+    const optionRes = await fetchJson(`${base}/api/option/`, {
+      method: "GET",
+      headers,
+    });
+    if (optionRes.ok) {
+      const rows = asRecord(optionRes.data)?.data;
+      if (Array.isArray(rows)) {
+        const hit = rows
+          .map((r) => asRecord(r))
+          .find((r) => r && r.key === "GroupRatio");
+        if (hit && typeof hit.value === "string" && hit.value.trim()) {
+          try {
+            const parsed = JSON.parse(hit.value) as Record<string, unknown>;
+            const rates: DownstreamGroupRateRow[] = [];
+            for (const [groupName, raw] of Object.entries(parsed)) {
+              const ratio = num(raw);
+              if (ratio == null || ratio < 0) continue;
+              rates.push({ groupName, ratio, known: true });
+            }
+            if (rates.length) {
+              return { success: true, rates, source: "option" };
+            }
+          } catch {
+            // 落到下一种方式
+          }
+        }
+      }
+    }
+
+    // 2) 用户可用分组：{ groupName: { ratio, desc } }
+    const selfRes = await fetchJson(`${base}/api/user/self/groups`, {
+      method: "GET",
+      headers,
+    });
+    if (selfRes.ok) {
+      const payload = asRecord(asRecord(selfRes.data)?.data);
+      if (payload) {
+        const rates: DownstreamGroupRateRow[] = [];
+        for (const [groupName, raw] of Object.entries(payload)) {
+          const ratio = num(asRecord(raw)?.ratio);
+          if (ratio == null || ratio < 0) continue;
+          rates.push({ groupName, ratio, known: true });
+        }
+        if (rates.length) {
+          return { success: true, rates, source: "user-groups" };
+        }
+      }
+    }
+
+    // 3) 只有分组名单，倍率未知
+    const groupRes = await fetchJson(`${base}/api/group/`, {
+      method: "GET",
+      headers,
+    });
+    if (groupRes.ok) {
+      const names = asRecord(groupRes.data)?.data;
+      if (Array.isArray(names) && names.length) {
+        return {
+          success: true,
+          source: "group-list",
+          rates: names
+            .filter((n): n is string => typeof n === "string" && !!n)
+            .map((groupName) => ({ groupName, ratio: 1, known: false })),
+        };
+      }
+    }
+
+    return {
+      success: false,
+      rates: [],
+      source: "none",
+      error: "无法读取分组倍率（需要管理员/root 令牌）",
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      success: false,
+      rates: [],
+      source: "none",
       error: msg.includes("abort") ? "Request timeout" : msg,
     };
   }

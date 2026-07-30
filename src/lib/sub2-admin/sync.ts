@@ -11,6 +11,8 @@
 
 import { prisma } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
+import { summarizeCosts } from "@/lib/operating-cost";
+import { monthPeriod } from "@/lib/reporting-period";
 import {
   adminListAccounts,
   adminListGroups,
@@ -315,13 +317,12 @@ export async function getSelfHostedOverview(providerId: string) {
   const trackedAccounts = accounts.filter((a) => a.track);
 
   // 本月卖出/官方用量（从 daily）
-  const monthStart = dayStr(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
-  const today = dayStr();
+  const period = monthPeriod(dayStr());
   const monthDaily = await prisma.selfHostedGroupDaily.findMany({
     where: {
       providerId,
       track: true,
-      day: { gte: monthStart, lte: today },
+      day: { gte: period.startDay, lte: period.endDay },
     },
   });
 
@@ -333,8 +334,31 @@ export async function getSelfHostedOverview(providerId: string) {
     0,
   );
 
-  // 粗算：卖出收入 − 账号采购成本（采购是一次性的，这里展示为库存成本）
-  // 更精细的可按账号摊销，先给清晰数字
+  // 本月真正该扣的成本：成本台账（一次性按记账日、期间按有效期摊销）。
+  // 账号配置里的采购总价不再每个月整笔扣一遍。
+  const costEntries = await prisma.operatingCostEntry.findMany({
+    where: {
+      status: { not: "void" },
+      OR: [{ providerId }, { accountId: { in: accounts.map((a) => a.id) } }],
+    },
+  });
+  const costSummary = summarizeCosts(
+    costEntries.map((e) => ({
+      id: e.id,
+      name: e.name,
+      amountRmb: Number(e.amountRmb),
+      mode: e.mode,
+      startDay: e.startDay,
+      plannedEndDay: e.plannedEndDay,
+      actualEndDay: e.actualEndDay,
+      status: e.status,
+      category: e.category,
+      providerId: e.providerId,
+      accountId: e.accountId,
+    })),
+    period,
+  );
+
   return {
     provider: {
       id: provider.id,
@@ -347,14 +371,23 @@ export async function getSelfHostedOverview(providerId: string) {
     groups,
     accounts,
     summary: {
+      period,
       trackedGroups: trackedGroups.length,
       trackedAccounts: trackedAccounts.length,
       monthOfficialCost: monthOfficial,
+      /**
+       * 官方用量 × 卖出倍率，仅自建站内部参考。
+       * 这批流量的真实收入落在下游 NewAPI 的消费里，别跟总账相加。
+       */
       monthSellRevenueRmb: monthSellRmb,
       monthRequests,
+      /** 账号里填的采购总价，仅供核对，不参与本月成本 */
       accountPurchaseRmb,
-      /** 卖出收入 − 已追踪账号采购成本（采购是资产，仅作参考） */
-      roughProfitRmb: monthSellRmb - accountPurchaseRmb,
+      /** 本月实际入账 / 摊销的额外成本 */
+      operatingCostRmb: costSummary.totalRmb,
+      operatingCostEntries: costSummary.entries,
+      earlyEndedCostEntries: costSummary.earlyEndedCount,
+      openEndedCostEntries: costSummary.openEndedCount,
     },
   };
 }

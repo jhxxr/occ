@@ -46,6 +46,9 @@ model UpstreamProvider {
 }
 
 /// 第三方 Sub2API 用户侧 API Key（邮箱密码登录那套）
+///
+/// 倍率法归因：rateMultiplier 是上游分组倍率，downstreamRate 是这批流量在下游
+/// 卖出的分组倍率。两者配上「官方基准用量」即可估算该 Key 赚了多少。
 model UpstreamApiKey {
   id              String    @id @default(cuid())
   providerId      String
@@ -59,6 +62,13 @@ model UpstreamApiKey {
   countAsCost     Boolean   @default(false)
   totalActualCost Float     @default(0)
   todayActualCost Float     @default(0)
+  /// 这个 Key 的流量卖到哪个下游站点（倍率法估算收入用）
+  downstreamSiteId     String?
+  /// 对应的下游分组名
+  downstreamGroup      String?  @db.VarChar(200)
+  /// 下游分组倍率快照；auto 表示跟随同步，manual 表示手工覆盖
+  downstreamRate       Float?
+  downstreamRateSource String   @default("auto") @db.VarChar(20)
   lastSyncAt      DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
@@ -67,6 +77,7 @@ model UpstreamApiKey {
 
   @@unique([providerId, remoteKeyId])
   @@index([providerId, countAsCost])
+  @@index([downstreamSiteId])
 }
 
 /// 自建 Sub2API 的分组（卖出倍率 + 是否纳入统计）
@@ -167,6 +178,10 @@ model UpstreamUsageDaily {
   inputTokens  Int      @default(0)
   outputTokens Int      @default(0)
   costRmb      Float    @default(0)
+  /// 当天实际采用的购入成本率（¥ / 每 1 面值），写死不随配置改动回溯
+  costRateRmb  Float    @default(0)
+  /// provider = 建账时的站点折扣率；legacy = 迁移前的历史数据
+  costRateSource String @default("provider") @db.VarChar(20)
   countAsCost  Boolean  @default(false)
   updatedAt    DateTime @updatedAt
 
@@ -236,6 +251,102 @@ model DownstreamSite {
   updatedAt       DateTime  @updatedAt
 
   snapshots DownstreamSnapshot[]
+  usageDaily DownstreamUsageDaily[]
+  groupRates DownstreamGroupRate[]
+}
+
+/// 下游按日实际消费
+///
+/// 一行同时存两个口径，别混用：
+/// - quota / grossRevenueRmb：**全部账号**的真实消费（含测试号），
+///   用来跟上游成本对差值 —— 测试号也烧了上游额度。
+/// - revenueRmb：**只算付费账号**，这才是收入。测试号没人付钱，
+///   把它算进收入等于虚增利润。
+///
+/// scope=TOTAL 是全站权威口径（报表求和只认它）；
+/// scope=GROUP 仅作分组归因与倍率法对账，避免与 TOTAL 重复相加。
+model DownstreamUsageDaily {
+  id           String   @id @default(cuid())
+  downstreamId String
+  day          String   @db.VarChar(10)
+  scope        String   @default("TOTAL") @db.VarChar(10)
+  groupName    String   @default("") @db.VarChar(200)
+  /// 全部账号的原始额度面值（含测试号）
+  quota        Float    @default(0)
+  /// 被排除账号（测试号）消耗的额度面值
+  excludedQuota Float   @default(0)
+  /// 付费账号消费折算的人民币 —— 收入口径
+  revenueRmb   Float    @default(0)
+  /// 全部账号消费折算的人民币 —— 对账口径，不是收入
+  grossRevenueRmb Float @default(0)
+  /// 折算时采用的额度单位快照
+  quotaPerUnit Float    @default(500000)
+  requests     Int      @default(0)
+  /// 排除口径是否可信：拿不到逐账号数据时为 false，此时 revenue 等于 gross
+  excludeResolved Boolean @default(false)
+  /// data-export | log-stat
+  source       String   @default("log-stat") @db.VarChar(30)
+  /// 该日数据是否完整（分页/接口截断时为 false）
+  complete     Boolean  @default(true)
+  syncedAt     DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  downstream DownstreamSite @relation(fields: [downstreamId], references: [id], onDelete: Cascade)
+
+  @@unique([downstreamId, day, scope, groupName])
+  @@index([downstreamId, day])
+  @@index([day])
+}
+
+/// 下游分组倍率（自动同步，倍率法估算卖出收入用）
+model DownstreamGroupRate {
+  id           String   @id @default(cuid())
+  downstreamId String
+  groupName    String   @db.VarChar(200)
+  ratio        Float    @default(1)
+  /// option | user-groups | group-list（group-list 拿不到倍率，ratio 视为未知）
+  source       String   @default("option") @db.VarChar(20)
+  known        Boolean  @default(true)
+  syncedAt     DateTime @default(now())
+
+  downstream DownstreamSite @relation(fields: [downstreamId], references: [id], onDelete: Cascade)
+
+  @@unique([downstreamId, groupName])
+}
+
+/// 额外成本台账（自建号采购 / 订阅 / 其他固定支出）
+///
+/// ONE_TIME：整笔计入 startDay 所属的自然周 / 自然月。
+/// PERIOD  ：按天直线摊销。账号被风控提前结束时填 actualEndDay，
+///           整笔成本改按 startDay → actualEndDay 压缩摊完，历史周月报随之回算。
+model OperatingCostEntry {
+  id            String   @id @default(cuid())
+  name          String   @db.VarChar(200)
+  amountRmb     Decimal  @default(0) @db.Decimal(14, 4)
+  /// ONE_TIME | PERIOD
+  mode          String   @default("ONE_TIME") @db.VarChar(20)
+  /// ONE_TIME 记账日；PERIOD 摊销开始日
+  startDay      String   @db.VarChar(10)
+  /// PERIOD 计划结束日（含）
+  plannedEndDay String?  @db.VarChar(10)
+  /// PERIOD 实际结束日（含），提前结束后成本压缩到这里
+  actualEndDay  String?  @db.VarChar(10)
+  /// active | ended | void
+  status        String   @default("active") @db.VarChar(20)
+  /// self-hosted | relay | other
+  category      String   @default("self-hosted") @db.VarChar(30)
+  /// 归属上游/自建站点（不做外键，避免删站点连带丢账）
+  providerId    String?  @db.VarChar(40)
+  /// 归属自建反代账号
+  accountId     String?  @db.VarChar(40)
+  note          String?  @db.Text
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([mode, startDay])
+  @@index([status])
+  @@index([providerId])
+  @@index([accountId])
 }
 
 model SnapshotLog {

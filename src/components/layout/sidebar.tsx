@@ -10,6 +10,7 @@ import {
   Satellite,
   ArrowDownToLine,
   Database,
+  LineChart,
   Menu,
   X,
 } from "lucide-react";
@@ -18,6 +19,7 @@ import { Button } from "@/components/ui/button";
 
 const nav = [
   { href: "/", label: "总览", icon: LayoutDashboard },
+  { href: "/reports", label: "收益报表", icon: LineChart },
   { href: "/providers", label: "上游站点", icon: Server },
   { href: "/downstream", label: "下游站点", icon: ArrowDownToLine },
   { href: "/self-hosted", label: "自建上游", icon: Database },

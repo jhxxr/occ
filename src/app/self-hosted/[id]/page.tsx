@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input, Label } from "@/components/ui/input";
+import { CostLedger } from "@/components/self-hosted/cost-ledger";
 import { formatRmb, cn } from "@/lib/utils";
 import {
   ArrowLeft,
@@ -64,7 +65,8 @@ interface Overview {
     monthSellRevenueRmb: number;
     monthRequests: number;
     accountPurchaseRmb: number;
-    roughProfitRmb: number;
+    /** 成本台账在本月实际入账/摊销的金额 */
+    operatingCostRmb: number;
   };
 }
 
@@ -260,27 +262,24 @@ export default function SelfHostedDetailPage() {
         </Card>
         <Card>
           <CardContent className="p-4">
-            <div className="text-[11px] text-muted">账号采购成本</div>
+            <div className="text-[11px] text-muted">本月成本入账</div>
             <div className="font-data text-2xl font-semibold text-amber">
-              {formatRmb(summary.accountPurchaseRmb)}
+              {formatRmb(summary.operatingCostRmb)}
             </div>
             <div className="text-[11px] text-muted">
-              {summary.trackedAccounts} 个追踪账号
+              成本台账摊销（含提前结束重算）
             </div>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-4">
-            <div className="text-[11px] text-muted">粗算结余</div>
-            <div
-              className={cn(
-                "font-data text-2xl font-semibold",
-                summary.roughProfitRmb >= 0 ? "text-mint" : "text-coral",
-              )}
-            >
-              {formatRmb(summary.roughProfitRmb)}
+            <div className="text-[11px] text-muted">账号采购登记</div>
+            <div className="font-data text-2xl font-semibold text-secondary">
+              {formatRmb(summary.accountPurchaseRmb)}
             </div>
-            <div className="text-[11px] text-muted">卖出 − 采购（采购为一次性）</div>
+            <div className="text-[11px] text-muted">
+              {summary.trackedAccounts} 个追踪账号 · 不直接扣减毛利
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -487,11 +486,16 @@ export default function SelfHostedDetailPage() {
         </CardContent>
       </Card>
 
+      <CostLedger providerId={id} accounts={accounts} onChanged={load} />
+
       <p className="text-[11px] text-muted max-w-3xl leading-relaxed">
         <strong className="text-secondary">计算</strong>
-        ：官方计价（刀）来自管理端 usage.total_cost；卖出收入 =
-        官方计价 × 分组卖出倍率（你说的 0.4 → 每官方 1 刀卖 ¥0.4）。
-        账号采购成本是买号花费，与用量分开记账。鉴权使用{" "}
+        ：官方计价（刀）来自管理端 usage.total_cost；卖出估算 =
+        官方计价 × 分组卖出倍率（0.4 → 每官方 1 刀卖 ¥0.4），仅作自建站内部参考 ——
+        这批流量的真实收入落在下游 NewAPI 的消费里，别与总账相加。
+        账号采购/订阅请记入下面的<strong className="text-secondary">成本台账</strong>，
+        才会按记账日或有效期进入周/月毛利；账号被风控时填「实际结束日」，
+        整笔成本会压缩到实际存活的那几天。鉴权使用{" "}
         <code className="font-data text-cyan">X-API-Key</code>，不影响第三方
         Sub2API 邮箱密码登录。
       </p>

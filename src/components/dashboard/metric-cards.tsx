@@ -79,6 +79,11 @@ export function MetricsRow({
     usageMonthRequests?: number;
     billableKeyCount?: number;
     hasUsageCost?: boolean;
+    hasUsageRevenue?: boolean;
+    operatingCostRmb?: number;
+    issuedCreditRmb?: number;
+    grossConsumptionRmb?: number;
+    excludedRevenueRmb?: number;
   };
 }) {
   const profitTone =
@@ -88,9 +93,17 @@ export function MetricsRow({
         ? "coral"
         : "default";
 
+  const costSourceLabel =
+    metrics.costSource === "mixed"
+      ? "部分站点为快照估算"
+      : metrics.costSource === "snapshots"
+        ? "同步快照估算，建议同步使用记录库"
+        : "使用记录库";
   const costHint = metrics.hasUsageCost
-    ? `中转 Key×${metrics.billableKeyCount ?? 0} · ${metrics.usageMonthRequests ?? 0} 次请求 · 使用记录库`
+    ? `中转 Key×${metrics.billableKeyCount ?? 0} · ${metrics.usageMonthRequests ?? 0} 次请求 · ${costSourceLabel}`
     : "尚未同步使用记录，回退为同步快照估算";
+
+  const operating = metrics.operatingCostRmb ?? 0;
 
   return (
     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -102,26 +115,36 @@ export function MetricsRow({
         tone="cyan"
       />
       <MetricCard
-        label="本月中转成本"
-        value={formatRmb(metrics.monthCostRmb)}
-        hint={costHint}
+        label="本月成本"
+        value={formatRmb(metrics.monthCostRmb + operating)}
+        hint={
+          operating > 0
+            ? `上游 ${formatRmb(metrics.monthCostRmb)} + 额外 ${formatRmb(operating)} · ${costSourceLabel}`
+            : costHint
+        }
         icon={TrendingDown}
         tone="amber"
       />
       <MetricCard
-        label="下游发放收入"
+        label="本月消费收入"
         value={formatRmb(metrics.monthRevenueRmb)}
-        hint="当前已发放给用户的额度（人民币）"
+        hint={
+          metrics.hasUsageRevenue
+            ? (metrics.excludedRevenueRmb ?? 0) > 0
+              ? `付费账号消费 · 已剔除测试号 ${formatRmb(metrics.excludedRevenueRmb)}`
+              : "付费账号真实消费（充值与已发放额度不算收入）"
+            : "请同步下游消费数据（充值与已发放额度都不算收入）"
+        }
         icon={TrendingUp}
         tone="violet"
       />
       <MetricCard
-        label="估算净利润"
+        label="本月服务毛利"
         value={formatRmb(metrics.monthProfitRmb)}
         hint={
           metrics.marginPct != null
-            ? `发放收入 − 本月中转成本 · 毛利率 ${metrics.marginPct.toFixed(1)}%`
-            : "发放收入 − 本月中转成本"
+            ? `消费收入 − 上游成本 − 额外成本 · 毛利率 ${metrics.marginPct.toFixed(1)}%`
+            : "消费收入 − 上游成本 − 额外成本"
         }
         icon={Sparkles}
         tone={profitTone}

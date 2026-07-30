@@ -30,7 +30,8 @@ export interface SelfHostedCardData {
   monthSellRevenueRmb: number;
   monthRequests: number;
   accountPurchaseRmb: number;
-  roughProfitRmb: number;
+  /** 成本台账在本月实际入账/摊销的金额 */
+  operatingCostRmb: number;
 }
 
 export function SelfHostedGrid({
@@ -98,40 +99,35 @@ export function SelfHostedGrid({
               </div>
               <div>
                 <div className="text-[11px] uppercase tracking-wider text-muted">
-                  本月卖出收入
+                  卖出估算
                 </div>
                 <div className="font-data text-lg text-mint">
                   {formatRmb(s.monthSellRevenueRmb)}
                 </div>
                 <div className="text-[10px] text-muted font-data">
-                  {s.trackedGroups}/{s.groupCount} 分组计入
+                  {s.trackedGroups}/{s.groupCount} 分组 · 仅参考
                 </div>
               </div>
               <div>
                 <div className="text-[11px] uppercase tracking-wider text-muted">
-                  账号采购成本
+                  本月成本入账
                 </div>
                 <div className="font-data text-amber">
+                  {formatRmb(s.operatingCostRmb)}
+                </div>
+                <div className="text-[10px] text-muted font-data">
+                  成本台账摊销
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] uppercase tracking-wider text-muted">
+                  账号采购登记
+                </div>
+                <div className="font-data text-secondary">
                   {formatRmb(s.accountPurchaseRmb)}
                 </div>
                 <div className="text-[10px] text-muted font-data">
-                  {s.trackedAccounts}/{s.accountCount} 账号计入
-                </div>
-              </div>
-              <div>
-                <div className="text-[11px] uppercase tracking-wider text-muted">
-                  粗算结余
-                </div>
-                <div
-                  className={cn(
-                    "font-data",
-                    s.roughProfitRmb >= 0 ? "text-mint" : "text-coral",
-                  )}
-                >
-                  {formatRmb(s.roughProfitRmb)}
-                </div>
-                <div className="text-[10px] text-muted font-data">
-                  卖出 − 采购
+                  {s.trackedAccounts}/{s.accountCount} 账号 · 不直接扣
                 </div>
               </div>
             </div>

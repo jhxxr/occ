@@ -49,6 +49,17 @@ export async function GET(req: NextRequest, ctx: Ctx) {
     const ids = remoteKeys.items.map((k) => k.id);
     const usage = await fetchKeyUsageStats(id, ids).catch(() => ({} as Record<string, never>));
 
+    // 下游站点与已同步的分组倍率，供「这个 Key 卖到哪」的绑定用
+    const [sites, groupRates] = await Promise.all([
+      prisma.downstreamSite.findMany({
+        orderBy: { createdAt: "asc" },
+        select: { id: true, name: true, enabled: true },
+      }),
+      prisma.downstreamGroupRate.findMany({
+        orderBy: [{ downstreamId: "asc" }, { groupName: "asc" }],
+      }),
+    ]);
+
     const keys = remoteKeys.items.map((k) => {
       const local = localByRemote.get(String(k.id));
       const stat = (
@@ -59,6 +70,17 @@ export async function GET(req: NextRequest, ctx: Ctx) {
       )[String(k.id)];
       const totalActual = stat?.total_actual_cost ?? local?.totalActualCost ?? 0;
       const todayActual = stat?.today_actual_cost ?? local?.todayActualCost ?? 0;
+      /** 倍率法用的下游卖出倍率：手工优先，其次跟随同步到的分组倍率 */
+      const boundRate =
+        local?.downstreamRate ??
+        (local?.downstreamSiteId && local?.downstreamGroup
+          ? groupRates.find(
+              (g) =>
+                g.downstreamId === local.downstreamSiteId &&
+                g.groupName === local.downstreamGroup &&
+                g.known,
+            )?.ratio ?? null
+          : null);
       return {
         ...k,
         countAsCost: local?.countAsCost ?? false,
@@ -66,6 +88,10 @@ export async function GET(req: NextRequest, ctx: Ctx) {
         todayActualCost: todayActual,
         costRmbTotal: totalActual * (provider.discountRate || 1),
         costRmbToday: todayActual * (provider.discountRate || 1),
+        downstreamSiteId: local?.downstreamSiteId ?? null,
+        downstreamGroup: local?.downstreamGroup ?? null,
+        downstreamRate: boundRate,
+        downstreamRateSource: local?.downstreamRateSource ?? "auto",
       };
     });
 
@@ -84,6 +110,13 @@ export async function GET(req: NextRequest, ctx: Ctx) {
         billable_keys: billable.length,
         billable_cost_rmb: billableCost,
         discountRate: provider.discountRate,
+        downstreamSites: sites,
+        downstreamGroupRates: groupRates.map((g) => ({
+          downstreamId: g.downstreamId,
+          groupName: g.groupName,
+          ratio: g.ratio,
+          known: g.known,
+        })),
       },
     });
   } catch (e) {

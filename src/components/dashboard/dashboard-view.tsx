@@ -29,6 +29,11 @@ interface DashboardPayload {
     usageMonthRequests?: number;
     billableKeyCount?: number;
     hasUsageCost?: boolean;
+    hasUsageRevenue?: boolean;
+    operatingCostRmb?: number;
+    issuedCreditRmb?: number;
+    grossConsumptionRmb?: number;
+    excludedRevenueRmb?: number;
   };
   providers: ProviderCardData[];
   selfHosted: SelfHostedCardData[];
@@ -37,6 +42,7 @@ interface DashboardPayload {
     monthOfficialCost: number;
     monthSellRevenueRmb: number;
     accountPurchaseRmb: number;
+    operatingCostRmb: number;
     monthRequests: number;
   };
   sites: {
@@ -120,9 +126,9 @@ export function DashboardView() {
       <TopBar
         title="资金轨道总览"
         subtitle={
-          data.metrics.hasUsageCost
-            ? `本月成本来自「计入中转」Key 的使用记录 · ${data.metrics.billableKeyCount ?? 0} 个 Key · ${data.metrics.usageMonthRequests ?? 0} 次请求`
-            : `请到上游「使用记录库」同步本月数据，以计算精准中转成本与净利润`
+          data.metrics.hasUsageRevenue
+            ? `本月收入为付费账号真实消费 · 成本来自「计入中转」Key${data.metrics.billableKeyCount ? ` ×${data.metrics.billableKeyCount}` : ""}`
+            : `请先同步下游消费数据；充值与已发放额度都不算收入`
         }
         onSynced={load}
       />
@@ -150,12 +156,12 @@ export function DashboardView() {
                 自建上游
               </h2>
               <p className="text-[11px] text-muted">
-                自己部署的 Sub2API，管理员 Key 直连管理端 · 不计入上面的余额与净利润
+                自己部署的 Sub2API，管理员 Key 直连管理端 · 卖出估算不计入总账，成本走成本台账
               </p>
             </div>
             <span className="text-xs text-muted font-data">
-              本月卖出 {formatRmb(data.selfHostedTotals.monthSellRevenueRmb)} ·
-              采购 {formatRmb(data.selfHostedTotals.accountPurchaseRmb)}
+              本月卖出估算 {formatRmb(data.selfHostedTotals.monthSellRevenueRmb)} ·
+              成本入账 {formatRmb(data.selfHostedTotals.operatingCostRmb)}
             </span>
           </div>
           <SelfHostedGrid sites={data.selfHosted} onSynced={load} />
@@ -212,7 +218,7 @@ export function DashboardView() {
                   </div>
                   <div>
                     <div className="text-[11px] uppercase tracking-wider text-muted">
-                      最近收入
+                      已发放额度
                     </div>
                     <div className="font-data text-lg">
                       {s.revenueCurrency === "USD"
@@ -223,6 +229,7 @@ export function DashboardView() {
                           )
                         : formatRmb(s.lastRevenue)}
                     </div>
+                    <div className="text-[10px] text-muted">存量，非收益</div>
                   </div>
                   <div className="col-span-2 text-[11px] text-muted font-data">
                     {s.lastSyncAt

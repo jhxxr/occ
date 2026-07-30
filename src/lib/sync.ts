@@ -4,6 +4,9 @@ import { fetchDownstreamStats, fetchUpstreamBalance } from "@/lib/adapters";
 import { syncSub2ApiKeys } from "@/lib/sub2/sync-keys";
 import { detectRechargeOnSync } from "@/lib/recharge";
 import { isSelfHosted, relayOnly, selfHostedOnly } from "@/lib/provider-kinds";
+import { syncDownstreamUsage } from "@/lib/downstream-usage";
+import { summarizeCosts } from "@/lib/operating-cost";
+import { monthPeriod } from "@/lib/reporting-period";
 import {
   syncSelfHostedMeta,
   syncSelfHostedGroupUsage,
@@ -31,6 +34,12 @@ export interface SyncResultItem {
   /** 自建站：同步到的分组 / 账号数 */
   groups?: number;
   accounts?: number;
+  /** 下游：写入了几天的真实消费 */
+  usageDays?: number;
+  /** 下游：这几天的消费收入（人民币） */
+  usageRevenueRmb?: number;
+  /** 下游：日消费/倍率同步的问题（不影响余额同步成功） */
+  usageError?: string;
 }
 
 export async function getUsdCnyRate(): Promise<number> {
@@ -329,6 +338,22 @@ export async function syncDownstreamSite(id: string): Promise<SyncResultItem> {
     }),
   ]);
 
+  // 顺带补最近几天的真实消费与分组倍率 —— 周/月收益报表只认这套日数据
+  let usageDays: number | undefined;
+  let usageRevenueRmb: number | undefined;
+  let usageError: string | undefined;
+  try {
+    const usage = await syncDownstreamUsage(id, { days: 7 });
+    if (usage.success) {
+      usageDays = usage.days;
+      usageRevenueRmb = usage.revenueRmb;
+    } else {
+      usageError = usage.error;
+    }
+  } catch (e) {
+    usageError = e instanceof Error ? e.message : String(e);
+  }
+
   return {
     id,
     name: site.name,
@@ -336,6 +361,9 @@ export async function syncDownstreamSite(id: string): Promise<SyncResultItem> {
     success: true,
     consumed: result.consumed,
     revenue: result.revenue,
+    usageDays,
+    usageRevenueRmb,
+    usageError,
   };
 }
 
@@ -396,15 +424,11 @@ export async function getDashboardData() {
   // 成本口径只认中转上游。曾被误建成第三方的自建站可能留着旧快照，按 id 排除。
   const relayIds = providers.map((p) => p.id);
 
-  const [sites, costSnaps, revSnaps, monthCosts, usageMonthAgg, usageDailies] =
+  const [sites, costSnaps, monthCosts, usageMonthAgg, usageDailies] =
     await Promise.all([
       prisma.downstreamSite.findMany({ orderBy: { createdAt: "asc" } }),
       prisma.snapshotLog.findMany({
         where: { upstreamId: { in: relayIds }, timestamp: { gte: seriesStart } },
-        orderBy: { timestamp: "asc" },
-      }),
-      prisma.downstreamSnapshot.findMany({
-        where: { timestamp: { gte: seriesStart } },
         orderBy: { timestamp: "asc" },
       }),
       prisma.snapshotLog.findMany({
@@ -430,14 +454,37 @@ export async function getDashboardData() {
       }),
     ]);
 
-  const snapshotMonthCost = monthCosts.reduce((s, c) => s + (c.costRmb || 0), 0);
   const usageMonthCost = usageMonthAgg._sum.costRmb ?? 0;
   const usageMonthRequests = usageMonthAgg._sum.requests ?? 0;
   const hasUsageCost = (usageMonthAgg._count as number) > 0 || usageDailies.length > 0;
 
-  // 优先用使用记录库（按 Key + 时间，最准）；没有同步记录时回退 SnapshotLog
-  const businessCostRmb = hasUsageCost ? usageMonthCost : snapshotMonthCost;
-  const costSource = hasUsageCost ? "usage-logs" : "snapshots";
+  // 成本口径与收益报表保持一致：按「站点 × 日」取精确用量，
+  // 只有那天该站点没有 Key 级日志时才补快照估算。
+  // 不能全局二选一 —— 否则一个站点有精确日志就会把其它站点的快照成本整体丢掉。
+  const preciseProviderDays = new Set(
+    usageDailies.map((d) => `${d.providerId}|${d.day}`),
+  );
+  const toShanghai = (d: Date) =>
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(d);
+  const snapshotFallbackCost = monthCosts.reduce((sum, snap) => {
+    if (preciseProviderDays.has(`${snap.upstreamId}|${toShanghai(snap.timestamp)}`)) {
+      return sum;
+    }
+    return sum + (snap.costRmb || 0);
+  }, 0);
+
+  const businessCostRmb = usageMonthCost + snapshotFallbackCost;
+  const costSource =
+    usageMonthCost > 0 && snapshotFallbackCost > 0
+      ? "mixed"
+      : usageMonthCost > 0
+        ? "usage-logs"
+        : "snapshots";
 
   const monthSummary = calculateProfit({
     costPoints: monthCosts.map((s) => ({
@@ -458,63 +505,89 @@ export async function getDashboardData() {
     usdCny,
   });
 
-  // 下游收入：当前已发放额度（人民币 1:1 或美元×汇率）
-  const totalRevenueRmb = sites.reduce((sum, site) => {
+  // 下游收入：本月付费账号的真实消费。
+  // 测试号的消费单独存 grossRevenueRmb —— 它烧了上游额度但没人付钱，
+  // 算进收入就是虚增利润；那个数只用于跟上游成本对差值。
+  const monthUsage = await prisma.downstreamUsageDaily.aggregate({
+    where: {
+      scope: "TOTAL",
+      day: { gte: monthStartDay, lte: todayDay },
+    },
+    _sum: { revenueRmb: true, grossRevenueRmb: true, requests: true },
+    _count: true,
+  });
+  const totalRevenueRmb = monthUsage._sum.revenueRmb ?? 0;
+  const grossConsumptionRmb = monthUsage._sum.grossRevenueRmb ?? 0;
+  const excludedRevenueRmb = Math.max(0, grossConsumptionRmb - totalRevenueRmb);
+  const hasUsageRevenue = (monthUsage._count as number) > 0;
+
+  // 已发放额度：存量参考值，跟收益无关
+  const issuedCreditRmb = sites.reduce((sum, site) => {
     const rev = site.lastRevenue ?? 0;
     if (!rev) return sum;
     if (site.revenueCurrency === "USD") return sum + rev * usdCny;
     return sum + rev;
   }, 0);
 
-  const netProfitRmb = totalRevenueRmb - businessCostRmb;
+  // 本月额外成本台账（自建号采购/订阅），一次性按记账日、期间按天摊销
+  const costEntries = await prisma.operatingCostEntry.findMany({
+    where: { status: { not: "void" } },
+  });
+  const monthCostSummary = summarizeCosts(
+    costEntries.map((e) => ({
+      id: e.id,
+      name: e.name,
+      amountRmb: Number(e.amountRmb),
+      mode: e.mode,
+      startDay: e.startDay,
+      plannedEndDay: e.plannedEndDay,
+      actualEndDay: e.actualEndDay,
+      status: e.status,
+      category: e.category,
+      providerId: e.providerId,
+      accountId: e.accountId,
+    })),
+    monthPeriod(todayDay),
+  );
+  const operatingCostRmb = monthCostSummary.totalRmb;
 
-  // —— 图表：成本优先用 usage daily ——
-  const costByDayFromUsage = new Map<string, number>();
+  const netProfitRmb = totalRevenueRmb - businessCostRmb - operatingCostRmb;
+
+  // —— 图表：同样按「站点 × 日」精确优先、缺日补快照 ——
+  const costByDayForChart = new Map<string, number>();
   for (const d of usageDailies) {
-    costByDayFromUsage.set(
+    costByDayForChart.set(
       d.day,
-      (costByDayFromUsage.get(d.day) || 0) + (d.costRmb || 0),
+      (costByDayForChart.get(d.day) || 0) + (d.costRmb || 0),
     );
   }
+  for (const snap of costSnaps) {
+    const day = toShanghai(snap.timestamp);
+    if (preciseProviderDays.has(`${snap.upstreamId}|${day}`)) continue;
+    if (!(snap.costRmb > 0)) continue;
+    costByDayForChart.set(day, (costByDayForChart.get(day) || 0) + snap.costRmb);
+  }
 
+  // 收入按日真实消费，不再用「已发放额度」的快照差分
+  const seriesRevenue = await prisma.downstreamUsageDaily.findMany({
+    where: {
+      scope: "TOTAL",
+      day: { gte: seriesStartDay, lte: todayDay },
+    },
+    orderBy: { day: "asc" },
+  });
   const revByDay = new Map<string, number>();
-  const snapsBySite = new Map<string, typeof revSnaps>();
-  for (const s of revSnaps) {
-    const arr = snapsBySite.get(s.downstreamId) || [];
-    arr.push(s);
-    snapsBySite.set(s.downstreamId, arr);
-  }
-  for (const [, arr] of snapsBySite) {
-    const sorted = [...arr].sort(
-      (a, b) => a.timestamp.getTime() - b.timestamp.getTime(),
-    );
-    for (let i = 0; i < sorted.length; i++) {
-      const cur = sorted[i];
-      const prev = i > 0 ? sorted[i - 1] : null;
-      const site = sites.find((x) => x.id === cur.downstreamId);
-      const rawDelta = prev ? cur.revenue - prev.revenue : 0;
-      if (rawDelta === 0) continue;
-      const deltaRmb =
-        (cur.revenueCurrency || site?.revenueCurrency) === "USD"
-          ? rawDelta * usdCny
-          : rawDelta;
-      const key = cur.timestamp.toISOString().slice(0, 10);
-      revByDay.set(key, (revByDay.get(key) || 0) + deltaRmb);
-    }
+  for (const row of seriesRevenue) {
+    revByDay.set(row.day, (revByDay.get(row.day) || 0) + (row.revenueRmb || 0));
   }
 
-  const costPointsForChart =
-    costByDayFromUsage.size > 0
-      ? [...costByDayFromUsage.entries()].map(([day, costRmb]) => ({
-          timestamp: new Date(`${day}T12:00:00`),
-          costRmb,
-          deltaConsumed: 0,
-        }))
-      : costSnaps.map((s) => ({
-          timestamp: s.timestamp,
-          costRmb: s.costRmb,
-          deltaConsumed: s.deltaConsumed,
-        }));
+  const costPointsForChart = [...costByDayForChart.entries()].map(
+    ([day, costRmb]) => ({
+      timestamp: new Date(`${day}T12:00:00`),
+      costRmb,
+      deltaConsumed: 0,
+    }),
+  );
 
   const dailySeries = buildDailySeries(
     costPointsForChart,
@@ -527,21 +600,24 @@ export async function getDashboardData() {
     usdCny,
   );
 
-  // 成本占比：有 usage 时按 key 归属到 provider（目前 usage 挂在 provider 下）
-  const usageCostByProvider = new Map<string, number>();
-  if (hasUsageCost) {
-    const monthUsage = await prisma.upstreamUsageDaily.groupBy({
-      by: ["providerId"],
-      where: {
-        providerId: { in: relayIds },
-        countAsCost: true,
-        day: { gte: monthStartDay, lte: todayDay },
-      },
-      _sum: { costRmb: true, actualCost: true },
-    });
-    for (const row of monthUsage) {
-      usageCostByProvider.set(row.providerId, row._sum.costRmb ?? 0);
+  // 成本占比：每个站点各自取精确用量，缺日的那部分补自己的快照
+  const costByProvider = new Map<string, number>();
+  for (const d of usageDailies) {
+    if (!d.countAsCost) continue;
+    costByProvider.set(
+      d.providerId,
+      (costByProvider.get(d.providerId) || 0) + (d.costRmb || 0),
+    );
+  }
+  for (const snap of monthCosts) {
+    if (preciseProviderDays.has(`${snap.upstreamId}|${toShanghai(snap.timestamp)}`)) {
+      continue;
     }
+    if (!(snap.costRmb > 0)) continue;
+    costByProvider.set(
+      snap.upstreamId,
+      (costByProvider.get(snap.upstreamId) || 0) + snap.costRmb,
+    );
   }
 
   const providerShares = buildProviderShares(
@@ -552,17 +628,11 @@ export async function getDashboardData() {
       lastBalance: p.lastBalance,
       discountRate: p.discountRate,
     })),
-    hasUsageCost
-      ? [...usageCostByProvider.entries()].map(([upstreamId, costRmb]) => ({
-          upstreamId,
-          costRmb,
-          deltaConsumed: 0,
-        }))
-      : monthCosts.map((s) => ({
-          upstreamId: s.upstreamId,
-          costRmb: s.costRmb,
-          deltaConsumed: s.deltaConsumed,
-        })),
+    [...costByProvider.entries()].map(([upstreamId, costRmb]) => ({
+      upstreamId,
+      costRmb,
+      deltaConsumed: 0,
+    })),
   );
 
   const alerts = providers
@@ -618,6 +688,13 @@ export async function getDashboardData() {
       (sum, a) => sum + (a.purchaseCostRmb || 0),
       0,
     );
+    const accountIds = new Set(accounts.map((a) => a.id));
+    const operatingCostRmb = monthCostSummary.entries
+      .filter(
+        (e) =>
+          e.providerId === s.id || (e.accountId && accountIds.has(e.accountId)),
+      )
+      .reduce((sum, e) => sum + e.allocatedRmb, 0);
 
     return {
       id: s.id,
@@ -637,8 +714,8 @@ export async function getDashboardData() {
       monthSellRevenueRmb,
       monthRequests,
       accountPurchaseRmb,
-      /** 卖出收入 − 已追踪账号采购成本（采购是一次性支出，仅作参考） */
-      roughProfitRmb: monthSellRevenueRmb - accountPurchaseRmb,
+      /** 本月实际入账 / 摊销的额外成本（来自成本台账） */
+      operatingCostRmb,
     };
   });
 
@@ -648,6 +725,7 @@ export async function getDashboardData() {
       monthOfficialCost: acc.monthOfficialCost + s.monthOfficialCost,
       monthSellRevenueRmb: acc.monthSellRevenueRmb + s.monthSellRevenueRmb,
       accountPurchaseRmb: acc.accountPurchaseRmb + s.accountPurchaseRmb,
+      operatingCostRmb: acc.operatingCostRmb + s.operatingCostRmb,
       monthRequests: acc.monthRequests + s.monthRequests,
     }),
     {
@@ -655,6 +733,7 @@ export async function getDashboardData() {
       monthOfficialCost: 0,
       monthSellRevenueRmb: 0,
       accountPurchaseRmb: 0,
+      operatingCostRmb: 0,
       monthRequests: 0,
     },
   );
@@ -673,6 +752,16 @@ export async function getDashboardData() {
       usageMonthRequests,
       billableKeyCount,
       hasUsageCost,
+      /** 本月是否已同步到下游真实消费；没有就说明收入口径缺数据 */
+      hasUsageRevenue,
+      /** 额外成本台账（自建号采购/订阅）本月入账额 */
+      operatingCostRmb,
+      /** 当前已发放给用户的额度（存量参考，不计入收益） */
+      issuedCreditRmb,
+      /** 全部账号消费（含测试号）：跟上游成本对差值用，不是收入 */
+      grossConsumptionRmb,
+      /** 测试号烧掉的额度，已从收入剔除 */
+      excludedRevenueRmb,
     },
     providers: providers.map((p) => ({
       id: p.id,
@@ -699,6 +788,7 @@ export async function getDashboardData() {
       enabled: s.enabled,
       revenueCurrency: s.revenueCurrency || "CNY",
       lastConsumed: s.lastConsumed,
+      /** 当前已发放额度（存量，不是收益） */
       lastRevenue: s.lastRevenue,
       lastSyncAt: s.lastSyncAt,
       lastError: s.lastError,

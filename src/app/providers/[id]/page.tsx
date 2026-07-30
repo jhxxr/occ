@@ -50,6 +50,24 @@ interface ApiKeyRow {
   todayActualCost?: number;
   costRmbTotal?: number;
   costRmbToday?: number;
+  /** 这个 Key 的流量卖到哪个下游站点（倍率法估算收入用） */
+  downstreamSiteId?: string | null;
+  downstreamGroup?: string | null;
+  downstreamRate?: number | null;
+  downstreamRateSource?: string;
+}
+
+interface DownstreamSiteOption {
+  id: string;
+  name: string;
+  enabled: boolean;
+}
+
+interface DownstreamGroupRate {
+  downstreamId: string;
+  groupName: string;
+  ratio: number;
+  known: boolean;
 }
 
 interface ProviderMeta {
@@ -141,6 +159,8 @@ export default function Sub2ManagePage() {
   const [provider, setProvider] = useState<ProviderMeta | null>(null);
   const [groups, setGroups] = useState<Group[]>([]);
   const [keys, setKeys] = useState<ApiKeyRow[]>([]);
+  const [downstreamSites, setDownstreamSites] = useState<DownstreamSiteOption[]>([]);
+  const [downstreamRates, setDownstreamRates] = useState<DownstreamGroupRate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -176,6 +196,8 @@ export default function Sub2ManagePage() {
       setProvider(p || { id, name: "上游", baseUrl: "", type: "SUB2API", lastBalance: null, accountEmail: null });
       setGroups(dataJson.data.groups || []);
       setKeys(dataJson.data.keys || []);
+      setDownstreamSites(dataJson.data.downstreamSites || []);
+      setDownstreamRates(dataJson.data.downstreamGroupRates || []);
       setBillableKeys(dataJson.data.billable_keys || 0);
       setBillableCostRmb(dataJson.data.billable_cost_rmb || 0);
     } catch (e) {
@@ -349,6 +371,35 @@ export default function Sub2ManagePage() {
       setMsg("已复制到剪贴板");
     } catch {
       setMsg("复制失败，请手动选择");
+    }
+  }
+
+  /** 绑定这个 Key 卖到哪个下游站点/分组 —— 倍率法估算收入的依据 */
+  async function bindDownstream(
+    key: ApiKeyRow,
+    patch: {
+      downstreamSiteId?: string | null;
+      downstreamGroup?: string | null;
+      downstreamRate?: number | null;
+    },
+  ) {
+    setBusy(`bind-${key.id}`);
+    setMsg(null);
+    setError(null);
+    try {
+      const res = await fetch(`/api/upstream/${id}/sub2/keys/${key.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "绑定失败");
+      setMsg(`「${key.name}」下游归属已更新`);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "绑定失败");
+    } finally {
+      setBusy(null);
     }
   }
 
@@ -699,7 +750,6 @@ export default function Sub2ManagePage() {
                           </span>
                         </p>
                       </div>
-
                       <div className="flex flex-wrap gap-2">
                         <label
                           className={cn(
@@ -777,6 +827,75 @@ export default function Sub2ManagePage() {
                         </span>
                       </div>
                     </div>
+
+                    {/* 倍率法归因：这批流量卖到哪个下游分组，才能算出赚了多少 */}
+                    {k.countAsCost && (
+                      <div className="grid gap-2 rounded-lg border border-border-subtle bg-surface-2/40 p-2.5 sm:grid-cols-3">
+                        <div className="space-y-1.5">
+                          <Label className="text-[11px]">卖到下游站点</Label>
+                          <Select
+                            value={k.downstreamSiteId ?? ""}
+                            disabled={busy === `bind-${k.id}`}
+                            onChange={(e) =>
+                              bindDownstream(k, {
+                                downstreamSiteId: e.target.value || null,
+                                downstreamGroup: null,
+                              })
+                            }
+                          >
+                            <option value="">未绑定</option>
+                            {downstreamSites.map((s) => (
+                              <option key={s.id} value={s.id}>
+                                {s.name}
+                                {s.enabled ? "" : "（停用）"}
+                              </option>
+                            ))}
+                          </Select>
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label className="text-[11px]">下游分组</Label>
+                          <Select
+                            value={k.downstreamGroup ?? ""}
+                            disabled={
+                              busy === `bind-${k.id}` || !k.downstreamSiteId
+                            }
+                            onChange={(e) =>
+                              bindDownstream(k, {
+                                downstreamGroup: e.target.value || null,
+                              })
+                            }
+                          >
+                            <option value="">未指定</option>
+                            {downstreamRates
+                              .filter((r) => r.downstreamId === k.downstreamSiteId)
+                              .map((r) => (
+                                <option key={r.groupName} value={r.groupName}>
+                                  {r.groupName}
+                                  {r.known ? ` · ${r.ratio}x` : " · 倍率未知"}
+                                </option>
+                              ))}
+                          </Select>
+                        </div>
+                        <div className="text-xs text-muted font-data sm:pb-2 sm:self-end">
+                          卖出倍率{" "}
+                          <span className="text-mint text-sm font-semibold">
+                            {k.downstreamRate != null
+                              ? `${k.downstreamRate}x`
+                              : "—"}
+                          </span>
+                          {k.downstreamRate != null &&
+                            g?.rate_multiplier != null &&
+                            g.rate_multiplier > 0 && (
+                              <span className="ml-2 text-[11px]">
+                                差值 ×
+                                {(
+                                  k.downstreamRate / g.rate_multiplier
+                                ).toFixed(2)}
+                              </span>
+                            )}
+                        </div>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               );
@@ -791,6 +910,9 @@ export default function Sub2ManagePage() {
         <code className="font-data text-cyan">/api/v1/groups/available</code>、
         <code className="font-data text-cyan">/api/v1/keys</code>
         ）。切换分组会立即影响该 Key 的计费倍率与可用模型通道。
+        勾选「计入中转成本」的 Key 再绑定下游站点/分组，收益报表就能用
+        <strong className="text-secondary">倍率法</strong>
+        估算这个 Key 赚了多少，并与下游日志实测收入互相校验。
       </p>
     </div>
   );

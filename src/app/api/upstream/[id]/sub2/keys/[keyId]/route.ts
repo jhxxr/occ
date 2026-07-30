@@ -61,8 +61,42 @@ export async function PUT(req: NextRequest, ctx: Ctx) {
       });
     }
 
-    let local = null;
+    // 本地归因：是否计入中转成本 + 绑定下游站点/分组（倍率法估算收入用）
+    const localPatch: Record<string, unknown> = {};
     if (typeof body.countAsCost === "boolean") {
+      localPatch.countAsCost = body.countAsCost;
+    }
+    if (body.downstreamSiteId !== undefined) {
+      localPatch.downstreamSiteId = body.downstreamSiteId || null;
+    }
+    if (body.downstreamGroup !== undefined) {
+      localPatch.downstreamGroup = body.downstreamGroup || null;
+    }
+    if (body.downstreamRate !== undefined) {
+      if (body.downstreamRate === null || body.downstreamRate === "") {
+        // 清空 → 回到跟随同步的分组倍率
+        localPatch.downstreamRate = null;
+        localPatch.downstreamRateSource = "auto";
+      } else {
+        const rate = Number(body.downstreamRate);
+        if (!Number.isFinite(rate) || rate < 0) {
+          return NextResponse.json({ error: "下游倍率无效" }, { status: 400 });
+        }
+        localPatch.downstreamRate = rate;
+        localPatch.downstreamRateSource = "manual";
+      }
+    }
+
+    let local = null;
+    if (Object.keys(localPatch).length) {
+      if (localPatch.downstreamSiteId) {
+        const site = await prisma.downstreamSite.findUnique({
+          where: { id: String(localPatch.downstreamSiteId) },
+        });
+        if (!site) {
+          return NextResponse.json({ error: "下游站点不存在" }, { status: 400 });
+        }
+      }
       local = await prisma.upstreamApiKey.upsert({
         where: {
           providerId_remoteKeyId: {
@@ -74,12 +108,19 @@ export async function PUT(req: NextRequest, ctx: Ctx) {
           providerId: id,
           remoteKeyId: String(kid),
           name: body.name || remote?.name || "",
-          countAsCost: body.countAsCost,
+          countAsCost: localPatch.countAsCost === true,
+          downstreamSiteId: (localPatch.downstreamSiteId as string) ?? null,
+          downstreamGroup: (localPatch.downstreamGroup as string) ?? null,
+          downstreamRate: (localPatch.downstreamRate as number) ?? null,
+          downstreamRateSource:
+            (localPatch.downstreamRateSource as string) ?? "auto",
         },
-        update: { countAsCost: body.countAsCost },
+        update: localPatch,
       });
-      // 日聚合重算放到后台，不阻塞勾选响应
-      void recomputeCostFlags(id).catch(() => null);
+      if (localPatch.countAsCost !== undefined) {
+        // 日聚合重算放到后台，不阻塞勾选响应
+        void recomputeCostFlags(id).catch(() => null);
+      }
     }
 
     return NextResponse.json({

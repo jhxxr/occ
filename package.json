@@ -8,6 +8,7 @@
     "build": "prisma generate && next build",
     "start": "next start",
     "lint": "eslint",
+    "check:reporting": "node --experimental-strip-types --no-warnings --import ./scripts/alias-hook.mjs scripts/check-reporting.ts",
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",

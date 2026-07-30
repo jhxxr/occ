@@ -3,8 +3,10 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import {
   ORPHAN_COST_MODE,
+  compactChannelCache,
   detectOrphanChannels,
   listOrphanChannels,
+  scanCoverage,
 } from "@/lib/orphan-channels";
 import { resolvePeriod } from "@/lib/reporting-period";
 
@@ -12,14 +14,52 @@ export const dynamic = "force-dynamic";
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
-/** GET：列出已检测到的旧渠道 */
+/** GET：列出已检测到的旧渠道，附带扫描覆盖情况 */
 export async function GET(req: NextRequest) {
-  const siteId = req.nextUrl.searchParams.get("downstreamId") || undefined;
+  const sp = req.nextUrl.searchParams;
+  const siteId = sp.get("downstreamId") || undefined;
   try {
     const rows = await listOrphanChannels(siteId);
+
+    // 本周期各站点扫了多少天，前端据此提示「还需扫描」
+    let coverage: {
+      downstreamId: string;
+      name: string;
+      anchored: number;
+      total: number;
+      missing: number;
+    }[] = [];
+    if (sp.get("startDay") && sp.get("endDay")) {
+      const startDay = sp.get("startDay")!;
+      const endDay = sp.get("endDay")!;
+      const sites = siteId
+        ? await prisma.downstreamSite.findMany({
+            where: { id: siteId },
+            select: { id: true, name: true },
+          })
+        : await prisma.downstreamSite.findMany({
+            where: { enabled: true },
+            select: { id: true, name: true },
+          });
+      coverage = await Promise.all(
+        sites.map(async (s) => {
+          const c = await scanCoverage(s.id, startDay, endDay);
+          return {
+            downstreamId: s.id,
+            name: s.name,
+            anchored: c.anchored,
+            total: c.total,
+            missing: c.missing.length,
+            compacted: c.compacted,
+          };
+        }),
+      );
+    }
+
     return NextResponse.json({
       data: {
         entries: rows,
+        coverage,
         summary: {
           total: rows.length,
           unresolved: rows.filter((r) => !r.resolved && !r.ignored).length,
@@ -44,6 +84,12 @@ const detectSchema = z
     endDay: z.string().regex(DAY, "endDay 需要 YYYY-MM-DD").optional(),
     period: z.enum(["week", "month"]).optional(),
     offset: z.coerce.number().int().min(-520).max(0).optional(),
+    /** 无视锚点全部重扫（日志被清理过、或怀疑缓存不对时用） */
+    force: z.boolean().optional(),
+    /** compact = 只压缩老缓存，不扫日志 */
+    action: z.enum(["detect", "compact"]).optional(),
+    /** 压缩时保留几个月的逐日精度，默认 2（当月 + 上月） */
+    keepMonths: z.coerce.number().int().min(1).max(24).optional(),
     pageSize: z.coerce.number().int().min(50).max(1000).optional(),
     maxPages: z.coerce.number().int().min(1).max(2000).optional(),
   })
@@ -81,12 +127,34 @@ export async function POST(req: NextRequest) {
           select: { id: true },
         });
 
+    // 只压缩老缓存，不碰日志
+    if (v.action === "compact") {
+      const compacted = [];
+      for (const s of sites) {
+        compacted.push(
+          await compactChannelCache(s.id, { keepMonths: v.keepMonths }),
+        );
+      }
+      return NextResponse.json({
+        data: {
+          results: compacted,
+          summary: {
+            months: compacted.reduce((s, r) => s + r.months, 0),
+            daysCompacted: compacted.reduce((s, r) => s + r.daysCompacted, 0),
+            bytesBefore: compacted.reduce((s, r) => s + r.bytesBefore, 0),
+            bytesAfter: compacted.reduce((s, r) => s + r.bytesAfter, 0),
+          },
+        },
+      });
+    }
+
     const results = [];
     for (const s of sites) {
       results.push(
         await detectOrphanChannels(s.id, {
           startDay: period.startDay,
           endDay: period.endDay,
+          force: v.force,
           pageSize: v.pageSize,
           maxPages: v.maxPages,
         }),
@@ -102,6 +170,9 @@ export async function POST(req: NextRequest) {
           fail: results.filter((r) => !r.success).length,
           orphans: results.reduce((s, r) => s + r.orphans, 0),
           created: results.reduce((s, r) => s + r.created, 0),
+          daysScanned: results.reduce((s, r) => s + r.daysScanned, 0),
+          daysSkipped: results.reduce((s, r) => s + r.daysSkipped, 0),
+          logsFetched: results.reduce((s, r) => s + r.logsFetched, 0),
           unresolvedRevenueRmb:
             Math.round(
               results.reduce((s, r) => s + r.unresolvedRevenueRmb, 0) * 100,

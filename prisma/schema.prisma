@@ -254,6 +254,7 @@ model DownstreamSite {
   usageDaily DownstreamUsageDaily[]
   groupRates DownstreamGroupRate[]
   orphanChannels DownstreamOrphanChannel[]
+  channelDays DownstreamChannelDay[]
 }
 
 /// 下游按日实际消费
@@ -299,14 +300,56 @@ model DownstreamUsageDaily {
   @@index([day])
 }
 
-/// 旧渠道（已从 NewAPI 删除）的消费与人工补录成本
+/// 渠道消费摘要 + 扫描锚点（两级精度）
+///
+/// 不存日志原文，只存「这段时间每个渠道花了多少」的聚合结果：
+/// channels JSON 形如 [{"c":18,"n":"渠道名","q":123.4,"r":56,"m":"模型"}]
+///   c=channel id, n=渠道名(空则已删), q=quota 面值, r=请求数, m=模型
+///
+/// granularity 两档：
+/// - DAY  ：day="2026-07-30"，近期精确到天，带渠道名与模型
+/// - MONTH：day="2026-07"，老数据压成一个月一行，只留 id/面值/请求数
+///          （名字和模型对老数据没用了 —— 成本早填过，渠道也早删了）
+///
+/// 记录**所有**渠道而不只是已删除的 —— 渠道是后来才被删的，
+/// 只缓存当时的死渠道，等它以后被删就再也查不到历史消费了。
+///
+/// complete=true 即锚点：过去的日志不会再变，下次扫描直接跳过。
+/// 「今天」还在累积，永不落锚点。
+model DownstreamChannelDay {
+  id           String   @id @default(cuid())
+  downstreamId String
+  /// DAY 时为 YYYY-MM-DD；MONTH 时为 YYYY-MM
+  day          String   @db.VarChar(10)
+  /// DAY | MONTH
+  granularity  String   @default("DAY") @db.VarChar(5)
+  /// 该行覆盖多少天（DAY 恒为 1；MONTH 为压缩进来的天数）
+  spanDays     Int      @default(1)
+  /// 渠道消费摘要 JSON（紧凑键名，见上）
+  channels     String   @db.Text
+  /// 该段日志条数与总消费面值，用于快速核对
+  logCount     Int      @default(0)
+  totalQuota   Float    @default(0)
+  /// 是否完整扫完；false 时下次会重扫
+  complete     Boolean  @default(false)
+  scannedAt    DateTime @default(now())
+
+  downstream DownstreamSite @relation(fields: [downstreamId], references: [id], onDelete: Cascade)
+
+  @@unique([downstreamId, day])
+  @@index([downstreamId, complete])
+  @@index([downstreamId, granularity])
+}
+
+/// 旧渠道（已从 NewAPI 删除）的成本补录设置
 ///
 /// 渠道删掉后，日志里 channel id 还在但 join 不到名字，Orbit 也没有对应的上游
-/// 成本记录 —— 这部分消费会让毛利虚高。检测出来后由你手工填成本。
+/// 成本记录 —— 这部分消费会让毛利虚高。这张表只存**你填的成本口径**，
+/// 消费量按周期从 DownstreamChannelDaily 现算，所以换周期不用重扫。
 ///
 /// 成本填法二选一，costMode 决定用哪个：
-/// - RATE：按倍率折算 → quota ÷ quotaPerUnit × costRate
-/// - AMOUNT：直接填这段时间的总成本人民币
+/// - RATE：按倍率折算 → 该周期 quota ÷ quotaPerUnit × costRate
+/// - AMOUNT：填这个渠道的总成本，按周期消费占比分摊
 model DownstreamOrphanChannel {
   id           String   @id @default(cuid())
   downstreamId String
@@ -314,11 +357,10 @@ model DownstreamOrphanChannel {
   channelId    Int
   /// 日志里残留的渠道名（通常为空，删除后 join 不到）
   channelName  String   @default("") @db.VarChar(200)
-  /// 该渠道消费涉及的模型（逗号分隔，便于你回忆是哪家上游）
-  models       String?  @db.Text
-  /// 检测区间内的消费额度面值
+  /// 用过的模型（逗号分隔，最多几个，帮你认出这是哪家上游）
+  models       String?  @db.VarChar(500)
+  /// 全部已扫区间内的累计消费面值（展示用，报表按周期现算）
   quota        Float    @default(0)
-  /// 折算成人民币的卖出额（按站点额度单位）
   revenueRmb   Float    @default(0)
   quotaPerUnit Float    @default(500000)
   requests     Int      @default(0)
@@ -328,7 +370,7 @@ model DownstreamOrphanChannel {
   costMode     String   @default("RATE") @db.VarChar(10)
   /// 购入成本率（¥ / 每 1 面值），costMode=RATE 时生效
   costRate     Float?
-  /// 直接填的总成本人民币，costMode=AMOUNT 时生效
+  /// 该渠道的总成本人民币，costMode=AMOUNT 时按周期消费占比分摊
   costAmountRmb Float?
   /// 你是否已确认过这笔成本；未确认时报表会警告成本缺口
   resolved     Boolean  @default(false)

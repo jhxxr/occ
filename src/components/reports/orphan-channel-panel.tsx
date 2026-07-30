@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { formatRmb, cn } from "@/lib/utils";
-import { Search, Trash2, EyeOff } from "lucide-react";
+import { Search, Trash2, EyeOff, Archive } from "lucide-react";
 
 interface OrphanEntry {
   id: string;
@@ -29,6 +29,17 @@ interface OrphanEntry {
   marginRmb: number;
 }
 
+interface CoverageRow {
+  downstreamId: string;
+  name: string;
+  /** 已落锚点、下次不用再扫的天数 */
+  anchored: number;
+  total: number;
+  missing: number;
+  /** 其中只剩月汇总的天数（精度已降级） */
+  compacted: number;
+}
+
 const RATE = "RATE";
 const AMOUNT = "AMOUNT";
 
@@ -40,6 +51,7 @@ export function OrphanChannelPanel({
   onChanged?: () => void;
 }) {
   const [entries, setEntries] = useState<OrphanEntry[]>([]);
+  const [coverage, setCoverage] = useState<CoverageRow[]>([]);
   const [busy, setBusy] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -48,10 +60,14 @@ export function OrphanChannelPanel({
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch("/api/orphan-channels", { cache: "no-store" });
+      const res = await fetch(
+        `/api/orphan-channels?startDay=${period.startDay}&endDay=${period.endDay}`,
+        { cache: "no-store" },
+      );
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "加载失败");
       setEntries(json.data.entries);
+      setCoverage(json.data.coverage || []);
       const d: Record<string, string> = {};
       for (const e of json.data.entries as OrphanEntry[]) {
         d[e.id] =
@@ -67,13 +83,13 @@ export function OrphanChannelPanel({
     } catch (e) {
       setError(e instanceof Error ? e.message : "加载失败");
     }
-  }, []);
+  }, [period.startDay, period.endDay]);
 
   useEffect(() => {
     void Promise.resolve().then(load);
   }, [load]);
 
-  async function scan() {
+  async function scan(force = false) {
     setScanning(true);
     setMsg(null);
     setError(null);
@@ -84,15 +100,20 @@ export function OrphanChannelPanel({
         body: JSON.stringify({
           startDay: period.startDay,
           endDay: period.endDay,
+          force,
         }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "检测失败");
       const s = json.data.summary;
+      const scanNote =
+        s.daysSkipped > 0
+          ? `扫了 ${s.daysScanned} 天、跳过 ${s.daysSkipped} 天（已缓存）`
+          : `扫了 ${s.daysScanned} 天 ${s.logsFetched} 条日志`;
       setMsg(
         s.orphans > 0
-          ? `检测到 ${s.orphans} 个已删除渠道（新增 ${s.created}），待补录 ${formatRmb(s.unresolvedRevenueRmb)}`
-          : "没有发现已删除渠道的消费",
+          ? `${scanNote} · 已删除渠道 ${s.orphans} 个（新增 ${s.created}），待补录 ${formatRmb(s.unresolvedRevenueRmb)}`
+          : `${scanNote} · 没有发现已删除渠道的消费`,
       );
       await load();
       onChanged?.();
@@ -100,6 +121,39 @@ export function OrphanChannelPanel({
       setError(e instanceof Error ? e.message : "检测失败");
     } finally {
       setScanning(false);
+    }
+  }
+
+  /** 压缩老缓存：只动数据库，不碰日志 */
+  async function compact() {
+    setBusy(true);
+    setMsg(null);
+    setError(null);
+    try {
+      const res = await fetch("/api/orphan-channels", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "compact" }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "压缩失败");
+      const s = json.data.summary;
+      if (s.months === 0) {
+        setMsg("没有可压缩的老缓存（近两个月保留逐日精度）");
+      } else {
+        const saved = s.bytesBefore - s.bytesAfter;
+        const pct =
+          s.bytesBefore > 0 ? Math.round((saved / s.bytesBefore) * 100) : 0;
+        setMsg(
+          `已压缩 ${s.months} 个月、${s.daysCompacted} 天 → ${s.months} 行，省 ${pct}%（${s.bytesBefore}→${s.bytesAfter} 字节）`,
+        );
+      }
+      await load();
+      onChanged?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "压缩失败");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -161,6 +215,18 @@ export function OrphanChannelPanel({
   }
 
   const pending = entries.filter((e) => !e.resolved && !e.ignored);
+  const missingDays = coverage.reduce((s, c) => s + c.missing, 0);
+  const totalDays = coverage.reduce((s, c) => s + c.total, 0);
+  const anchoredDays = coverage.reduce((s, c) => s + c.anchored, 0);
+  const compactedDays = coverage.reduce((s, c) => s + c.compacted, 0);
+  const allAnchored = totalDays > 0 && missingDays === 0;
+  const cacheHint =
+    totalDays === 0
+      ? null
+      : (allAnchored
+          ? `本周期 ${totalDays} 天已全部缓存，无需重扫`
+          : `已缓存 ${anchoredDays}/${totalDays} 天 · 还需扫描 ${missingDays} 天`) +
+        (compactedDays > 0 ? ` · 其中 ${compactedDays} 天已压缩为月汇总` : "");
 
   return (
     <Card>
@@ -177,11 +243,41 @@ export function OrphanChannelPanel({
               </span>
             )}
           </p>
+          {cacheHint && (
+            <p className="mt-0.5 text-[11px] font-data text-muted">{cacheHint}</p>
+          )}
         </div>
-        <Button size="sm" variant="secondary" disabled={scanning} onClick={scan}>
-          <Search className={cn("h-3.5 w-3.5", scanning && "animate-pulse")} />
-          {scanning ? "扫描中…" : "扫描本周期"}
-        </Button>
+        <div className="flex shrink-0 gap-2">
+          <Button size="sm" variant="secondary" disabled={scanning} onClick={() => scan()}>
+            <Search className={cn("h-3.5 w-3.5", scanning && "animate-pulse")} />
+            {scanning
+              ? "扫描中…"
+              : allAnchored
+                ? "重新检测"
+                : `扫描 ${missingDays} 天`}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={scanning || busy}
+            title="把上上个月及更早的逐日缓存压成一个月一行，只留渠道 id / 面值 / 请求数"
+            onClick={compact}
+          >
+            <Archive className="h-3.5 w-3.5" />
+            压缩旧缓存
+          </Button>
+          {allAnchored && (
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={scanning}
+              title="无视缓存重扫整个周期（日志被清理过时用）"
+              onClick={() => scan(true)}
+            >
+              强制重扫
+            </Button>
+          )}
+        </div>
       </CardHeader>
       <CardContent className="space-y-3">
         {(msg || error) && (

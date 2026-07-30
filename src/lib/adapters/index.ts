@@ -1176,6 +1176,181 @@ export async function fetchDownstreamChannelUsage(
   }
 }
 
+/** 单日的渠道消费聚合 */
+export interface DownstreamChannelDayResult {
+  success: boolean;
+  day: string;
+  channels: {
+    channelId: number;
+    channelName: string;
+    quota: number;
+    requests: number;
+    models: string[];
+  }[];
+  scanned: number;
+  total: number;
+  /** 这一天是否翻完了；false 说明被 maxPages 截断，不该记锚点 */
+  complete: boolean;
+  error?: string;
+}
+
+/**
+ * 翻某一天的消费日志，按渠道聚合。
+ *
+ * 按天扫是为了能按天记锚点：过去的日志不会再变，扫过的天下次直接跳过。
+ * 这里不判断渠道死活 —— 存活状态是会变的，判定放到读缓存的时候做。
+ */
+export async function fetchDownstreamChannelDay(
+  input: DownstreamAdapterInput & {
+    day: string;
+    pageSize?: number;
+    maxPages?: number;
+  },
+): Promise<DownstreamChannelDayResult> {
+  const base = normalizeBaseUrl(input.baseUrl);
+  const userId = input.adminUserId && input.adminUserId > 0 ? input.adminUserId : 1;
+  const headers = newApiAdminHeaders(input.adminKey, userId);
+  const pageSize = Math.min(Math.max(input.pageSize ?? 1000, 50), 1000);
+  const maxPages = Math.min(Math.max(input.maxPages ?? 200, 1), 2000);
+  const { start, end } = shanghaiDayBounds(input.day);
+
+  const buckets = new Map<
+    number,
+    { channelName: string; quota: number; requests: number; models: Set<string> }
+  >();
+  let scanned = 0;
+  let total = 0;
+  let complete = false;
+  let effectivePageSize = 0;
+
+  try {
+    for (let page = 1; page <= maxPages; page++) {
+      const res = await fetchJson(
+        `${base}/api/log/?p=${page}&page_size=${pageSize}&type=2` +
+          `&start_timestamp=${start}&end_timestamp=${end}`,
+        { method: "GET", headers, timeoutMs: 60_000 },
+      );
+      if (!res.ok) {
+        if (page === 1) {
+          return {
+            success: false,
+            day: input.day,
+            channels: [],
+            scanned: 0,
+            total: 0,
+            complete: false,
+            error: `读取日志失败（HTTP ${res.status}）`,
+          };
+        }
+        break;
+      }
+
+      const payload = asRecord(asRecord(res.data)?.data) ?? asRecord(res.data);
+      const items = Array.isArray(asRecord(res.data)?.data)
+        ? (asRecord(res.data)!.data as unknown[])
+        : Array.isArray(payload?.items)
+          ? (payload!.items as unknown[])
+          : [];
+      const pageTotal = num(payload?.total);
+      if (pageTotal != null) total = pageTotal;
+
+      if (!items.length) {
+        complete = true;
+        break;
+      }
+      if (!effectivePageSize) effectivePageSize = items.length;
+
+      for (const row of items) {
+        const r = asRecord(row);
+        if (!r) continue;
+        const channelId = num(r.channel);
+        if (channelId == null) continue;
+        const quota = num(r.quota) ?? 0;
+        const name = typeof r.channel_name === "string" ? r.channel_name : "";
+        const model = typeof r.model_name === "string" ? r.model_name : "";
+
+        const b =
+          buckets.get(channelId) ||
+          { channelName: "", quota: 0, requests: 0, models: new Set<string>() };
+        b.quota += quota;
+        b.requests += 1;
+        if (name && !b.channelName) b.channelName = name;
+        if (model) b.models.add(model);
+        buckets.set(channelId, b);
+      }
+
+      scanned += items.length;
+      if (total > 0) {
+        if (scanned >= total) {
+          complete = true;
+          break;
+        }
+      } else if (items.length < effectivePageSize) {
+        complete = true;
+        break;
+      }
+    }
+
+    return {
+      success: true,
+      day: input.day,
+      channels: [...buckets.entries()].map(([channelId, b]) => ({
+        channelId,
+        channelName: b.channelName,
+        quota: b.quota,
+        requests: b.requests,
+        models: [...b.models].sort(),
+      })),
+      scanned,
+      total,
+      complete,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      success: false,
+      day: input.day,
+      channels: [],
+      scanned,
+      total,
+      complete: false,
+      error: msg.includes("abort") ? "Request timeout" : msg,
+    };
+  }
+}
+
+/** 当前还存活的渠道 id；读不到返回 null（不能据此判断删除） */
+export async function fetchDownstreamAliveChannels(
+  input: DownstreamAdapterInput,
+): Promise<Set<number> | null> {
+  const base = normalizeBaseUrl(input.baseUrl);
+  const userId = input.adminUserId && input.adminUserId > 0 ? input.adminUserId : 1;
+  const headers = newApiAdminHeaders(input.adminKey, userId);
+  try {
+    const res = await fetchJson(`${base}/api/channel/?p=1&page_size=1000`, {
+      method: "GET",
+      headers,
+      timeoutMs: 30_000,
+    });
+    if (!res.ok) return null;
+    const payload = asRecord(res.data)?.data;
+    const items = Array.isArray(payload)
+      ? payload
+      : Array.isArray(asRecord(payload)?.items)
+        ? (asRecord(payload)!.items as unknown[])
+        : null;
+    if (!items) return null;
+    const ids = new Set<number>();
+    for (const it of items) {
+      const id = num(asRecord(it)?.id);
+      if (id != null) ids.add(id);
+    }
+    return ids;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 下游分组倍率（倍率法估算卖出收入用）。
  *

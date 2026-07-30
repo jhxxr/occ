@@ -165,11 +165,9 @@ export interface FinancialReport {
     downstreamName: string;
     channelId: number;
     channelName: string;
+    /** 该周期内的消费（从逐日缓存精确取） */
     revenueRmb: number;
-    costRmb: number;
     allocatedRmb: number;
-    overlapDays: number;
-    effectiveDays: number;
     resolved: boolean;
     ignored: boolean;
   }[];
@@ -591,17 +589,8 @@ export async function buildFinancialReport(
 
   // ——— 逐日序列 ———
   // 旧渠道：渠道从 NewAPI 删掉后上游成本对不上了，用你补录的金额补进成本。
-  // 按记录覆盖的天数均摊到每一天，保证逐日之和 = 汇总。
+  // 消费量按天从缓存精确取，不用按天数比例去猜。
   const orphan = await orphanCostForPeriod(period.startDay, period.endDay);
-  const orphanByDay = new Map<string, number>();
-  for (const e of orphan.entries) {
-    if (e.overlapDays <= 0) continue;
-    const perDay = e.allocatedRmb / e.overlapDays;
-    for (const day of dayList) {
-      if (day < e.firstDay || day > e.lastDay) continue;
-      orphanByDay.set(day, (orphanByDay.get(day) || 0) + perDay);
-    }
-  }
 
   const daily: DailyPoint[] = dayList.map((day) => {
     const revenueMeasured = round2(revenueByDay.get(day) || 0);
@@ -609,7 +598,7 @@ export async function buildFinancialReport(
     const revenueRatio = round2(ratioRevenueByDay.get(day) || 0);
     const upstream = round2(costByDay.get(day) || 0);
     const operating = round2(
-      (costSummary.byDay.get(day) || 0) + (orphanByDay.get(day) || 0),
+      (costSummary.byDay.get(day) || 0) + (orphan.byDay.get(day) || 0),
     );
     return {
       day,
@@ -631,6 +620,11 @@ export async function buildFinancialReport(
   if (orphan.unresolvedCount > 0) {
     warnings.push(
       `有 ${orphan.unresolvedCount} 个已删除渠道产生了 ${formatCny(orphan.unresolvedRevenueRmb)} 消费但没填成本，毛利偏高`,
+    );
+  }
+  if (orphan.estimatedMonths > 0) {
+    warnings.push(
+      `本周期有 ${orphan.estimatedMonths} 个月的旧渠道缓存已压缩成月汇总，成本按天数比例摊算（估算）`,
     );
   }
 

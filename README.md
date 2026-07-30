@@ -108,6 +108,12 @@ Docker 部署的完整变量说明见 [DOCKER.md](DOCKER.md)。
   - `一次性`：整笔计入记账日所属的自然周/月。
   - `按有效期摊销`：按天直线摊。**账号被风控时填「实际结束日」，整笔成本压缩到实际存活的那几天摊完**，
     受影响的历史周/月报随之回算。
+- **旧渠道成本**：渠道从 NewAPI 删掉后，日志里的消费还在、上游成本却对不上了，
+  这部分会让毛利虚高。报表的「旧渠道成本补录」能扫出来让你手工填：
+  - 判定依据：`GET /api/channel/` 的存活 id 集合 + 日志 `channel_name`（删除后 join 不到，为空）
+  - 填法二选一：`倍率`（卖出额 × 购入成本率）或 `总额`（直接填这笔的人民币）
+  - 跨多天的记录按重叠天数摊到当前周期；标「忽略」的不计成本
+  - 没填成本的会在报表顶部警告，避免默认当成零成本
 - 自建 Sub2API 的「官方用量 × 卖出倍率」只是中间层估算，**不进总账** ——
   那批流量的真实收入已经在下游消费里，相加会重复确认。动态路由命中的上游消耗同理，只在上游成本计一次。
 
@@ -142,6 +148,7 @@ src/
     reporting-period.ts  # 自然周/月边界（Asia/Shanghai）
     financial-report.ts  # 双口径收益报表
     operating-cost.ts    # 额外成本入账与摊销
+    orphan-channels.ts   # 已删除渠道检测与成本补录
     downstream-usage.ts  # 下游按日消费 + 分组倍率同步
     profit.ts          # 成本与收支核算
     sync.ts            # 同步编排
@@ -162,6 +169,7 @@ scripts/
 | POST | `/api/downstream/usage-sync` | 拉取下游按日真实消费 + 分组倍率 |
 | GET | `/api/financial-report` | 周/月收益报表（`period=week\|month`、`offset`、或 `startDay`+`endDay`） |
 | GET/POST/PUT/DELETE | `/api/operating-costs` | 额外成本台账 |
+| GET/POST/PUT/DELETE | `/api/orphan-channels` | 旧渠道检测与成本补录（POST 扫描日志） |
 | GET | `/api/dashboard` | 仪表盘聚合数据 |
 | GET/PUT | `/api/settings` | 汇率等设置 |
 | GET/POST/DELETE | `/api/extension/tokens` | 扩展注入 token 管理（需登录） |

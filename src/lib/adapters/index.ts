@@ -2,6 +2,8 @@ import { normalizeBaseUrl } from "@/lib/utils";
 import { addDays, enumerateDays, shanghaiDay } from "@/lib/reporting-period";
 import type {
   DownstreamAdapterInput,
+  DownstreamChannelUsageResult,
+  DownstreamChannelUsageRow,
   DownstreamDailyRow,
   DownstreamDailyUsageResult,
   DownstreamFetchResult,
@@ -980,6 +982,195 @@ export async function fetchDownstreamDailyUsage(
       complete: false,
       failedDays,
       excludeResolved: false,
+      error: msg.includes("abort") ? "Request timeout" : msg,
+    };
+  }
+}
+
+/**
+ * 按渠道聚合下游消费，并标出哪些渠道已经被删除。
+ *
+ * 判定依据两条，缺一不可靠：
+ * 1. `GET /api/channel/` 拿存活渠道 id 集合 —— 不在里面的就是删了
+ * 2. 日志里的 `channel_name` 为空 —— NewAPI 用 join 填这个字段（`gorm:"->"`），
+ *    渠道删掉后 join 不到，名字就空了
+ *
+ * 存活列表读取失败时退回只看 channel_name，并把 channelListLoaded 标成 false。
+ */
+export async function fetchDownstreamChannelUsage(
+  input: DownstreamAdapterInput & {
+    startDay: string;
+    endDay: string;
+    /** 单页条数，日志量大时调大以减少请求次数 */
+    pageSize?: number;
+    /** 最多扫多少页，防止跑太久 */
+    maxPages?: number;
+  },
+): Promise<DownstreamChannelUsageResult> {
+  const base = normalizeBaseUrl(input.baseUrl);
+  const userId = input.adminUserId && input.adminUserId > 0 ? input.adminUserId : 1;
+  const headers = newApiAdminHeaders(input.adminKey, userId);
+  const pageSize = Math.min(Math.max(input.pageSize ?? 1000, 50), 1000);
+  // 有的部署把 page_size 硬限在 100，两万条日志就是 200+ 页，上限给足
+  const maxPages = Math.min(Math.max(input.maxPages ?? 400, 1), 2000);
+
+  try {
+    // 1) 存活渠道 id
+    const aliveIds = new Set<number>();
+    let channelListLoaded = false;
+    const chRes = await fetchJson(`${base}/api/channel/?p=1&page_size=1000`, {
+      method: "GET",
+      headers,
+      timeoutMs: 30_000,
+    });
+    if (chRes.ok) {
+      const payload = asRecord(chRes.data)?.data;
+      const items = Array.isArray(payload)
+        ? payload
+        : Array.isArray(asRecord(payload)?.items)
+          ? (asRecord(payload)!.items as unknown[])
+          : null;
+      if (items) {
+        channelListLoaded = true;
+        for (const it of items) {
+          const id = num(asRecord(it)?.id);
+          if (id != null) aliveIds.add(id);
+        }
+      }
+    }
+
+    // 2) 翻消费日志，按渠道归并
+    const { start } = shanghaiDayBounds(input.startDay);
+    const { end } = shanghaiDayBounds(input.endDay);
+    const buckets = new Map<
+      number,
+      {
+        channelName: string;
+        quota: number;
+        requests: number;
+        models: Set<string>;
+        firstDay: string;
+        lastDay: string;
+      }
+    >();
+
+    let scanned = 0;
+    let total = 0;
+    let complete = false;
+    /** 服务端可能把 page_size 压小（比如硬限 100），以它实际返回的为准 */
+    let effectivePageSize = 0;
+    for (let page = 1; page <= maxPages; page++) {
+      const res = await fetchJson(
+        `${base}/api/log/?p=${page}&page_size=${pageSize}&type=2` +
+          `&start_timestamp=${start}&end_timestamp=${end}`,
+        { method: "GET", headers, timeoutMs: 60_000 },
+      );
+      if (!res.ok) {
+        if (page === 1) {
+          return {
+            success: false,
+            channels: [],
+            scanned: 0,
+            total: 0,
+            complete: false,
+            channelListLoaded,
+            error: `读取日志失败（HTTP ${res.status}）`,
+          };
+        }
+        break;
+      }
+      const payload = asRecord(asRecord(res.data)?.data) ?? asRecord(res.data);
+      const items = Array.isArray(asRecord(res.data)?.data)
+        ? (asRecord(res.data)!.data as unknown[])
+        : Array.isArray(payload?.items)
+          ? (payload!.items as unknown[])
+          : [];
+      const pageTotal = num(payload?.total);
+      if (pageTotal != null) total = pageTotal;
+
+      // 空页 = 真的到头了
+      if (!items.length) {
+        complete = true;
+        break;
+      }
+      if (!effectivePageSize) effectivePageSize = items.length;
+
+      for (const row of items) {
+        const r = asRecord(row);
+        if (!r) continue;
+        const channelId = num(r.channel);
+        const createdAt = num(r.created_at);
+        if (channelId == null || createdAt == null) continue;
+        const day = shanghaiDay(createdAt * 1000);
+        const quota = num(r.quota) ?? 0;
+        const name = typeof r.channel_name === "string" ? r.channel_name : "";
+        const model = typeof r.model_name === "string" ? r.model_name : "";
+
+        const b =
+          buckets.get(channelId) ||
+          {
+            channelName: "",
+            quota: 0,
+            requests: 0,
+            models: new Set<string>(),
+            firstDay: day,
+            lastDay: day,
+          };
+        b.quota += quota;
+        b.requests += 1;
+        if (name && !b.channelName) b.channelName = name;
+        if (model) b.models.add(model);
+        if (day < b.firstDay) b.firstDay = day;
+        if (day > b.lastDay) b.lastDay = day;
+        buckets.set(channelId, b);
+      }
+
+      scanned += items.length;
+
+      // 拿到 total 就以它为准；拿不到就看是否出现短页
+      if (total > 0) {
+        if (scanned >= total) {
+          complete = true;
+          break;
+        }
+      } else if (items.length < effectivePageSize) {
+        complete = true;
+        break;
+      }
+    }
+
+    const channels: DownstreamChannelUsageRow[] = [...buckets.entries()].map(
+      ([channelId, b]) => ({
+        channelId,
+        channelName: b.channelName,
+        // 有存活列表就信它；没有就退回「名字为空 = 已删除」
+        alive: channelListLoaded ? aliveIds.has(channelId) : b.channelName !== "",
+        quota: b.quota,
+        requests: b.requests,
+        models: [...b.models].sort(),
+        firstDay: b.firstDay,
+        lastDay: b.lastDay,
+      }),
+    );
+    channels.sort((a, b) => b.quota - a.quota);
+
+    return {
+      success: true,
+      channels,
+      scanned,
+      total,
+      complete: complete || (total > 0 && scanned >= total),
+      channelListLoaded,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      success: false,
+      channels: [],
+      scanned: 0,
+      total: 0,
+      complete: false,
+      channelListLoaded: false,
       error: msg.includes("abort") ? "Request timeout" : msg,
     };
   }

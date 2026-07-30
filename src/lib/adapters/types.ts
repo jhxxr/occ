@@ -134,6 +134,34 @@ export interface DownstreamGroupRateRow {
   known: boolean;
 }
 
+/** 日志里按渠道聚合的消费 */
+export interface DownstreamChannelUsageRow {
+  channelId: number;
+  /** 日志里残留的渠道名；渠道被删后 join 不到，为空 */
+  channelName: string;
+  /** 渠道当前是否还在 NewAPI 的渠道列表里 */
+  alive: boolean;
+  quota: number;
+  requests: number;
+  models: string[];
+  firstDay: string;
+  lastDay: string;
+}
+
+export interface DownstreamChannelUsageResult {
+  success: boolean;
+  channels: DownstreamChannelUsageRow[];
+  /** 扫描到的日志条数 */
+  scanned: number;
+  /** 区间内日志总条数（用于判断是否被截断） */
+  total: number;
+  /** 是否扫完了整个区间 */
+  complete: boolean;
+  /** 存活渠道列表是否读取成功；失败时只能靠 channel_name 为空来判断 */
+  channelListLoaded: boolean;
+  error?: string;
+}
+
 export interface DownstreamGroupRatesResult {
   success: boolean;
   rates: DownstreamGroupRateRow[];

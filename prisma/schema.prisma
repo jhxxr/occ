@@ -253,6 +253,7 @@ model DownstreamSite {
   snapshots DownstreamSnapshot[]
   usageDaily DownstreamUsageDaily[]
   groupRates DownstreamGroupRate[]
+  orphanChannels DownstreamOrphanChannel[]
 }
 
 /// 下游按日实际消费
@@ -296,6 +297,51 @@ model DownstreamUsageDaily {
   @@unique([downstreamId, day, scope, groupName])
   @@index([downstreamId, day])
   @@index([day])
+}
+
+/// 旧渠道（已从 NewAPI 删除）的消费与人工补录成本
+///
+/// 渠道删掉后，日志里 channel id 还在但 join 不到名字，Orbit 也没有对应的上游
+/// 成本记录 —— 这部分消费会让毛利虚高。检测出来后由你手工填成本。
+///
+/// 成本填法二选一，costMode 决定用哪个：
+/// - RATE：按倍率折算 → quota ÷ quotaPerUnit × costRate
+/// - AMOUNT：直接填这段时间的总成本人民币
+model DownstreamOrphanChannel {
+  id           String   @id @default(cuid())
+  downstreamId String
+  /// NewAPI 日志里的 channel id
+  channelId    Int
+  /// 日志里残留的渠道名（通常为空，删除后 join 不到）
+  channelName  String   @default("") @db.VarChar(200)
+  /// 该渠道消费涉及的模型（逗号分隔，便于你回忆是哪家上游）
+  models       String?  @db.Text
+  /// 检测区间内的消费额度面值
+  quota        Float    @default(0)
+  /// 折算成人民币的卖出额（按站点额度单位）
+  revenueRmb   Float    @default(0)
+  quotaPerUnit Float    @default(500000)
+  requests     Int      @default(0)
+  firstDay     String   @db.VarChar(10)
+  lastDay      String   @db.VarChar(10)
+  /// RATE | AMOUNT
+  costMode     String   @default("RATE") @db.VarChar(10)
+  /// 购入成本率（¥ / 每 1 面值），costMode=RATE 时生效
+  costRate     Float?
+  /// 直接填的总成本人民币，costMode=AMOUNT 时生效
+  costAmountRmb Float?
+  /// 你是否已确认过这笔成本；未确认时报表会警告成本缺口
+  resolved     Boolean  @default(false)
+  /// 标记为「无需补录」（例如本来就是自建免费渠道）
+  ignored      Boolean  @default(false)
+  note         String?  @db.Text
+  detectedAt   DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  downstream DownstreamSite @relation(fields: [downstreamId], references: [id], onDelete: Cascade)
+
+  @@unique([downstreamId, channelId])
+  @@index([downstreamId, resolved])
 }
 
 /// 下游分组倍率（自动同步，倍率法估算卖出收入用）

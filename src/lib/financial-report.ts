@@ -31,6 +31,7 @@ import {
   type CostAllocation,
   type CostEntryInput,
 } from "@/lib/operating-cost";
+import { orphanCostForPeriod } from "@/lib/orphan-channels";
 
 function round2(n: number): number {
   return Math.round((Number.isFinite(n) ? n : 0) * 100) / 100;
@@ -39,6 +40,11 @@ function round2(n: number): number {
 function pct(part: number, whole: number): number | null {
   if (!whole) return null;
   return round2((part / whole) * 100);
+}
+
+/** 警告文案里用的人民币格式 */
+function formatCny(n: number): string {
+  return `¥${n.toFixed(2)}`;
 }
 
 /** 闭区间日期 → 北京时间的真实时间戳区间 [start, end) */
@@ -135,6 +141,8 @@ export interface FinancialReport {
   cost: {
     upstreamRmb: number;
     operatingRmb: number;
+    /** 已删除渠道的补录成本（你手工填的） */
+    orphanRmb: number;
     totalRmb: number;
     source: "usage-logs" | "snapshots" | "mixed" | "none";
   };
@@ -151,6 +159,20 @@ export interface FinancialReport {
   byProvider: ProviderRow[];
   byKey: KeyRow[];
   operatingCosts: CostAllocation[];
+  /** 已删除渠道：消费还在但上游成本没了，需要你补录 */
+  orphanChannels: {
+    id: string;
+    downstreamName: string;
+    channelId: number;
+    channelName: string;
+    revenueRmb: number;
+    costRmb: number;
+    allocatedRmb: number;
+    overlapDays: number;
+    effectiveDays: number;
+    resolved: boolean;
+    ignored: boolean;
+  }[];
   reference: {
     /** 自建站官方用量 × 卖出倍率，仅参考，已排除在毛利之外 */
     selfHostedSellRmb: number;
@@ -568,12 +590,27 @@ export async function buildFinancialReport(
   );
 
   // ——— 逐日序列 ———
+  // 旧渠道：渠道从 NewAPI 删掉后上游成本对不上了，用你补录的金额补进成本。
+  // 按记录覆盖的天数均摊到每一天，保证逐日之和 = 汇总。
+  const orphan = await orphanCostForPeriod(period.startDay, period.endDay);
+  const orphanByDay = new Map<string, number>();
+  for (const e of orphan.entries) {
+    if (e.overlapDays <= 0) continue;
+    const perDay = e.allocatedRmb / e.overlapDays;
+    for (const day of dayList) {
+      if (day < e.firstDay || day > e.lastDay) continue;
+      orphanByDay.set(day, (orphanByDay.get(day) || 0) + perDay);
+    }
+  }
+
   const daily: DailyPoint[] = dayList.map((day) => {
     const revenueMeasured = round2(revenueByDay.get(day) || 0);
     const grossConsumption = round2(grossByDay.get(day) || 0);
     const revenueRatio = round2(ratioRevenueByDay.get(day) || 0);
     const upstream = round2(costByDay.get(day) || 0);
-    const operating = round2(costSummary.byDay.get(day) || 0);
+    const operating = round2(
+      (costSummary.byDay.get(day) || 0) + (orphanByDay.get(day) || 0),
+    );
     return {
       day,
       revenueMeasuredRmb: revenueMeasured,
@@ -588,8 +625,14 @@ export async function buildFinancialReport(
 
   // ——— 汇总 ———
   const operatingRmb = costSummary.totalRmb;
-  const totalCostRmb = round2(upstreamCostRmb + operatingRmb);
+  const totalCostRmb = round2(upstreamCostRmb + operatingRmb + orphan.totalRmb);
   const ratioRevenue = ratioAvailable ? round2(ratioRevenueRmb) : null;
+
+  if (orphan.unresolvedCount > 0) {
+    warnings.push(
+      `有 ${orphan.unresolvedCount} 个已删除渠道产生了 ${formatCny(orphan.unresolvedRevenueRmb)} 消费但没填成本，毛利偏高`,
+    );
+  }
 
   const measuredProfit = round2(measuredRevenueRmb - totalCostRmb);
   const ratioProfit = ratioRevenue != null ? round2(ratioRevenue - totalCostRmb) : null;
@@ -664,6 +707,7 @@ export async function buildFinancialReport(
     cost: {
       upstreamRmb: upstreamCostRmb,
       operatingRmb,
+      orphanRmb: orphan.totalRmb,
       totalRmb: totalCostRmb,
       source: costSource,
     },
@@ -682,6 +726,7 @@ export async function buildFinancialReport(
     byProvider,
     byKey,
     operatingCosts: costSummary.entries,
+    orphanChannels: orphan.entries,
     reference: {
       selfHostedSellRmb,
       selfHostedOfficialCost,

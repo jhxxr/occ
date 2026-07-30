@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { formatRmb, cn } from "@/lib/utils";
 import { ChevronLeft, ChevronRight, AlertTriangle, Download } from "lucide-react";
 import { ReportTrendChart } from "@/components/reports/report-charts";
+import { OrphanChannelPanel } from "@/components/reports/orphan-channel-panel";
 
 interface DailyPoint {
   day: string;
@@ -35,6 +36,7 @@ interface ReportPayload {
   cost: {
     upstreamRmb: number;
     operatingRmb: number;
+    orphanRmb: number;
     totalRmb: number;
     source: string;
   };
@@ -345,7 +347,7 @@ export function ReportView() {
             <Metric
               label="总成本"
               value={formatRmb(data.cost.totalRmb)}
-              hint={`上游 ${formatRmb(data.cost.upstreamRmb)} · 额外 ${formatRmb(data.cost.operatingRmb)} · ${COST_SOURCE_LABEL[data.cost.source] ?? data.cost.source}`}
+              hint={`上游 ${formatRmb(data.cost.upstreamRmb)} · 额外 ${formatRmb(data.cost.operatingRmb)}${data.cost.orphanRmb > 0 ? ` · 旧渠道 ${formatRmb(data.cost.orphanRmb)}` : ""} · ${COST_SOURCE_LABEL[data.cost.source] ?? data.cost.source}`}
               tone="amber"
             />
             <Metric
@@ -363,6 +365,11 @@ export function ReportView() {
           </div>
 
           <ReportTrendChart data={data.daily} />
+
+          <OrphanChannelPanel
+            period={{ startDay: data.period.startDay, endDay: data.period.endDay }}
+            onChanged={load}
+          />
 
           {data.byKey.length > 0 && (
             <Card>

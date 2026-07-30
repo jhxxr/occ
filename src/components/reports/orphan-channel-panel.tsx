@@ -110,10 +110,14 @@ export function OrphanChannelPanel({
         s.daysSkipped > 0
           ? `扫了 ${s.daysScanned} 天、跳过 ${s.daysSkipped} 天（已缓存）`
           : `扫了 ${s.daysScanned} 天 ${s.logsFetched} 条日志`;
+      const deferNote =
+        s.daysDeferred > 0
+          ? ` · 还剩 ${s.daysDeferred} 天未扫，再点一次继续（分批是为了不打爆下游站点）`
+          : "";
       setMsg(
-        s.orphans > 0
+        (s.orphans > 0
           ? `${scanNote} · 已删除渠道 ${s.orphans} 个（新增 ${s.created}），待补录 ${formatRmb(s.unresolvedRevenueRmb)}`
-          : `${scanNote} · 没有发现已删除渠道的消费`,
+          : `${scanNote} · 没有发现已删除渠道的消费`) + deferNote,
       );
       await load();
       onChanged?.();

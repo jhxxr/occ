@@ -117,8 +117,13 @@ export interface ScanResult {
   /** 翻页被截断、没记锚点的天数 */
   daysIncomplete: number;
   logsFetched: number;
+  /** 因为单次上限没扫到的天数；>0 表示要再点一次继续 */
+  daysDeferred: number;
   error?: string;
 }
+
+/** 单次扫描默认最多翻几天的日志（一天可能上百页请求） */
+const DEFAULT_MAX_DAYS_PER_RUN = 10;
 
 /**
  * 按天扫描渠道消费，写入缓存并打锚点。
@@ -134,6 +139,8 @@ export async function scanChannelDays(
     force?: boolean;
     pageSize?: number;
     maxPages?: number;
+    /** 单次最多扫几天，防止一口气把对方站点打到限流 */
+    maxDaysPerRun?: number;
   },
 ): Promise<ScanResult> {
   const site = await prisma.downstreamSite.findUnique({ where: { id: siteId } });
@@ -145,6 +152,7 @@ export async function scanChannelDays(
     daysSkipped: 0,
     daysIncomplete: 0,
     logsFetched: 0,
+    daysDeferred: 0,
   };
   if (!site) return { ...base, error: "下游站点不存在" };
 
@@ -206,7 +214,14 @@ export async function scanChannelDays(
     }
   }
 
-  for (const day of days) {
+  // 单次扫描上限：一天可能上百页请求，一口气扫整月会把对方站点打到限流
+  const maxDays = Math.max(1, opts.maxDaysPerRun ?? DEFAULT_MAX_DAYS_PER_RUN);
+  let daysDeferred = 0;
+
+  // 从近到远扫：最近的数据最有用，被上限截断时留下的是更老的天
+  const ordered = [...days].reverse();
+
+  for (const day of ordered) {
     // 今天还在累积，锚点不作数
     if (!opts.force && anchored.has(day) && day < today) {
       daysSkipped++;
@@ -215,6 +230,11 @@ export async function scanChannelDays(
     // 该月已压缩成汇总行：这一天的明细已经并进去了，重扫会重复计数
     if (!opts.force && compactedMonths.has(monthKey(day))) {
       daysSkipped++;
+      continue;
+    }
+    // 到量就停，剩下的下次再扫（锚点保证不会重复劳动）
+    if (daysScanned >= maxDays) {
+      daysDeferred++;
       continue;
     }
 
@@ -263,6 +283,7 @@ export async function scanChannelDays(
     daysSkipped,
     daysIncomplete,
     logsFetched,
+    daysDeferred,
     error: lastError,
   };
 }
@@ -463,6 +484,7 @@ export async function detectOrphanChannels(
     force?: boolean;
     pageSize?: number;
     maxPages?: number;
+    maxDaysPerRun?: number;
   },
 ): Promise<OrphanDetectResult> {
   const scan = await scanChannelDays(siteId, opts);

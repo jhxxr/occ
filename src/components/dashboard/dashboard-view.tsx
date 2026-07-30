@@ -8,13 +8,13 @@ import {
   SelfHostedGrid,
   type SelfHostedCardData,
 } from "@/components/dashboard/self-hosted-grid";
+import {
+  DownstreamGrid,
+  type DownstreamCardData,
+} from "@/components/dashboard/downstream-grid";
 import { TrendChart, SharePie } from "@/components/dashboard/charts";
 import { AlertsBanner } from "@/components/dashboard/alerts-banner";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { formatRmb } from "@/lib/utils";
-import { ExternalLink } from "lucide-react";
-import { Button } from "@/components/ui/button";
 
 interface DashboardPayload {
   usdCny: number;
@@ -45,17 +45,7 @@ interface DashboardPayload {
     operatingCostRmb: number;
     monthRequests: number;
   };
-  sites: {
-    id: string;
-    name: string;
-    baseUrl: string;
-    enabled: boolean;
-    revenueCurrency?: string;
-    lastConsumed: number | null;
-    lastRevenue: number | null;
-    lastSyncAt: string | null;
-    lastError: string | null;
-  }[];
+  sites: DownstreamCardData[];
   dailySeries: {
     date: string;
     costRmb: number;
@@ -174,74 +164,24 @@ export function DashboardView() {
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-sm font-medium tracking-wide text-secondary">
-          下游自营站
-        </h2>
-        {data.sites.length === 0 ? (
-          <Card>
-            <CardContent className="py-8 text-center text-sm text-muted">
-              尚未绑定下游 NewAPI 站点 · 前往「下游站点」配置
-            </CardContent>
-          </Card>
-        ) : (
-          <div className="grid gap-4 sm:grid-cols-2">
-            {data.sites.map((s) => (
-              <Card key={s.id}>
-                <CardHeader className="flex flex-row items-center justify-between pb-2 gap-2">
-                  <CardTitle className="text-base font-semibold text-text normal-case tracking-normal">
-                    {s.name}
-                  </CardTitle>
-                  <div className="flex items-center gap-2">
-                    <Badge variant={s.enabled ? "mint" : "default"}>
-                      {s.enabled ? "启用" : "停用"}
-                    </Badge>
-                    <a
-                      href={s.baseUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      title="打开网站"
-                    >
-                      <Button size="icon" variant="outline" aria-label="打开网站">
-                        <ExternalLink className="h-3.5 w-3.5" />
-                      </Button>
-                    </a>
-                  </div>
-                </CardHeader>
-                <CardContent className="grid grid-cols-2 gap-3 text-sm">
-                  <div>
-                    <div className="text-[11px] uppercase tracking-wider text-muted">
-                      最近消耗
-                    </div>
-                    <div className="font-data text-lg">
-                      {formatRmb(s.lastConsumed)}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[11px] uppercase tracking-wider text-muted">
-                      已发放额度
-                    </div>
-                    <div className="font-data text-lg">
-                      {s.revenueCurrency === "USD"
-                        ? formatRmb(
-                            s.lastRevenue != null
-                              ? s.lastRevenue * data.usdCny
-                              : null,
-                          )
-                        : formatRmb(s.lastRevenue)}
-                    </div>
-                    <div className="text-[10px] text-muted">存量，非收益</div>
-                  </div>
-                  <div className="col-span-2 text-[11px] text-muted font-data">
-                    {s.lastSyncAt
-                      ? `同步于 ${new Date(s.lastSyncAt).toLocaleString("zh-CN")}`
-                      : "尚未同步"}
-                    {s.lastError ? ` · ${s.lastError}` : ""}
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-medium tracking-wide text-secondary">
+              下游自营站
+            </h2>
+            <p className="text-[11px] text-muted">
+              同步会拉余额快照 + 最近 7 天的真实消费（收入口径）
+            </p>
           </div>
-        )}
+          <span className="text-xs text-muted font-data">
+            {data.sites.filter((s) => s.enabled).length} 在线
+          </span>
+        </div>
+        <DownstreamGrid
+          sites={data.sites}
+          usdCny={data.usdCny}
+          onSynced={load}
+        />
       </section>
     </div>
   );

@@ -92,6 +92,8 @@ const detectSchema = z
     keepMonths: z.coerce.number().int().min(1).max(24).optional(),
     pageSize: z.coerce.number().int().min(50).max(1000).optional(),
     maxPages: z.coerce.number().int().min(1).max(2000).optional(),
+    /** 单次最多扫几天，默认 10 —— 别把下游站点打到限流 */
+    maxDaysPerRun: z.coerce.number().int().min(1).max(60).optional(),
   })
   .refine((v) => !!v.startDay === !!v.endDay, {
     message: "自定义区间需要同时提供 startDay 与 endDay",
@@ -157,6 +159,7 @@ export async function POST(req: NextRequest) {
           force: v.force,
           pageSize: v.pageSize,
           maxPages: v.maxPages,
+          maxDaysPerRun: v.maxDaysPerRun,
         }),
       );
     }
@@ -172,6 +175,7 @@ export async function POST(req: NextRequest) {
           created: results.reduce((s, r) => s + r.created, 0),
           daysScanned: results.reduce((s, r) => s + r.daysScanned, 0),
           daysSkipped: results.reduce((s, r) => s + r.daysSkipped, 0),
+          daysDeferred: results.reduce((s, r) => s + r.daysDeferred, 0),
           logsFetched: results.reduce((s, r) => s + r.logsFetched, 0),
           unresolvedRevenueRmb:
             Math.round(

@@ -9,7 +9,11 @@
  *   - if USD → multiply by usdCny rate
  *
  * Net profit = downstream revenue (RMB) − upstream cost (RMB)
+ *
+ * 日期口径：一律 Asia/Shanghai 日历日，助手统一走 @/lib/reporting-period。
  */
+
+import { addDays, isDayString, shanghaiDay } from "@/lib/reporting-period";
 
 export interface CostPoint {
   timestamp: Date | string;
@@ -61,8 +65,19 @@ function toDate(d: Date | string): Date {
   return d instanceof Date ? d : new Date(d);
 }
 
-function dayKey(d: Date): string {
-  return d.toISOString().slice(0, 10);
+/**
+ * 时间点 → Asia/Shanghai 日历日。
+ *
+ * 全项目的「日」都是北京日历日（见 reporting-period），这里必须一致：
+ * 用过 toISOString() 取 UTC 日，容器跑 UTC 时每天有 8 小时会把「今天」
+ * 算成昨天，图上最新一天直接消失。
+ *
+ * 已经是 YYYY-MM-DD 的直接透传：上层本来就是从日聚合表读出来的日字符串，
+ * 再绕一趟 Date 只会引入时区误差。
+ */
+function dayKey(d: Date | string): string {
+  if (typeof d === "string" && isDayString(d)) return d;
+  return shanghaiDay(toDate(d));
 }
 
 export function revenueToRmb(
@@ -138,25 +153,24 @@ export function buildDailySeries(
   days: number,
   usdCny = 7.2,
 ): DailySeriesPoint[] {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  // 窗口按北京日历日推，最后一格恒为「今天」。
+  // 之前用本地午夜的 Date 建桶、再用 UTC 取键，两边错位会整体漂一天。
+  const today = shanghaiDay();
 
   const map = new Map<string, DailySeriesPoint>();
   for (let i = days - 1; i >= 0; i--) {
-    const d = new Date(today);
-    d.setDate(today.getDate() - i);
-    const key = dayKey(d);
+    const key = addDays(today, -i);
     map.set(key, { date: key, costRmb: 0, revenueRmb: 0, profitRmb: 0 });
   }
 
   for (const p of costPoints) {
-    const key = dayKey(toDate(p.timestamp));
+    const key = dayKey(p.timestamp);
     const row = map.get(key);
     if (row) row.costRmb += p.costRmb || 0;
   }
 
   for (const p of revenuePoints) {
-    const key = dayKey(toDate(p.timestamp));
+    const key = dayKey(p.timestamp);
     const row = map.get(key);
     if (row) {
       row.revenueRmb += revenueToRmb(
@@ -205,19 +219,6 @@ export function buildProviderShares(
   });
 }
 
-/** Month window helpers */
-export function startOfMonth(d = new Date()): Date {
-  return new Date(d.getFullYear(), d.getMonth(), 1);
-}
-
-export function startOfDay(d = new Date()): Date {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
-}
-
-export function daysAgo(n: number): Date {
-  const d = startOfDay();
-  d.setDate(d.getDate() - n);
-  return d;
-}
+// 这里原本还有 startOfMonth / startOfDay / daysAgo 三个「本地时区」日期助手。
+// 已删除：全项目的日边界都是 Asia/Shanghai 日历日，用本地零点算边界正是
+// 首页月成本、30 天曲线错位的根因。需要日期运算请用 @/lib/reporting-period。

@@ -45,6 +45,26 @@ const providerSchema = z
     }
   });
 
+/**
+ * 更新用的部分字段校验。
+ *
+ * 只校验「传了的字段」，没传的不动。type 依然限定在中转类型里 ——
+ * 改成 SUB2_ADMIN 会让这条记录在本页（relayOnly）和自建页（要 Admin Key）
+ * 都编辑不了，等于凭空消失。
+ */
+const providerPatchSchema = z.object({
+  name: z.string().min(1).max(100).optional(),
+  baseUrl: z.string().url().optional(),
+  type: z.enum(["NEWAPI", "SUB2API", "ONEAPI", "OTHER"]).optional(),
+  accountEmail: z.string().email().nullable().optional(),
+  discountRate: z.number().positive().optional(),
+  currency: z.string().min(1).max(10).optional(),
+  alertThreshold: z.number().min(0).optional(),
+  quotaPerDollar: z.number().positive().optional(),
+  enabled: z.boolean().optional(),
+  notes: z.string().nullable().optional(),
+});
+
 function publicProvider(p: {
   id: string;
   name: string;
@@ -177,22 +197,15 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json(SELF_HOSTED_REJECT, { status: 400 });
     }
 
-    const updates: Record<string, unknown> = {};
-    const fields = [
-      "name",
-      "baseUrl",
-      "type",
-      "discountRate",
-      "currency",
-      "alertThreshold",
-      "quotaPerDollar",
-      "enabled",
-      "notes",
-      "accountEmail",
-    ] as const;
-    for (const f of fields) {
-      if (body[f] !== undefined) updates[f] = body[f];
+    const parsed = providerPatchSchema.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: "参数不合法", issues: parsed.error.issues },
+        { status: 400 },
+      );
     }
+
+    const updates: Record<string, unknown> = { ...parsed.data };
 
     if (body.apiKey && typeof body.apiKey === "string" && !body.apiKey.includes("•")) {
       updates.apiKey = encryptSecret(body.apiKey);

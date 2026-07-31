@@ -7,10 +7,25 @@ import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
+/**
+ * 只接受站内绝对路径。
+ *
+ * `startsWith("/")` 挡不住协议相对地址：`//evil.com` 会被浏览器当成外站，
+ * Next 的 router.replace 也会直接硬跳过去 —— 登录页挂个 ?from=//evil.com
+ * 就能做成「真域名 + 真证书」的钓鱼跳板。反斜杠同理（部分浏览器等价于 /）。
+ */
+function safeRedirect(target: string | null): string {
+  if (!target) return "/";
+  if (target[0] !== "/") return "/";
+  if (target[1] === "/" || target[1] === "\\") return "/";
+  if (target.includes("\\")) return "/";
+  return target;
+}
+
 function LoginForm() {
   const router = useRouter();
   const search = useSearchParams();
-  const from = search.get("from") || "/";
+  const from = safeRedirect(search.get("from"));
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -29,7 +44,7 @@ function LoginForm() {
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "登录失败");
-      router.replace(from.startsWith("/") ? from : "/");
+      router.replace(from);
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "登录失败");

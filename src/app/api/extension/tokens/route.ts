@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { createExtensionToken } from "@/lib/crypto";
 import { isSelfHosted, relayOnly } from "@/lib/provider-kinds";
+import {
+  DEFAULT_TOKEN_TTL_DAYS,
+  isTokenExpired,
+  resolveExpiry,
+} from "@/lib/extension-token";
 
 const NO_STORE_HEADERS = {
   "Cache-Control": "no-store",
@@ -20,6 +25,7 @@ function toMetadata(
     providerId: string | null;
     label: string;
     enabled: boolean;
+    expiresAt: Date | null;
     lastUsedAt: Date | null;
     useCount: number;
     createdAt: Date;
@@ -34,6 +40,8 @@ function toMetadata(
     providerName: providerName ?? null,
     label: row.label,
     enabled: row.enabled,
+    expiresAt: row.expiresAt,
+    expired: isTokenExpired(row),
     lastUsedAt: row.lastUsedAt,
     useCount: row.useCount,
     createdAt: row.createdAt,
@@ -100,6 +108,9 @@ export async function POST(req: NextRequest) {
     }
 
     const secret = createExtensionToken();
+    // 默认给期限：token 会出现在 URL 里，泄露的那份不该永久有效。
+    // 显式传 expiresInDays: null 才是永不过期。
+    const expiresAt = resolveExpiry(body.expiresInDays);
     const created = await prisma.extensionInjectToken.create({
       data: {
         tokenHash: secret.tokenHash,
@@ -107,6 +118,7 @@ export async function POST(req: NextRequest) {
         providerId,
         label: label || (providerId ? "provider" : "global"),
         enabled: true,
+        expiresAt,
       },
     });
 
@@ -126,7 +138,9 @@ export async function POST(req: NextRequest) {
           header: "X-Orbit-Token",
           alternative: "Authorization: Bearer <token>",
         },
-        warning: "该 token 仅显示一次，请立即安全保存。",
+        warning: expiresAt
+          ? `该 token 仅显示一次，请立即安全保存。有效期至 ${expiresAt.toISOString()}（默认 ${DEFAULT_TOKEN_TTL_DAYS} 天）。`
+          : "该 token 仅显示一次，请立即安全保存。此 token 永不过期，请谨慎保管。",
       },
     });
   } catch (error) {

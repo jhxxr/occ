@@ -610,6 +610,24 @@ function newApiAdminHeaders(token: string, userId: number): HeadersInit {
 }
 
 /**
+ * NewAPI 出错时经常回 HTTP 200 + {"success":false,"message":"..."}。
+ * 只看 res.ok 会把它当成「这天没有日志」，进而落成永久锚点、成本永远是 0。
+ * 所以拿不到 success:true 就必须当失败处理。
+ */
+function newApiFailure(data: unknown): string | null {
+  const root = asRecord(data);
+  if (!root) return null;
+  if (root.success === false || root.code === false) {
+    return (
+      (typeof root.message === "string" && root.message) ||
+      (typeof root.error === "string" && root.error) ||
+      "上游返回失败"
+    );
+  }
+  return null;
+}
+
+/**
  * Downstream NewAPI admin stats (self-operated relay).
  *
  * Auth (confirmed on compatible NewAPI deployments):
@@ -914,7 +932,9 @@ export async function fetchDownstreamDailyUsage(
     if (usersRes.ok) {
       const rows = asRecord(usersRes.data)?.data;
       if (Array.isArray(rows)) {
-        excludeResolved = true;
+        // 空数组 ≠ 拆得出测试号。站点没开数据看板导出时这里就是 []，
+        // 此时若报 resolved，测试号消费会被当成收入且不会有任何警告。
+        excludeResolved = rows.length > 0;
         for (const row of rows) {
           const r = asRecord(row);
           if (!r) continue;
@@ -1010,7 +1030,10 @@ export async function fetchDownstreamDailyUsage(
         quota,
         excludedQuota,
         requests: fromUsers?.requests ?? fromData?.requests ?? 0,
-        excludeResolved: excludeResolved || excludeSet.size === 0,
+        // 逐日口径：这一天真的有逐账号数据才算拆得出来。
+        // 整体 resolved 但某天缺账号明细时，那天的排除额其实是 0。
+        excludeResolved:
+          excludeSet.size === 0 || (excludeResolved && fromUsers != null),
       });
     }
 
@@ -1309,6 +1332,23 @@ export async function fetchDownstreamChannelDay(
         break;
       }
 
+      // HTTP 200 但 success:false —— 不能当成「这天没日志」，否则会落死锚点
+      const failure = newApiFailure(res.data);
+      if (failure) {
+        if (page === 1) {
+          return {
+            success: false,
+            day: input.day,
+            channels: [],
+            scanned: 0,
+            total: 0,
+            complete: false,
+            error: `读取日志失败：${failure}`,
+          };
+        }
+        break;
+      }
+
       const payload = asRecord(asRecord(res.data)?.data) ?? asRecord(res.data);
       const items = Array.isArray(asRecord(res.data)?.data)
         ? (asRecord(res.data)!.data as unknown[])
@@ -1319,7 +1359,9 @@ export async function fetchDownstreamChannelDay(
       if (pageTotal != null) total = pageTotal;
 
       if (!items.length) {
-        complete = true;
+        // 第一页就没有任何可解析的条目，且上游也没报总数 —— 分不清是
+        // 「这天真没消费」还是「响应结构变了」，按不完整处理、下次重扫。
+        complete = page > 1 || total > 0 || Array.isArray(asRecord(res.data)?.data);
         break;
       }
       if (!effectivePageSize) effectivePageSize = items.length;
@@ -1390,24 +1432,36 @@ export async function fetchDownstreamAliveChannels(
   const base = normalizeBaseUrl(input.baseUrl);
   const userId = input.adminUserId && input.adminUserId > 0 ? input.adminUserId : 1;
   const headers = newApiAdminHeaders(input.adminKey, userId);
+  const pageSize = 1000;
+  const maxPages = 20;
   try {
-    const res = await fetchJson(`${base}/api/channel/?p=1&page_size=1000`, {
-      method: "GET",
-      headers,
-      timeoutMs: 30_000,
-    });
-    if (!res.ok) return null;
-    const payload = asRecord(res.data)?.data;
-    const items = Array.isArray(payload)
-      ? payload
-      : Array.isArray(asRecord(payload)?.items)
-        ? (asRecord(payload)!.items as unknown[])
-        : null;
-    if (!items) return null;
     const ids = new Set<number>();
-    for (const it of items) {
-      const id = num(asRecord(it)?.id);
-      if (id != null) ids.add(id);
+    for (let page = 1; page <= maxPages; page++) {
+      const res = await fetchJson(
+        `${base}/api/channel/?p=${page}&page_size=${pageSize}`,
+        { method: "GET", headers, timeoutMs: 30_000 },
+      );
+      if (!res.ok) return null;
+      // HTTP 200 + success:false 也是失败；返回 null 让调用方拒绝判定死活
+      if (newApiFailure(res.data)) return null;
+      const payload = asRecord(res.data)?.data;
+      const items = Array.isArray(payload)
+        ? payload
+        : Array.isArray(asRecord(payload)?.items)
+          ? (asRecord(payload)!.items as unknown[])
+          : null;
+      if (!items) return null;
+      for (const it of items) {
+        const id = num(asRecord(it)?.id);
+        if (id != null) ids.add(id);
+      }
+      // 服务端可能把 page_size 压小（硬限 100），以实际返回条数判断是否还有下一页
+      if (items.length < pageSize) {
+        // 一个渠道都没读到：分不清「站点真的没渠道」还是「响应结构变了」。
+        // 返回空集会把所有历史渠道判成已删除，宁可不判定。
+        if (page === 1 && ids.size === 0) return null;
+        return ids;
+      }
     }
     return ids;
   } catch {

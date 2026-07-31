@@ -6,7 +6,7 @@ import { detectRechargeOnSync } from "@/lib/recharge";
 import { isSelfHosted, relayOnly, selfHostedOnly } from "@/lib/provider-kinds";
 import { syncDownstreamUsage } from "@/lib/downstream-usage";
 import { summarizeCosts } from "@/lib/operating-cost";
-import { monthPeriod } from "@/lib/reporting-period";
+import { monthPeriod, addDays, shanghaiDay, startOfMonthDay } from "@/lib/reporting-period";
 import {
   syncSelfHostedMeta,
   syncSelfHostedGroupUsage,
@@ -15,8 +15,6 @@ import {
   buildDailySeries,
   buildProviderShares,
   calculateProfit,
-  daysAgo,
-  startOfMonth,
 } from "@/lib/profit";
 
 export interface SyncResultItem {
@@ -227,6 +225,11 @@ export async function syncUpstreamProvider(id: string): Promise<SyncResultItem> 
         // 保留充值提示
       } else if (rechargeDetected.detected) {
         lastError = `检测到充值约 ${rechargeDetected.creditGained?.toFixed(2)} 面值，请到「充值台账」补填实付`;
+      } else if (keySync.missingStats > 0) {
+        // 基线已保留（不会凭空多算成本），但这轮的增量是不完整的
+        lastError = `有 ${keySync.missingStats} 个 Key 没拿到用量数据，本轮成本可能偏低，建议稍后重新同步`;
+      } else if (keySync.baselineResets > 0) {
+        lastError = `有 ${keySync.baselineResets} 个 Key 的上游累计消费低于上次记录（对方可能重置了计数），本轮未计入这部分增量`;
       } else {
         lastError = null;
       }
@@ -394,20 +397,17 @@ export async function syncAll(): Promise<SyncResultItem[]> {
 export async function getDashboardData() {
   const usdCny = await getUsdCnyRate();
   const now = new Date();
-  const monthStart = startOfMonth(now);
-  const seriesStart = daysAgo(30);
 
-  const toDay = (d: Date) =>
-    new Intl.DateTimeFormat("en-CA", {
-      timeZone: "Asia/Shanghai",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(d);
+  // 边界统一走北京日历日再换算成真实时刻。
+  // 之前 monthStart 用的是「容器本地零点」，而按日聚合查询用的是北京日字符串，
+  // UTC 容器里两者差 8 小时 —— 每月头 8 小时的快照成本会被漏掉。
+  const todayDay = shanghaiDay(now);
+  const monthStartDay = startOfMonthDay(todayDay);
+  const seriesStartDay = addDays(todayDay, -29);
 
-  const monthStartDay = toDay(monthStart);
-  const todayDay = toDay(now);
-  const seriesStartDay = toDay(seriesStart);
+  const dayStartInstant = (day: string) => new Date(`${day}T00:00:00+08:00`);
+  const monthStart = dayStartInstant(monthStartDay);
+  const seriesStart = dayStartInstant(seriesStartDay);
 
   // 先分身份：中转上游（余额/预警/成本占比）与自建站（独立一套账）
   const [providers, selfHostedSites] = await Promise.all([
@@ -464,13 +464,7 @@ export async function getDashboardData() {
   const preciseProviderDays = new Set(
     usageDailies.map((d) => `${d.providerId}|${d.day}`),
   );
-  const toShanghai = (d: Date) =>
-    new Intl.DateTimeFormat("en-CA", {
-      timeZone: "Asia/Shanghai",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(d);
+  const toShanghai = (d: Date) => shanghaiDay(d);
   const snapshotFallbackCost = monthCosts.reduce((sum, snap) => {
     if (preciseProviderDays.has(`${snap.upstreamId}|${toShanghai(snap.timestamp)}`)) {
       return sum;
@@ -581,9 +575,11 @@ export async function getDashboardData() {
     revByDay.set(row.day, (revByDay.get(row.day) || 0) + (row.revenueRmb || 0));
   }
 
+  // 日聚合表里的 day 已经是北京日历日，直接透传给图表 ——
+  // 绕一趟 new Date(`${day}T12:00:00`) 会按容器本地时区解释，白白引入时区误差
   const costPointsForChart = [...costByDayForChart.entries()].map(
     ([day, costRmb]) => ({
-      timestamp: new Date(`${day}T12:00:00`),
+      timestamp: day,
       costRmb,
       deltaConsumed: 0,
     }),
@@ -592,7 +588,7 @@ export async function getDashboardData() {
   const dailySeries = buildDailySeries(
     costPointsForChart,
     [...revByDay.entries()].map(([date, revenueRmb]) => ({
-      timestamp: new Date(`${date}T12:00:00`),
+      timestamp: date,
       revenue: revenueRmb,
       revenueCurrency: "CNY" as const,
     })),

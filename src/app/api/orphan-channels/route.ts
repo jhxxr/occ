@@ -176,6 +176,7 @@ export async function POST(req: NextRequest) {
           daysScanned: results.reduce((s, r) => s + r.daysScanned, 0),
           daysSkipped: results.reduce((s, r) => s + r.daysSkipped, 0),
           daysDeferred: results.reduce((s, r) => s + r.daysDeferred, 0),
+          monthsRefused: results.reduce((s, r) => s + r.monthsRefused, 0),
           logsFetched: results.reduce((s, r) => s + r.logsFetched, 0),
           unresolvedRevenueRmb:
             Math.round(

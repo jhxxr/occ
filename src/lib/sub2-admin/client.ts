@@ -24,11 +24,30 @@ function asRecord(v: unknown): Record<string, unknown> | null {
     : null;
 }
 
+/**
+ * 剥掉 {code, message, data} 外壳。
+ *
+ * 面板出错时会回 HTTP 200 + {code: 40001, message: "..."}，两个分支返回同样的
+ * 值等于没判断 —— 结果是「取不到数据」被当成同步成功，还会写 lastError: null。
+ * 所以非成功码一律抛错。
+ */
 function unwrap(data: unknown): unknown {
   const root = asRecord(data);
   if (!root) return data;
-  if (root.code === 0 || root.code === "0" || root.code === "success") {
-    return root.data !== undefined ? root.data : root;
+  const hasCode = "code" in root;
+  const ok =
+    !hasCode ||
+    root.code === 0 ||
+    root.code === "0" ||
+    root.code === "success" ||
+    root.code === true;
+  if (!ok) {
+    throw new Sub2AdminError(
+      (typeof root.message === "string" && root.message) ||
+        `Admin API 返回错误码 ${String(root.code)}`,
+      502,
+      data,
+    );
   }
   return root.data !== undefined ? root.data : root;
 }
@@ -165,7 +184,13 @@ export async function adminDashboardStats(
   return asRecord(data) || {};
 }
 
-/** 拉取管理端使用记录（可按 group_id / 日期过滤） */
+/**
+ * 拉取管理端使用记录（可按 group_id / 日期过滤）
+ *
+ * pages 缺省成 1 是危险的：调用方靠它判断还有没有下一页，猜成 1 就只读了
+ * 首页 100 条，然后把「部分合计」当成整天的量写回去（数字会悄悄变小）。
+ * 所以优先用总数自行推算，并兼容 total_pages 这个别名。
+ */
 export async function adminListUsage(
   baseUrl: string,
   adminKey: string,
@@ -177,10 +202,17 @@ export async function adminListUsage(
     page?: number;
     pageSize?: number;
   },
-): Promise<{ items: AdminUsageItem[]; total: number; pages: number }> {
+): Promise<{
+  items: AdminUsageItem[];
+  total: number;
+  pages: number;
+  /** 上游没给出任何分页总数，pages 是猜的 —— 只能靠返回条数判断是否到底 */
+  pagesKnown: boolean;
+}> {
+  const pageSize = opts.pageSize ?? 100;
   const q = new URLSearchParams({
     page: String(opts.page ?? 1),
-    page_size: String(opts.pageSize ?? 100),
+    page_size: String(pageSize),
     start_date: opts.startDate,
     end_date: opts.endDate,
     timezone: "Asia/Shanghai",
@@ -191,10 +223,16 @@ export async function adminListUsage(
   if (opts.accountId) q.set("account_id", String(opts.accountId));
   const data = await adminFetch(baseUrl, adminKey, `/usage?${q}`);
   const root = asRecord(data);
+  const items = (root?.items as AdminUsageItem[]) || [];
+  const total = Number(root?.total || 0);
+  const reported = Number(root?.pages ?? root?.total_pages ?? 0);
+  const derived = total > 0 && pageSize > 0 ? Math.ceil(total / pageSize) : 0;
+  const pagesKnown = reported > 0 || derived > 0;
   return {
-    items: (root?.items as AdminUsageItem[]) || [],
-    total: Number(root?.total || 0),
-    pages: Number(root?.pages || 1),
+    items,
+    total,
+    pages: Math.max(reported, derived, 1),
+    pagesKnown,
   };
 }
 

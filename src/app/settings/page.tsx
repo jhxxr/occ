@@ -24,6 +24,8 @@ interface TokenRow {
   providerName: string | null;
   label: string;
   enabled: boolean;
+  expiresAt: string | null;
+  expired: boolean;
   lastUsedAt: string | null;
   useCount: number;
   createdAt: string;
@@ -290,6 +292,7 @@ export default function SettingsPage() {
                       <th className="px-3 py-2">前缀</th>
                       <th className="px-3 py-2">备注</th>
                       <th className="px-3 py-2">绑定</th>
+                      <th className="px-3 py-2">有效期</th>
                       <th className="px-3 py-2">使用</th>
                       <th className="px-3 py-2">最近</th>
                       <th className="px-3 py-2" />
@@ -315,6 +318,17 @@ export default function SettingsPage() {
                             <Badge variant="coral" className="ml-1">
                               已停用
                             </Badge>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-[11px] font-data">
+                          {t.expired ? (
+                            <Badge variant="coral">已过期</Badge>
+                          ) : t.expiresAt ? (
+                            <span className="text-muted">
+                              {new Date(t.expiresAt).toLocaleDateString("zh-CN")}
+                            </span>
+                          ) : (
+                            <span className="text-muted">永久</span>
                           )}
                         </td>
                         <td className="px-3 py-2 font-data text-xs">

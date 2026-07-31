@@ -119,6 +119,12 @@ export interface ScanResult {
   logsFetched: number;
   /** 因为单次上限没扫到的天数；>0 表示要再点一次继续 */
   daysDeferred: number;
+  /**
+   * force 重扫时被拒绝的已压缩月份数。
+   * 重扫必须能一次扫完整月（否则删掉月汇总就丢数据），
+   * >0 表示要放大 maxDaysPerRun、并让区间完整覆盖该月。
+   */
+  monthsRefused: number;
   error?: string;
 }
 
@@ -153,6 +159,7 @@ export async function scanChannelDays(
     daysIncomplete: 0,
     logsFetched: 0,
     daysDeferred: 0,
+    monthsRefused: 0,
   };
   if (!site) return { ...base, error: "下游站点不存在" };
 
@@ -197,26 +204,49 @@ export async function scanChannelDays(
   let logsFetched = 0;
   let lastError: string | undefined;
 
-  // force 重扫压缩过的月份：先删掉月汇总，否则新写的日行会和它重复计数
+  // 单次扫描上限：一天可能上百页请求，一口气扫整月会把对方站点打到限流
+  const maxDays = Math.max(1, opts.maxDaysPerRun ?? DEFAULT_MAX_DAYS_PER_RUN);
+  let daysDeferred = 0;
+  let monthsRefused = 0;
+
+  const daySet = new Set(days);
+
+  // force 重扫压缩过的月份：得先删掉月汇总，否则新写的日行会和它重复计数。
+  // 但删掉就等于把整月数据先销毁 —— 只有「这个月能在本轮完整重扫」时才敢删：
+  //   1. 请求区间要覆盖该月全部（到今天为止）的日子，否则区间外的天会凭空消失；
+  //   2. 本轮预算要够扫完整月，否则 maxDays 截断后剩下的天就永久没了。
+  // 任一条不满足就保留月汇总、跳过该月，并告诉用户要放大 maxDaysPerRun。
+  const rescanMonths = new Set<string>();
   if (opts.force) {
     const touched = [...new Set(days.map(monthKey))].filter((m) =>
       compactedMonths.has(m),
     );
-    if (touched.length) {
+    let budget = maxDays;
+    for (const m of touched) {
+      const mp = monthPeriod(`${m}-01`);
+      const monthDays = enumerateDays(mp.startDay, mp.endDay).filter(
+        (d) => d <= today,
+      );
+      const fullyInRange = monthDays.every((d) => daySet.has(d));
+      if (!fullyInRange || monthDays.length > budget) {
+        monthsRefused++;
+        continue;
+      }
+      budget -= monthDays.length;
+      rescanMonths.add(m);
+    }
+
+    if (rescanMonths.size) {
       await prisma.downstreamChannelDay.deleteMany({
         where: {
           downstreamId: siteId,
           granularity: GRANULARITY.month,
-          day: { in: touched },
+          day: { in: [...rescanMonths] },
         },
       });
-      for (const m of touched) compactedMonths.delete(m);
+      for (const m of rescanMonths) compactedMonths.delete(m);
     }
   }
-
-  // 单次扫描上限：一天可能上百页请求，一口气扫整月会把对方站点打到限流
-  const maxDays = Math.max(1, opts.maxDaysPerRun ?? DEFAULT_MAX_DAYS_PER_RUN);
-  let daysDeferred = 0;
 
   // 从近到远扫：最近的数据最有用，被上限截断时留下的是更老的天
   const ordered = [...days].reverse();
@@ -227,8 +257,9 @@ export async function scanChannelDays(
       daysSkipped++;
       continue;
     }
-    // 该月已压缩成汇总行：这一天的明细已经并进去了，重扫会重复计数
-    if (!opts.force && compactedMonths.has(monthKey(day))) {
+    // 该月已压缩成汇总行：这一天的明细已经并进去了，重扫会重复计数。
+    // force 时若该月没被批准重扫（区间不全或预算不够），同样要跳过。
+    if (compactedMonths.has(monthKey(day))) {
       daysSkipped++;
       continue;
     }
@@ -284,6 +315,7 @@ export async function scanChannelDays(
     daysIncomplete,
     logsFetched,
     daysDeferred,
+    monthsRefused,
     error: lastError,
   };
 }

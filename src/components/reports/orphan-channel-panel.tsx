@@ -114,10 +114,15 @@ export function OrphanChannelPanel({
         s.daysDeferred > 0
           ? ` · 还剩 ${s.daysDeferred} 天未扫，再点一次继续（分批是为了不打爆下游站点）`
           : "";
+      // 重扫已压缩月份必须一次扫完整月，否则删掉月汇总就会丢数据
+      const refusedNote =
+        s.monthsRefused > 0
+          ? ` · 有 ${s.monthsRefused} 个已压缩月份未重扫：请把区间设为整月并把「单次最多扫描天数」调到 31`
+          : "";
       setMsg(
         (s.orphans > 0
           ? `${scanNote} · 已删除渠道 ${s.orphans} 个（新增 ${s.created}），待补录 ${formatRmb(s.unresolvedRevenueRmb)}`
-          : `${scanNote} · 没有发现已删除渠道的消费`) + deferNote,
+          : `${scanNote} · 没有发现已删除渠道的消费`) + deferNote + refusedNote,
       );
       await load();
       onChanged?.();

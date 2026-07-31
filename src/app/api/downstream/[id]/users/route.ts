@@ -81,9 +81,22 @@ export async function PUT(req: NextRequest, ctx: Ctx) {
       return NextResponse.json({ error: "站点不存在" }, { status: 404 });
     }
     const body = await req.json();
-    const ids = Array.isArray(body.excludeUserIds)
-      ? body.excludeUserIds.map(Number).filter((n: number) => Number.isFinite(n))
-      : [];
+    // 字段缺失不等于「清空排除名单」。默认 resync=true，所以一次
+    // PUT {"resync":true} 会把测试号全部放回收入口径并立刻重新同步 ——
+    // 收入凭空虚增，而且没有任何报错。
+    if (!Array.isArray(body.excludeUserIds)) {
+      return NextResponse.json(
+        { error: "excludeUserIds 必须是数组（清空请显式传 []）" },
+        { status: 400 },
+      );
+    }
+    const ids = [
+      ...new Set(
+        body.excludeUserIds
+          .map(Number)
+          .filter((n: number) => Number.isInteger(n) && n > 0),
+      ),
+    ];
 
     await prisma.downstreamSite.update({
       where: { id },

@@ -128,14 +128,25 @@ export function allocateCostEntry(
   const declaredEnd = entry.actualEndDay || entry.plannedEndDay || null;
   const openEnded = !declaredEnd;
 
-  // 进行中且没定结束日：锚死一个滚动窗口。
-  // 不能跟着查询区间走 —— 否则同一笔成本在周报和月报里每天摊的钱会不一样。
-  let effectiveEndDay =
-    declaredEnd ?? addDays(entry.startDay, OPEN_ENDED_WINDOW_DAYS - 1);
+  // 摊销分母必须固定，不能跟着查询区间走 ——
+  // 否则同一笔成本在周报和月报里每天摊的钱会不一样。
+  let effectiveEndDay: string;
+  let effectiveDays: number;
 
-  if (effectiveEndDay < entry.startDay) effectiveEndDay = entry.startDay;
+  if (declaredEnd) {
+    effectiveEndDay = declaredEnd < entry.startDay ? entry.startDay : declaredEnd;
+    effectiveDays = inclusiveDays(entry.startDay, effectiveEndDay);
+  } else {
+    // 进行中、还没填结束日：按固定日额（amount / 窗口天数）一直摊下去，
+    // 直到你填上结束日为止。
+    // 早先把区间锚死在 startDay + 29，结果是第 31 天起这笔钱直接从报表里
+    // 消失（overlap=0 → null）—— 一笔还在花的钱不该凭空归零。
+    // 日额仍由固定窗口决定，所以周报/月报的每日摊销依然一致。
+    effectiveDays = OPEN_ENDED_WINDOW_DAYS;
+    const windowEnd = addDays(entry.startDay, OPEN_ENDED_WINDOW_DAYS - 1);
+    effectiveEndDay = period.endDay > windowEnd ? period.endDay : windowEnd;
+  }
 
-  const effectiveDays = inclusiveDays(entry.startDay, effectiveEndDay);
   if (effectiveDays <= 0) return null;
 
   const covered = overlapDays(

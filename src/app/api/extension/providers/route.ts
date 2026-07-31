@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { hashExtensionToken } from "@/lib/crypto";
 import { relayOnly } from "@/lib/provider-kinds";
+import {
+  extractExtensionToken,
+  findUsableExtensionToken,
+} from "@/lib/extension-token";
 
 /**
  * 扩展专用：列出中转上游的「凭证是否在期」状态。
@@ -28,11 +31,7 @@ function json(req: NextRequest, body: unknown, status = 200) {
 }
 
 function extractToken(req: NextRequest): string | null {
-  const fromQuery = req.nextUrl.searchParams.get("token");
-  const fromHeader =
-    req.headers.get("x-orbit-token") ||
-    req.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
-  return (fromQuery || fromHeader || "").trim() || null;
+  return extractExtensionToken(req);
 }
 
 export async function OPTIONS(req: NextRequest) {
@@ -40,14 +39,12 @@ export async function OPTIONS(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
-  const token = extractToken(req);
-  if (!token) return json(req, { error: "missing token" }, 400);
+  if (!extractToken(req)) return json(req, { error: "missing token" }, 400);
 
-  const row = await prisma.extensionInjectToken.findUnique({
-    where: { tokenHash: hashExtensionToken(token) },
-  });
-  if (!row || !row.enabled) {
-    return json(req, { error: "invalid or disabled token" }, 401);
+  // 含 enabled / 过期判定
+  const row = await findUsableExtensionToken(req);
+  if (!row) {
+    return json(req, { error: "invalid, disabled or expired token" }, 401);
   }
 
   // 中转上游才有 JWT 可抓；自建站不进列表

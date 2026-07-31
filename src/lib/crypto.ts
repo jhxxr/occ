@@ -19,14 +19,34 @@ export function encryptSecret(plain: string): string {
   return `${iv.toString("hex")}:${tag.toString("hex")}:${enc.toString("hex")}`;
 }
 
-/** Decrypt a secret produced by encryptSecret. Falls back to raw value for legacy plain text. */
+/** `iv:tag:ciphertext` —— iv 12 字节、tag 16 字节，都是十六进制 */
+const BUNDLE_RE = /^[0-9a-f]{24}:[0-9a-f]{32}:[0-9a-f]*$/i;
+
+/**
+ * 判断是不是 encryptSecret 产出的密文包。
+ *
+ * 不能只看有没有冒号 —— 明文凭据里带冒号很常见（URL、`user:pass`），
+ * 那样会被误当成密文去解密，然后走进解密失败分支。
+ */
+export function isEncryptedBundle(value: string): boolean {
+  return BUNDLE_RE.test(value);
+}
+
+/**
+ * 解密 encryptSecret 的产物；不是密文包的按历史明文原样返回。
+ *
+ * 解密失败（多半是换过 ENCRYPTION_SECRET）返回空字符串，**绝不能返回密文本身**：
+ * 调用方普遍写的是 `const raw = decryptSecret(x); if (!raw) throw "缺少 Key"`，
+ * 返回密文会让这类守卫全部失效，然后把 `9f3c…:a1b2…:c4d5…` 当成 API Key
+ * 发给第三方站点（既泄露密文，又让报错变得完全无法定位）。
+ */
 export function decryptSecret(bundle: string): string {
-  if (!bundle.includes(":")) {
+  if (!bundle) return "";
+  if (!isEncryptedBundle(bundle)) {
     // Legacy / unencrypted value (dev convenience)
     return bundle;
   }
   const [ivHex, tagHex, dataHex] = bundle.split(":");
-  if (!ivHex || !tagHex || !dataHex) return bundle;
   try {
     const key = deriveKey();
     const decipher = createDecipheriv(ALGO, key, Buffer.from(ivHex, "hex"));
@@ -37,7 +57,11 @@ export function decryptSecret(bundle: string): string {
     ]);
     return dec.toString("utf8");
   } catch {
-    return bundle;
+    console.error(
+      "[orbit] 凭据解密失败：密文与当前 ENCRYPTION_SECRET 不匹配。" +
+        "如果刚轮换过密钥，需要重新填写受影响的上游/下游凭据。",
+    );
+    return "";
   }
 }
 

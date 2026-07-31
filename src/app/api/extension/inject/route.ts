@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { encryptSecret, hashExtensionToken } from "@/lib/crypto";
+import { encryptSecret } from "@/lib/crypto";
 import { normalizeBaseUrl } from "@/lib/utils";
 import { isSelfHosted, relayOnly } from "@/lib/provider-kinds";
+import {
+  extractExtensionToken,
+  findUsableExtensionToken,
+} from "@/lib/extension-token";
 
 function corsHeaders(req: NextRequest): HeadersInit {
   const origin = req.headers.get("origin") || "*";
@@ -23,20 +27,12 @@ function json(req: NextRequest, body: unknown, status = 200) {
 }
 
 function extractToken(req: NextRequest): string | null {
-  // 链接里 ?token=oct_… 最方便扩展粘贴；Header 给脚本调用
-  const fromQuery = req.nextUrl.searchParams.get("token");
-  const fromHeader =
-    req.headers.get("x-orbit-token") ||
-    req.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
-  return (fromQuery || fromHeader || "").trim() || null;
+  return extractExtensionToken(req);
 }
 
+/** 已包含 enabled / 过期判定；返回 null 一律当 401 */
 async function findToken(req: NextRequest) {
-  const token = extractToken(req);
-  if (!token) return null;
-  return prisma.extensionInjectToken.findUnique({
-    where: { tokenHash: hashExtensionToken(token) },
-  });
+  return findUsableExtensionToken(req);
 }
 
 function hostOf(url: string): string {
@@ -56,8 +52,8 @@ export async function GET(req: NextRequest) {
   if (!extractToken(req)) return json(req, { error: "missing token header" }, 400);
 
   const row = await findToken(req);
-  if (!row || !row.enabled) {
-    return json(req, { error: "invalid or disabled token" }, 401);
+  if (!row) {
+    return json(req, { error: "invalid, disabled or expired token" }, 401);
   }
 
   const provider = row.providerId
@@ -72,7 +68,7 @@ export async function GET(req: NextRequest) {
     label: row.label,
     providerId: row.providerId,
     provider,
-    longLived: true,
+    expiresAt: row.expiresAt,
   });
 }
 
@@ -84,8 +80,8 @@ export async function POST(req: NextRequest) {
     }
 
     const row = await findToken(req);
-    if (!row || !row.enabled) {
-      return json(req, { error: "invalid or disabled token" }, 401);
+    if (!row) {
+      return json(req, { error: "invalid, disabled or expired token" }, 401);
     }
 
     const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;

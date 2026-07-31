@@ -12,7 +12,7 @@
 import { prisma } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
 import { summarizeCosts } from "@/lib/operating-cost";
-import { monthPeriod } from "@/lib/reporting-period";
+import { monthPeriod, shanghaiDay } from "@/lib/reporting-period";
 import {
   adminListAccounts,
   adminListGroups,
@@ -23,14 +23,8 @@ import {
   Sub2AdminError,
 } from "@/lib/sub2-admin/client";
 
-function dayStr(d = new Date()): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(d);
-}
+/** 全项目统一走 reporting-period 的北京日历日，别在这里再造一份 */
+const dayStr = (d = new Date()): string => shanghaiDay(d);
 
 export async function loadAdminProvider(id: string) {
   const p = await prisma.upstreamProvider.findUnique({ where: { id } });
@@ -196,6 +190,8 @@ export async function syncSelfHostedGroupUsage(
 
   let fetched = 0;
   const maxPages = opts.maxPages ?? 30;
+  /** 因翻页被截断、只拿到部分数据的「分组×日」数 */
+  let partialDays = 0;
 
   for (const g of tracked) {
     // 按日桶
@@ -204,23 +200,27 @@ export async function syncSelfHostedGroupUsage(
       { requests: number; official: number; actual: number; tokens: number }
     >();
 
+    // 排序是 created_at desc：截断时丢的是**最老**的那几天。
+    // 所以被截断后，桶里最老那一天几乎肯定只有半天数据，不能当完整值写回去。
+    let truncated = false;
+    let oldestSeen: string | null = null;
+
     for (let page = 1; page <= maxPages; page++) {
-      const { items, pages } = await adminListUsage(provider.baseUrl, key, {
-        startDate: opts.startDate,
-        endDate: opts.endDate,
-        groupId: g.remoteGroupId,
-        page,
-        pageSize: 100,
-      });
+      const { items, pages, pagesKnown } = await adminListUsage(
+        provider.baseUrl,
+        key,
+        {
+          startDate: opts.startDate,
+          endDate: opts.endDate,
+          groupId: g.remoteGroupId,
+          page,
+          pageSize: 100,
+        },
+      );
       if (!items.length) break;
       for (const it of items) {
         const when = it.created_at ? new Date(it.created_at) : new Date();
-        const day = new Intl.DateTimeFormat("en-CA", {
-          timeZone: "Asia/Shanghai",
-          year: "numeric",
-          month: "2-digit",
-          day: "2-digit",
-        }).format(when);
+        const day = shanghaiDay(when);
         const b = dayBucket.get(day) || {
           requests: 0,
           official: 0,
@@ -232,12 +232,40 @@ export async function syncSelfHostedGroupUsage(
         b.actual += Number(it.actual_cost || 0);
         b.tokens += Number(it.total_tokens || 0);
         dayBucket.set(day, b);
+        if (!oldestSeen || day < oldestSeen) oldestSeen = day;
         fetched++;
       }
-      if (page >= pages) break;
+      // 上游报了页数就按它翻；没报就只能看这页是否满页
+      const atEnd = pagesKnown ? page >= pages : items.length < 100;
+      if (atEnd) break;
+      if (page === maxPages) truncated = true;
     }
 
     for (const [day, b] of dayBucket) {
+      // 截断时最老那天的数据是残缺的：写回去会把原本完整的合计改小。
+      // 宁可保留旧值 —— 少一次更新不会错账，写入半天的数据会。
+      const partial = truncated && day === oldestSeen;
+      if (partial) {
+        partialDays++;
+        continue;
+      }
+      // 倍率按行冻结：已入账的日行沿用当时的倍率，只有新行才用当前值。
+      // 否则改一次分组倍率就会把所有历史报表重算一遍（会改写历史）。
+      const existing = await prisma.selfHostedGroupDaily.findUnique({
+        where: {
+          providerId_remoteGroupId_day: {
+            providerId,
+            remoteGroupId: g.remoteGroupId,
+            day,
+          },
+        },
+        select: { sellRateUsed: true },
+      });
+      const frozen = existing && existing.sellRateUsed > 0;
+      const rate = frozen ? existing.sellRateUsed : g.sellRate;
+      // 迁移前的行没有倍率快照，这次补上当前值并标成 legacy（只会发生一次）
+      const rateSource = existing && !frozen ? "legacy" : "group";
+
       await prisma.selfHostedGroupDaily.upsert({
         where: {
           providerId_remoteGroupId_day: {
@@ -255,7 +283,9 @@ export async function syncSelfHostedGroupUsage(
           officialCost: b.official,
           actualCost: b.actual,
           totalTokens: b.tokens,
-          sellRevenueRmb: b.official * g.sellRate,
+          sellRevenueRmb: b.official * rate,
+          sellRateUsed: rate,
+          sellRateSource: "group",
           track: true,
         },
         update: {
@@ -264,7 +294,10 @@ export async function syncSelfHostedGroupUsage(
           officialCost: b.official,
           actualCost: b.actual,
           totalTokens: b.tokens,
-          sellRevenueRmb: b.official * g.sellRate,
+          // 用量本身会被重新拉取修正，但折算用的倍率保持首次入账时的值
+          sellRevenueRmb: b.official * rate,
+          sellRateUsed: rate,
+          sellRateSource: rateSource,
           track: true,
         },
       });
@@ -297,7 +330,16 @@ export async function syncSelfHostedGroupUsage(
     });
   }
 
-  return { groups: tracked.length, fetched };
+  return {
+    groups: tracked.length,
+    fetched,
+    partialDays,
+    ...(partialDays > 0
+      ? {
+          message: `有 ${partialDays} 个「分组×日」因翻页上限只取到部分记录，已跳过不写入（避免把完整数据改小）。请缩小日期区间后再同步。`,
+        }
+      : {}),
+  };
 }
 
 export async function getSelfHostedOverview(providerId: string) {

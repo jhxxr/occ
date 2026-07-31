@@ -184,6 +184,9 @@ model UpstreamUsageDaily {
 }
 
 /// 自建 Sub2API 按日×分组 官方用量聚合
+///
+/// sellRateUsed 与 UpstreamUsageDaily.costRateRmb 同理：当天用的卖出倍率写死，
+/// 之后改分组倍率只影响新数据，不回溯改写已出过的报表。
 model SelfHostedGroupDaily {
   id              String   @id @default(cuid())
   providerId      String
@@ -195,6 +198,10 @@ model SelfHostedGroupDaily {
   actualCost      Float    @default(0)
   totalTokens     Int      @default(0)
   sellRevenueRmb  Float    @default(0)
+  /// 该行入账时采用的卖出倍率，写死不随配置改动回溯
+  sellRateUsed    Float    @default(0)
+  /// group = 建行时的分组倍率；legacy = 迁移前、倍率未知的历史数据
+  sellRateSource  String   @default("group") @db.VarChar(20)
   track           Boolean  @default(false)
   updatedAt       DateTime @updatedAt
 
@@ -453,7 +460,11 @@ model AppSetting {
   value String @db.Text
 }
 
-/// 浏览器扩展注入 JWT 的长期 token
+/// 浏览器扩展注入 JWT 的 token
+///
+/// token 会以 ?token=… 的形式出现在链接里（方便扩展粘贴），也就会落进
+/// 反代访问日志、浏览器历史。所以必须有有效期兜底：泄露的 token 不能永久可用。
+/// expiresAt = null 表示永不过期（仅存量老 token，新建一律带期限）。
 model ExtensionInjectToken {
   id          String    @id @default(cuid())
   tokenHash   String    @unique @db.VarChar(64)
@@ -461,6 +472,8 @@ model ExtensionInjectToken {
   providerId  String?
   label       String    @default("") @db.VarChar(200)
   enabled     Boolean   @default(true)
+  /// 过期时刻；null = 不过期（迁移前建的老 token）
+  expiresAt   DateTime?
   lastUsedAt  DateTime?
   useCount    Int       @default(0)
   createdAt   DateTime  @default(now())

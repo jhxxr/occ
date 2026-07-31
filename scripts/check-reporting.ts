@@ -21,10 +21,34 @@ import {
   weekPeriod,
 } from "../src/lib/reporting-period.ts";
 import { allocateCostEntry, summarizeCosts } from "../src/lib/operating-cost.ts";
+import { buildDailySeries } from "../src/lib/profit.ts";
+import { shanghaiDay } from "../src/lib/reporting-period.ts";
+import { encryptSecret, decryptSecret } from "../src/lib/crypto.ts";
+import { createSessionToken, verifySessionToken } from "../src/lib/auth.ts";
+import { verifySessionTokenEdge } from "../src/lib/auth-edge.ts";
+import {
+  checkLoginAllowed,
+  recordLoginFailure,
+  recordLoginSuccess,
+  __resetRateLimit,
+  RATE_LIMIT_TUNING as RL,
+} from "../src/lib/rate-limit.ts";
+import {
+  isTokenExpired,
+  resolveExpiry,
+  DEFAULT_TOKEN_TTL_DAYS,
+  MAX_TOKEN_TTL_DAYS,
+} from "../src/lib/extension-token.ts";
 
 let passed = 0;
 function check(name: string, fn: () => void) {
   fn();
+  passed++;
+  console.log(`  ✓ ${name}`);
+}
+
+async function checkAsync(name: string, fn: () => Promise<void>) {
+  await fn();
   passed++;
   console.log(`  ✓ ${name}`);
 }
@@ -168,7 +192,7 @@ check("账号被风控提前结束：整笔压缩到实际存活区间", () => {
   assert.equal(allocateCostEntry(entry, week), null);
 });
 
-check("未定结束日按滚动窗口估算", () => {
+check("未定结束日按固定日额持续摊销（不会 30 天后消失）", () => {
   const entry = {
     id: "e",
     name: "进行中",
@@ -177,10 +201,22 @@ check("未定结束日按滚动窗口估算", () => {
     startDay: "2026-07-01",
     status: "active",
   };
+  // 日额 = 300 / 30 = ¥10，分母是固定窗口，不随查询区间变
   const alloc = allocateCostEntry(entry, july);
   assert.equal(alloc?.openEnded, true);
   assert.equal(alloc?.effectiveDays, 30);
-  assert.equal(alloc?.allocatedRmb, 300);
+  assert.equal(alloc?.allocatedRmb, 310); // 7 月 31 天 × ¥10
+
+  // 回归：开支还在继续，第二、三个月不该归零
+  // （旧实现锚死在 startDay+29，第 31 天起 overlap=0 直接返回 null）
+  const sep = monthPeriod("2026-09-15");
+  const later = allocateCostEntry(entry, sep);
+  assert.notEqual(later, null);
+  assert.equal(later?.allocatedRmb, 300); // 9 月 30 天 × ¥10
+
+  // 同一天在周报和月报里的日额必须一致
+  const w = allocateCostEntry(entry, weekPeriod("2026-09-15"));
+  assert.equal(w?.allocatedRmb, 70); // 7 天 × ¥10
 });
 
 check("作废的成本不入账", () => {
@@ -261,6 +297,191 @@ check("计划里的固定样例：毛利 280、毛利率 28%", () => {
   const profit = revenue - upstreamCost - costs.totalRmb;
   assert.equal(profit, 280);
   assert.equal(Math.round((profit / revenue) * 1000) / 10, 28);
+});
+
+console.log("\n图表按日分桶（回归：时区错位会吞掉今天）");
+
+check("最新一格恒为北京今天，且今天的数据不会丢", () => {
+  const today = shanghaiDay();
+  const series = buildDailySeries(
+    [{ timestamp: today, costRmb: 999, deltaConsumed: 0 }],
+    [{ timestamp: today, revenue: 555, revenueCurrency: "CNY" }],
+    30,
+  );
+  assert.equal(series.length, 30);
+  assert.equal(series[series.length - 1].date, today);
+
+  const row = series.find((r) => r.date === today);
+  assert.ok(row, "今天必须有对应的桶");
+  assert.equal(row.costRmb, 999);
+  assert.equal(row.revenueRmb, 555);
+
+  // 一分钱都不能在分桶时掉出窗口
+  assert.equal(series.reduce((s, r) => s + r.costRmb, 0), 999);
+  assert.equal(series.reduce((s, r) => s + r.revenueRmb, 0), 555);
+});
+
+check("Date 与日字符串两种输入落到同一个桶", () => {
+  const today = shanghaiDay();
+  const viaString = buildDailySeries(
+    [{ timestamp: today, costRmb: 10, deltaConsumed: 0 }],
+    [],
+    7,
+  );
+  const viaDate = buildDailySeries(
+    [{ timestamp: new Date(), costRmb: 10, deltaConsumed: 0 }],
+    [],
+    7,
+  );
+  assert.equal(
+    viaString.find((r) => r.date === today)?.costRmb,
+    viaDate.find((r) => r.date === today)?.costRmb,
+  );
+});
+
+console.log("\n凭据加解密（回归：解密失败不能返回密文）");
+
+check("正常往返", () => {
+  process.env.ENCRYPTION_SECRET = "unit-test-secret";
+  const plain = "sk-abc123";
+  assert.equal(decryptSecret(encryptSecret(plain)), plain);
+});
+
+check("历史明文原样返回（含冒号的也不能当密文解析）", () => {
+  process.env.ENCRYPTION_SECRET = "unit-test-secret";
+  assert.equal(decryptSecret("rawkey"), "rawkey");
+  assert.equal(
+    decryptSecret("https://user:pass@host/p"),
+    "https://user:pass@host/p",
+  );
+  assert.equal(decryptSecret(""), "");
+});
+
+check("密钥轮换后解密失败返回空串，而不是把密文当 Key 用", () => {
+  process.env.ENCRYPTION_SECRET = "unit-test-secret";
+  const bundle = encryptSecret("sk-abc123");
+  process.env.ENCRYPTION_SECRET = "rotated-secret";
+  // 解密失败会打一行 console.error，这里是预期路径，别污染自检输出
+  const realError = console.error;
+  console.error = () => {};
+  let out: string;
+  try {
+    out = decryptSecret(bundle);
+  } finally {
+    console.error = realError;
+  }
+  // 返回密文会让调用方的 `if (!raw) throw 缺少 Key` 守卫全部失效，
+  // 然后把密文当凭据发给第三方站点
+  assert.equal(out, "");
+  assert.notEqual(out, bundle);
+});
+
+console.log("\n会话签名（回归：改密码必须踢掉旧会话）");
+
+await checkAsync("node 与 edge 两条实现算出同一个签名", async () => {
+  process.env.AUTH_SECRET = "unit-secret";
+  process.env.AUTH_USERNAME = "admin";
+  process.env.AUTH_PASSWORD = "pw-original";
+  const token = createSessionToken("admin");
+  // 两边不一致会导致「登录成功但中间件一直判未登录」，即登录页死循环
+  assert.equal(verifySessionToken(token)?.u, "admin");
+  assert.equal((await verifySessionTokenEdge(token))?.u, "admin");
+});
+
+await checkAsync("改密码后旧 token 在两条实现里都失效", async () => {
+  process.env.AUTH_SECRET = "unit-secret";
+  process.env.AUTH_USERNAME = "admin";
+  process.env.AUTH_PASSWORD = "pw-original";
+  const token = createSessionToken("admin");
+
+  process.env.AUTH_PASSWORD = "pw-rotated";
+  assert.equal(verifySessionToken(token), null);
+  assert.equal(await verifySessionTokenEdge(token), null);
+
+  // 改用户名同样要失效
+  process.env.AUTH_PASSWORD = "pw-original";
+  process.env.AUTH_USERNAME = "other";
+  assert.equal(verifySessionToken(token), null);
+
+  // 凭据还原后应重新可用 —— 证明是确定性派生而非随机密钥
+  process.env.AUTH_USERNAME = "admin";
+  assert.equal(verifySessionToken(token)?.u, "admin");
+});
+
+console.log("\n登录限流");
+
+check("超过免罚次数后锁定，其它来源不受影响", () => {
+  __resetRateLimit();
+  for (let i = 0; i < RL.FREE_ATTEMPTS; i++) {
+    assert.equal(checkLoginAllowed("1.1.1.1").allowed, true);
+    recordLoginFailure("1.1.1.1");
+  }
+  recordLoginFailure("1.1.1.1");
+  const v = checkLoginAllowed("1.1.1.1");
+  assert.equal(v.allowed, false);
+  assert.equal(v.scope, "ip");
+  assert.ok(v.retryAfterSec > 0);
+  assert.equal(checkLoginAllowed("2.2.2.2").allowed, true);
+});
+
+check("登录成功后清零失败计数", () => {
+  __resetRateLimit();
+  for (let i = 0; i < RL.FREE_ATTEMPTS + 2; i++) recordLoginFailure("3.3.3.3");
+  assert.equal(checkLoginAllowed("3.3.3.3").allowed, false);
+  recordLoginSuccess("3.3.3.3");
+  assert.equal(checkLoginAllowed("3.3.3.3").allowed, true);
+});
+
+check("伪造 X-Forwarded-For 轮换 IP 仍会被全局限流拦下", () => {
+  // 转发头可以随便写，只按 IP 限流等于没限 —— 全局这层才是真正的兜底
+  __resetRateLimit();
+  let blocked = false;
+  for (let i = 0; i < RL.GLOBAL_MAX_FAILURES + 5; i++) {
+    const fakeIp = `10.0.${Math.floor(i / 256)}.${i % 256}`;
+    if (!checkLoginAllowed(fakeIp).allowed) {
+      blocked = true;
+      break;
+    }
+    recordLoginFailure(fakeIp);
+  }
+  assert.ok(blocked, "轮换伪造 IP 绕过了限流");
+  assert.equal(checkLoginAllowed("9.9.9.9").scope, "global");
+});
+
+console.log("\n扩展 token 有效期");
+
+check("过期与禁用都判为不可用，老 token（null）仍可用", () => {
+  const now = new Date("2026-07-31T00:00:00Z");
+  // token 会出现在 URL 里（进访问日志），过期判定是最后一道闸
+  assert.equal(isTokenExpired({ expiresAt: null }, now), false);
+  assert.equal(
+    isTokenExpired({ expiresAt: new Date("2026-08-30T00:00:00Z") }, now),
+    false,
+  );
+  assert.equal(
+    isTokenExpired({ expiresAt: new Date("2026-07-30T23:59:59Z") }, now),
+    true,
+  );
+  // 边界：到期时刻本身算过期
+  assert.equal(isTokenExpired({ expiresAt: now }, now), true);
+});
+
+check("新建 token 默认带期限，显式传 null 才永久", () => {
+  const now = new Date("2026-07-31T00:00:00Z");
+  const def = resolveExpiry(undefined, now);
+  assert.ok(def, "默认必须有期限，否则泄露的 token 永久可用");
+  assert.equal(
+    Math.round((def.getTime() - now.getTime()) / 86_400_000),
+    DEFAULT_TOKEN_TTL_DAYS,
+  );
+  assert.equal(resolveExpiry(null, now), null);
+  assert.equal(resolveExpiry(0, now), null);
+  // 上限收口，避免传个 99999 天等于永久
+  const huge = resolveExpiry(99_999, now)!;
+  assert.equal(
+    Math.round((huge.getTime() - now.getTime()) / 86_400_000),
+    MAX_TOKEN_TTL_DAYS,
+  );
 });
 
 console.log(`\n全部通过：${passed} 项`);

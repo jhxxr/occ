@@ -7,6 +7,7 @@ import {
   loadAdminProvider,
 } from "@/lib/sub2-admin/sync";
 import { Sub2AdminError } from "@/lib/sub2-admin/client";
+import { shanghaiDay } from "@/lib/reporting-period";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -90,7 +91,16 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         return NextResponse.json({ error: "groupId 必填" }, { status: 400 });
       }
       const data: Record<string, unknown> = {};
-      if (body.sellRate != null) data.sellRate = Number(body.sellRate);
+      if (body.sellRate != null) {
+        const rate = Number(body.sellRate);
+        if (!Number.isFinite(rate) || rate < 0) {
+          return NextResponse.json(
+            { error: "sellRate 需要 ≥ 0 的数字" },
+            { status: 400 },
+          );
+        }
+        data.sellRate = rate;
+      }
       if (typeof body.track === "boolean") data.track = body.track;
       if (body.notes !== undefined) data.notes = body.notes;
       const row = await prisma.selfHostedGroup.updateMany({
@@ -100,24 +110,42 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       if (!row.count) {
         return NextResponse.json({ error: "分组不存在" }, { status: 404 });
       }
-      // 若改了 sellRate，重算已有 daily 的 sellRevenueRmb
-      if (body.sellRate != null) {
-        const g = await prisma.selfHostedGroup.findFirst({
-          where: { id: groupId, providerId: id },
-        });
-        if (g) {
-          const dailies = await prisma.selfHostedGroupDaily.findMany({
-            where: { providerId: id, remoteGroupId: g.remoteGroupId },
+
+      const g = await prisma.selfHostedGroup.findFirst({
+        where: { id: groupId, providerId: id },
+      });
+      if (g) {
+        // 改倍率只影响「还在累积的今天」，历史日行的倍率已冻结不动 ——
+        // 否则改一次倍率就会把上个月已出的报表重算一遍。
+        if (body.sellRate != null) {
+          const today = shanghaiDay();
+          await prisma.selfHostedGroupDaily.updateMany({
+            where: { providerId: id, remoteGroupId: g.remoteGroupId, day: today },
+            data: { sellRateUsed: g.sellRate },
           });
-          for (const d of dailies) {
-            await prisma.selfHostedGroupDaily.update({
-              where: { id: d.id },
-              data: {
-                sellRevenueRmb: d.officialCost * Number(body.sellRate),
-                track: g.track,
+          const todayRow = await prisma.selfHostedGroupDaily.findUnique({
+            where: {
+              providerId_remoteGroupId_day: {
+                providerId: id,
+                remoteGroupId: g.remoteGroupId,
+                day: today,
               },
+            },
+          });
+          if (todayRow) {
+            await prisma.selfHostedGroupDaily.update({
+              where: { id: todayRow.id },
+              data: { sellRevenueRmb: todayRow.officialCost * g.sellRate },
             });
           }
+        }
+        // track 是「这个分组算不算进报表」，报表按日行的 track 过滤，
+        // 所以改了必须同步到全部历史日行 —— 跟倍率无关，不能挂在它下面。
+        if (typeof body.track === "boolean") {
+          await prisma.selfHostedGroupDaily.updateMany({
+            where: { providerId: id, remoteGroupId: g.remoteGroupId },
+            data: { track: g.track },
+          });
         }
       }
       const overview = await getSelfHostedOverview(id);

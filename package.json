@@ -9,6 +9,7 @@
     "start": "next start",
     "lint": "eslint",
     "check:reporting": "node --experimental-strip-types --no-warnings --import ./scripts/alias-hook.mjs scripts/check-reporting.ts",
+    "check:lifecycle": "node --experimental-strip-types --no-warnings --import ./scripts/alias-hook.mjs scripts/check-provider-lifecycle.ts",
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",

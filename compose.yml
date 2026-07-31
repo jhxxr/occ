@@ -11,6 +11,10 @@ services:
       AUTH_PASSWORD: ${AUTH_PASSWORD:?Set AUTH_PASSWORD}
       AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET}
       DEFAULT_USD_CNY: ${DEFAULT_USD_CNY:-7.2}
+      USAGE_RETENTION_ENABLED: ${USAGE_RETENTION_ENABLED:-true}
+      USAGE_RAW_RETENTION_DAYS: ${USAGE_RAW_RETENTION_DAYS:-30}
+      USAGE_DETAIL_RETENTION_DAYS: ${USAGE_DETAIL_RETENTION_DAYS:-90}
+      USAGE_ARCHIVE_DIR: /app/data/usage-archives
     volumes:
       - ./data:/app/data
     restart: unless-stopped

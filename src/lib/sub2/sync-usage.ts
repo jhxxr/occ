@@ -81,6 +81,9 @@ export async function syncUsageLogs(
   if (provider.type !== "SUB2API") {
     throw new Error("目前仅支持 Sub2API 使用记录同步");
   }
+  if (provider.retiredAt) {
+    throw new Error("该上游已弃用，只能查询本地历史，不能继续远端同步");
+  }
 
   const pageSize = opts.pageSize ?? 100;
   const maxPages = opts.maxPages ?? 50;
@@ -91,7 +94,6 @@ export async function syncUsageLogs(
   let inserted = 0;
   let updated = 0;
   const touchedDays = new Set<string>();
-  const touchedKeys = new Set<string>();
 
   // 本地 key 名缓存
   const localKeys = await prisma.upstreamApiKey.findMany({
@@ -140,7 +142,6 @@ export async function syncUsageLogs(
         : new Date();
       const day = toShanghaiDay(requestAt);
       touchedDays.add(day);
-      if (remoteKeyId) touchedKeys.add(remoteKeyId);
 
       const keyName =
         (remoteKeyId && keyNameByRemote.get(remoteKeyId)) ||
@@ -162,7 +163,7 @@ export async function syncUsageLogs(
         },
       });
 
-      const row = {
+      const structuredRow = {
         remoteKeyId,
         keyName,
         model: str(item.model),
@@ -182,13 +183,18 @@ export async function syncUsageLogs(
           item.duration_ms != null ? Math.round(num(item.duration_ms)) : null,
         requestAt,
         day,
+      };
+      const row = {
+        ...structuredRow,
         raw: JSON.stringify(item).slice(0, 4000),
       };
 
       if (existing) {
         await prisma.upstreamUsageLog.update({
           where: { id: existing.id },
-          data: row,
+          // 归档是不可变审计副本；重复同步只刷新在线结构化字段，
+          // 不能把已压缩的 raw 重新塞回数据库并绕过后续清理。
+          data: existing.archivedAt ? structuredRow : row,
         });
         updated++;
       } else {
@@ -216,33 +222,8 @@ export async function syncUsageLogs(
     daysRebuilt++;
   }
 
-  // 用明细刷新各 Key 的 totalActualCost（可选：仅对触及的 key）
-  for (const remoteKeyId of touchedKeys) {
-    const sum = await prisma.upstreamUsageLog.aggregate({
-      where: { providerId, remoteKeyId },
-      _sum: { actualCost: true },
-    });
-    await prisma.upstreamApiKey.updateMany({
-      where: { providerId, remoteKeyId },
-      data: {
-        totalActualCost: sum._sum.actualCost ?? 0,
-        lastSyncAt: new Date(),
-      },
-    });
-  }
-
-  // 业务累计
-  const businessKeys = await prisma.upstreamApiKey.findMany({
-    where: { providerId, countAsCost: true },
-  });
-  const totalBusiness = businessKeys.reduce(
-    (s, k) => s + (k.totalActualCost || 0),
-    0,
-  );
-  await prisma.upstreamProvider.update({
-    where: { id: providerId },
-    data: { lastBusinessConsumed: totalBusiness },
-  });
+  // Key 累计消费只由 syncSub2ApiKeys 的远端 total_actual_cost 推进。
+  // 不能用本地明细求和覆盖：旧明细归档删除后，本地和天然小于历史累计。
 
   return {
     fetched,

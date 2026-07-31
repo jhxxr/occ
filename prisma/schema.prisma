@@ -14,35 +14,51 @@ datasource db {
 /// SUB2API = 第三方面板（邮箱密码/JWT）
 /// SUB2_ADMIN = 自建 Sub2API（管理员 X-API-Key）
 model UpstreamProvider {
-  id                   String    @id @default(cuid())
-  name                 String    @db.VarChar(200)
-  baseUrl              String    @db.VarChar(500)
+  id                     String    @id @default(cuid())
+  name                   String    @db.VarChar(200)
+  baseUrl                String    @db.VarChar(500)
   /// Encrypted credential
-  apiKey               String    @default("") @db.VarChar(2000)
-  type                 String    @default("NEWAPI") @db.VarChar(20)
-  accountEmail         String?   @db.VarChar(200)
-  accountPassword      String?   @db.Text
-  refreshToken         String?   @db.Text
-  tokenExpiresAt       DateTime?
-  discountRate         Float     @default(7.2)
-  currency             String    @default("USD") @db.VarChar(10)
-  alertThreshold       Float     @default(10)
-  quotaPerDollar       Float     @default(500000)
-  enabled              Boolean   @default(true)
-  notes                String?   @db.Text
-  lastBalance          Float?
-  lastConsumed         Float?
-  lastBusinessConsumed Float?
-  lastSyncAt           DateTime?
-  lastError            String?   @db.Text
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
+  apiKey                 String    @default("") @db.VarChar(2000)
+  type                   String    @default("NEWAPI") @db.VarChar(20)
+  accountEmail           String?   @db.VarChar(200)
+  accountPassword        String?   @db.Text
+  refreshToken           String?   @db.Text
+  tokenExpiresAt         DateTime?
+  discountRate           Float     @default(7.2)
+  currency               String    @default("USD") @db.VarChar(10)
+  alertThreshold         Float     @default(10)
+  quotaPerDollar         Float     @default(500000)
+  enabled                Boolean   @default(true)
+  notes                  String?   @db.Text
+  lastBalance            Float?
+  lastConsumed           Float?
+  lastBusinessConsumed   Float?
+  lastSyncAt             DateTime?
+  lastError              String?   @db.Text
+  /// null = 正常使用；有值 = 已弃用。enabled=false 仍可单独表示临时停用。
+  retiredAt              DateTime?
+  /// NORMAL | BALANCE_LOSS
+  retirementType         String?   @db.VarChar(20)
+  retirementNote         String?   @db.Text
+  /// 弃用时冻结的余额与成本率，避免日后配置变化改写核销依据
+  retiredBalance         Float?
+  retiredCostRate        Float?
+  balanceWriteOffRmb     Float?
+  /// 对应 OperatingCostEntry；不建外键，永久删站点也保留财务审计记录
+  balanceWriteOffEntryId String?   @db.VarChar(40)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
 
   snapshots     SnapshotLog[]
   apiKeys       UpstreamApiKey[]
   recharges     UpstreamRechargeLog[]
+  usageLogs     UpstreamUsageLog[]
+  usageDailies  UpstreamUsageDaily[]
+  usageArchives UpstreamUsageArchive[]
   adminGroups   SelfHostedGroup[]
   adminAccounts SelfHostedAccount[]
+
+  @@index([retiredAt])
 }
 
 /// 第三方 Sub2API 用户侧 API Key（邮箱密码登录那套）
@@ -75,23 +91,23 @@ model UpstreamApiKey {
 
 /// 自建 Sub2API 的分组（卖出倍率 + 是否纳入统计）
 model SelfHostedGroup {
-  id                String   @id @default(cuid())
+  id                String    @id @default(cuid())
   providerId        String
   remoteGroupId     Int
-  name              String   @db.VarChar(200)
-  description       String?  @db.Text
-  platform          String   @default("") @db.VarChar(50)
-  sellRate          Float    @default(0.4)
-  track             Boolean  @default(false)
-  status            String   @default("active") @db.VarChar(20)
-  lastOfficialCost  Float    @default(0)
-  todayOfficialCost Float    @default(0)
-  lastRequests      Int      @default(0)
-  todayRequests     Int      @default(0)
+  name              String    @db.VarChar(200)
+  description       String?   @db.Text
+  platform          String    @default("") @db.VarChar(50)
+  sellRate          Float     @default(0.4)
+  track             Boolean   @default(false)
+  status            String    @default("active") @db.VarChar(20)
+  lastOfficialCost  Float     @default(0)
+  todayOfficialCost Float     @default(0)
+  lastRequests      Int       @default(0)
+  todayRequests     Int       @default(0)
   lastSyncAt        DateTime?
-  notes             String?  @db.Text
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  notes             String?   @db.Text
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   provider UpstreamProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
 
@@ -101,24 +117,24 @@ model SelfHostedGroup {
 
 /// 自建 Sub2API 上游账号（反代号），各自设定买号成本
 model SelfHostedAccount {
-  id                String   @id @default(cuid())
+  id                String    @id @default(cuid())
   providerId        String
   remoteAccountId   Int
-  name              String   @db.VarChar(200)
-  platform          String   @default("") @db.VarChar(50)
-  accountType       String   @default("") @db.VarChar(50)
-  status            String   @default("active") @db.VarChar(20)
-  purchaseCostRmb   Float    @default(0)
-  track             Boolean  @default(false)
-  groupIds          String   @default("[]") @db.VarChar(2000)
-  groupNames        String   @default("") @db.VarChar(2000)
-  lastOfficialCost  Float    @default(0)
-  todayOfficialCost Float    @default(0)
+  name              String    @db.VarChar(200)
+  platform          String    @default("") @db.VarChar(50)
+  accountType       String    @default("") @db.VarChar(50)
+  status            String    @default("active") @db.VarChar(20)
+  purchaseCostRmb   Float     @default(0)
+  track             Boolean   @default(false)
+  groupIds          String    @default("[]") @db.VarChar(2000)
+  groupNames        String    @default("") @db.VarChar(2000)
+  lastOfficialCost  Float     @default(0)
+  todayOfficialCost Float     @default(0)
   lastUsedAt        DateTime?
-  extra             String?  @db.Text
-  notes             String?  @db.Text
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  extra             String?   @db.Text
+  notes             String?   @db.Text
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   provider UpstreamProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
 
@@ -128,59 +144,95 @@ model SelfHostedAccount {
 
 /// 第三方 Sub2API 用户侧使用明细
 model UpstreamUsageLog {
-  id              String   @id @default(cuid())
+  id              String    @id @default(cuid())
   providerId      String
-  remoteId        String   @db.VarChar(100)
-  remoteKeyId     String?  @db.VarChar(100)
-  keyName         String?  @db.VarChar(200)
-  model           String?  @db.VarChar(100)
+  remoteId        String    @db.VarChar(100)
+  remoteKeyId     String?   @db.VarChar(100)
+  keyName         String?   @db.VarChar(200)
+  model           String?   @db.VarChar(100)
   groupId         Int?
-  groupName       String?  @db.VarChar(200)
-  actualCost      Float    @default(0)
-  standardCost    Float    @default(0)
+  groupName       String?   @db.VarChar(200)
+  actualCost      Float     @default(0)
+  standardCost    Float     @default(0)
   rateMultiplier  Float?
-  inputTokens     Int      @default(0)
-  outputTokens    Int      @default(0)
-  cacheReadTokens Int      @default(0)
-  totalTokens     Int      @default(0)
-  requestType     String?  @db.VarChar(50)
-  stream          Boolean  @default(false)
+  inputTokens     Int       @default(0)
+  outputTokens    Int       @default(0)
+  cacheReadTokens Int       @default(0)
+  totalTokens     Int       @default(0)
+  requestType     String?   @db.VarChar(50)
+  stream          Boolean   @default(false)
   durationMs      Int?
   requestAt       DateTime
-  day             String   @db.VarChar(10)
-  raw             String?  @db.LongText
-  createdAt       DateTime @default(now())
+  day             String    @db.VarChar(10)
+  raw             String?   @db.LongText
+  /// 原始 JSON 已写入哪个 gzip 归档；归档成功后 raw 置空
+  archiveId       String?   @db.VarChar(40)
+  archivedAt      DateTime?
+  createdAt       DateTime  @default(now())
+
+  provider UpstreamProvider      @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  archive  UpstreamUsageArchive? @relation(fields: [archiveId], references: [id], onDelete: SetNull)
 
   @@unique([providerId, remoteId])
   @@index([providerId, requestAt])
   @@index([providerId, remoteKeyId, requestAt])
   @@index([providerId, day])
   @@index([providerId, model])
+  @@index([providerId, archivedAt, requestAt])
+  @@index([archiveId])
 }
 
 model UpstreamUsageDaily {
-  id           String   @id @default(cuid())
-  providerId   String
-  remoteKeyId  String   @default("") @db.VarChar(100)
-  keyName      String   @default("") @db.VarChar(200)
-  day          String   @db.VarChar(10)
-  requests     Int      @default(0)
-  actualCost   Float    @default(0)
-  standardCost Float    @default(0)
-  totalTokens  Int      @default(0)
-  inputTokens  Int      @default(0)
-  outputTokens Int      @default(0)
-  costRmb      Float    @default(0)
+  id             String   @id @default(cuid())
+  providerId     String
+  remoteKeyId    String   @default("") @db.VarChar(100)
+  keyName        String   @default("") @db.VarChar(200)
+  day            String   @db.VarChar(10)
+  requests       Int      @default(0)
+  actualCost     Float    @default(0)
+  standardCost   Float    @default(0)
+  totalTokens    Int      @default(0)
+  inputTokens    Int      @default(0)
+  outputTokens   Int      @default(0)
+  costRmb        Float    @default(0)
   /// 当天实际采用的购入成本率（¥ / 每 1 面值），写死不随配置改动回溯
-  costRateRmb  Float    @default(0)
+  costRateRmb    Float    @default(0)
   /// provider = 建账时的站点折扣率；legacy = 迁移前的历史数据
-  costRateSource String @default("provider") @db.VarChar(20)
-  countAsCost  Boolean  @default(false)
-  updatedAt    DateTime @updatedAt
+  costRateSource String   @default("provider") @db.VarChar(20)
+  countAsCost    Boolean  @default(false)
+  updatedAt      DateTime @updatedAt
+
+  provider UpstreamProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
 
   @@unique([providerId, remoteKeyId, day])
   @@index([providerId, day])
   @@index([providerId, countAsCost, day])
+}
+
+/// 使用记录原始 JSON 的不可变 gzip 归档批次。
+///
+/// PREPARING/ERROR 批次仍保留明细 raw，可安全重试；只有 READY 后才清空 raw。
+model UpstreamUsageArchive {
+  id             String    @id @default(cuid())
+  providerId     String
+  providerName   String    @db.VarChar(200)
+  status         String    @default("PREPARING") @db.VarChar(20)
+  fileName       String    @unique @db.VarChar(500)
+  contentSha256  String    @db.VarChar(64)
+  rowCount       Int       @default(0)
+  rawBytes       Int       @default(0)
+  archiveBytes   Int       @default(0)
+  firstRequestAt DateTime
+  lastRequestAt  DateTime
+  error          String?   @db.Text
+  createdAt      DateTime  @default(now())
+  completedAt    DateTime?
+
+  provider UpstreamProvider   @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  logs     UpstreamUsageLog[]
+
+  @@index([providerId, status, createdAt])
+  @@index([providerId, firstRequestAt])
 }
 
 /// 自建 Sub2API 按日×分组 官方用量聚合
@@ -188,22 +240,22 @@ model UpstreamUsageDaily {
 /// sellRateUsed 与 UpstreamUsageDaily.costRateRmb 同理：当天用的卖出倍率写死，
 /// 之后改分组倍率只影响新数据，不回溯改写已出过的报表。
 model SelfHostedGroupDaily {
-  id              String   @id @default(cuid())
-  providerId      String
-  remoteGroupId   Int
-  groupName       String   @default("") @db.VarChar(200)
-  day             String   @db.VarChar(10)
-  requests        Int      @default(0)
-  officialCost    Float    @default(0)
-  actualCost      Float    @default(0)
-  totalTokens     Int      @default(0)
-  sellRevenueRmb  Float    @default(0)
+  id             String   @id @default(cuid())
+  providerId     String
+  remoteGroupId  Int
+  groupName      String   @default("") @db.VarChar(200)
+  day            String   @db.VarChar(10)
+  requests       Int      @default(0)
+  officialCost   Float    @default(0)
+  actualCost     Float    @default(0)
+  totalTokens    Int      @default(0)
+  sellRevenueRmb Float    @default(0)
   /// 该行入账时采用的卖出倍率，写死不随配置改动回溯
-  sellRateUsed    Float    @default(0)
+  sellRateUsed   Float    @default(0)
   /// group = 建行时的分组倍率；legacy = 迁移前、倍率未知的历史数据
-  sellRateSource  String   @default("group") @db.VarChar(20)
-  track           Boolean  @default(false)
-  updatedAt       DateTime @updatedAt
+  sellRateSource String   @default("group") @db.VarChar(20)
+  track          Boolean  @default(false)
+  updatedAt      DateTime @updatedAt
 
   @@unique([providerId, remoteGroupId, day])
   @@index([providerId, day])
@@ -250,11 +302,11 @@ model DownstreamSite {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
-  snapshots DownstreamSnapshot[]
+  snapshots  DownstreamSnapshot[]
   usageDaily DownstreamUsageDaily[]
 
   orphanChannels DownstreamOrphanChannel[]
-  channelDays DownstreamChannelDay[]
+  channelDays    DownstreamChannelDay[]
 }
 
 /// 下游按日实际消费
@@ -268,30 +320,30 @@ model DownstreamSite {
 /// scope=TOTAL 是全站权威口径（报表求和只认它）；
 /// scope=GROUP 仅作分组归因与倍率法对账，避免与 TOTAL 重复相加。
 model DownstreamUsageDaily {
-  id           String   @id @default(cuid())
-  downstreamId String
-  day          String   @db.VarChar(10)
-  scope        String   @default("TOTAL") @db.VarChar(10)
-  groupName    String   @default("") @db.VarChar(200)
+  id              String   @id @default(cuid())
+  downstreamId    String
+  day             String   @db.VarChar(10)
+  scope           String   @default("TOTAL") @db.VarChar(10)
+  groupName       String   @default("") @db.VarChar(200)
   /// 全部账号的原始额度面值（含测试号）
-  quota        Float    @default(0)
+  quota           Float    @default(0)
   /// 被排除账号（测试号）消耗的额度面值
-  excludedQuota Float   @default(0)
+  excludedQuota   Float    @default(0)
   /// 付费账号消费折算的人民币 —— 收入口径
-  revenueRmb   Float    @default(0)
+  revenueRmb      Float    @default(0)
   /// 全部账号消费折算的人民币 —— 对账口径，不是收入
-  grossRevenueRmb Float @default(0)
+  grossRevenueRmb Float    @default(0)
   /// 折算时采用的额度单位快照
-  quotaPerUnit Float    @default(500000)
-  requests     Int      @default(0)
+  quotaPerUnit    Float    @default(500000)
+  requests        Int      @default(0)
   /// 排除口径是否可信：拿不到逐账号数据时为 false，此时 revenue 等于 gross
-  excludeResolved Boolean @default(false)
+  excludeResolved Boolean  @default(false)
   /// data-export | log-stat
-  source       String   @default("log-stat") @db.VarChar(30)
+  source          String   @default("log-stat") @db.VarChar(30)
   /// 该日数据是否完整（分页/接口截断时为 false）
-  complete     Boolean  @default(true)
-  syncedAt     DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  complete        Boolean  @default(true)
+  syncedAt        DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   downstream DownstreamSite @relation(fields: [downstreamId], references: [id], onDelete: Cascade)
 
@@ -351,34 +403,34 @@ model DownstreamChannelDay {
 /// - RATE：按倍率折算 → 该周期 quota ÷ quotaPerUnit × costRate
 /// - AMOUNT：填这个渠道的总成本，按周期消费占比分摊
 model DownstreamOrphanChannel {
-  id           String   @id @default(cuid())
-  downstreamId String
+  id            String   @id @default(cuid())
+  downstreamId  String
   /// NewAPI 日志里的 channel id
-  channelId    Int
+  channelId     Int
   /// 日志里残留的渠道名（通常为空，删除后 join 不到）
-  channelName  String   @default("") @db.VarChar(200)
+  channelName   String   @default("") @db.VarChar(200)
   /// 用过的模型（逗号分隔，最多几个，帮你认出这是哪家上游）
-  models       String?  @db.VarChar(500)
+  models        String?  @db.VarChar(500)
   /// 全部已扫区间内的累计消费面值（展示用，报表按周期现算）
-  quota        Float    @default(0)
-  revenueRmb   Float    @default(0)
-  quotaPerUnit Float    @default(500000)
-  requests     Int      @default(0)
-  firstDay     String   @db.VarChar(10)
-  lastDay      String   @db.VarChar(10)
+  quota         Float    @default(0)
+  revenueRmb    Float    @default(0)
+  quotaPerUnit  Float    @default(500000)
+  requests      Int      @default(0)
+  firstDay      String   @db.VarChar(10)
+  lastDay       String   @db.VarChar(10)
   /// RATE | AMOUNT
-  costMode     String   @default("RATE") @db.VarChar(10)
+  costMode      String   @default("RATE") @db.VarChar(10)
   /// 购入成本率（¥ / 每 1 面值），costMode=RATE 时生效
-  costRate     Float?
+  costRate      Float?
   /// 该渠道的总成本人民币，costMode=AMOUNT 时按周期消费占比分摊
   costAmountRmb Float?
   /// 你是否已确认过这笔成本；未确认时报表会警告成本缺口
-  resolved     Boolean  @default(false)
+  resolved      Boolean  @default(false)
   /// 标记为「无需补录」（例如本来就是自建免费渠道）
-  ignored      Boolean  @default(false)
-  note         String?  @db.Text
-  detectedAt   DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  ignored       Boolean  @default(false)
+  note          String?  @db.Text
+  detectedAt    DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   downstream DownstreamSite @relation(fields: [downstreamId], references: [id], onDelete: Cascade)
 

@@ -29,6 +29,7 @@ type ProviderRow = {
   refreshToken: string | null;
   tokenExpiresAt: Date | null;
   discountRate: number;
+  retiredAt: Date | null;
 };
 
 function asRecord(v: unknown): Record<string, unknown> | null {
@@ -142,6 +143,9 @@ export async function sub2Request<T = unknown>(
   init: RequestInit = {},
 ): Promise<T> {
   const provider = await loadSub2Provider(providerId);
+  if (provider.retiredAt) {
+    throw new Sub2Error("该上游已弃用，只能查询本地历史", 409);
+  }
   let { baseUrl, accessToken } = await ensureSub2AccessToken(provider);
 
   const doFetch = async (token: string) => {

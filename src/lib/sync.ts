@@ -120,6 +120,16 @@ export async function syncUpstreamProvider(id: string): Promise<SyncResultItem> 
     return { id, name: "?", kind: "upstream", success: false, error: "Not found" };
   }
 
+  if (provider.retiredAt) {
+    return {
+      id,
+      name: provider.name,
+      kind: "upstream",
+      success: false,
+      error: "该上游已弃用",
+    };
+  }
+
   // 自建站是另一个物种：改走管理端同步，别拿中转上游的余额探测去打它
   if (isSelfHosted(provider.type)) {
     return syncSelfHostedProvider(id);

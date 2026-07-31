@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import { unlink } from "node:fs/promises";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { encryptSecret, maskSecret, decryptSecret } from "@/lib/crypto";
 import { sub2Login } from "@/lib/adapters";
 import { isSelfHosted, relayOnly } from "@/lib/provider-kinds";
+import { resolveUsageArchivePath } from "@/lib/usage-retention";
 
 /** 自建站只能在 /api/self-hosted 管，避免把 Admin Key 记录改成第三方面板 */
 const SELF_HOSTED_REJECT = {
@@ -86,6 +88,13 @@ function publicProvider(p: {
   lastBusinessConsumed?: number | null;
   lastSyncAt: Date | null;
   lastError: string | null;
+  retiredAt: Date | null;
+  retirementType: string | null;
+  retirementNote: string | null;
+  retiredBalance: number | null;
+  retiredCostRate: number | null;
+  balanceWriteOffRmb: number | null;
+  balanceWriteOffEntryId: string | null;
   createdAt: Date;
   updatedAt: Date;
 }) {
@@ -205,6 +214,13 @@ export async function PUT(req: NextRequest) {
       );
     }
 
+    if (existing.retiredAt && parsed.data.enabled === true) {
+      return NextResponse.json(
+        { error: "已弃用上游请使用“恢复使用”，不能只打开同步开关" },
+        { status: 409 },
+      );
+    }
+
     const updates: Record<string, unknown> = { ...parsed.data };
 
     if (body.apiKey && typeof body.apiKey === "string" && !body.apiKey.includes("•")) {
@@ -288,8 +304,39 @@ export async function DELETE(req: NextRequest) {
     if (existing && isSelfHosted(existing.type)) {
       return NextResponse.json(SELF_HOSTED_REJECT, { status: 400 });
     }
+    if (!existing) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+    if (!existing.retiredAt) {
+      return NextResponse.json(
+        { error: "请先弃用上游，再执行永久删除" },
+        { status: 409 },
+      );
+    }
+    if (searchParams.get("permanent") !== "1") {
+      return NextResponse.json(
+        { error: "永久删除需要明确确认" },
+        { status: 400 },
+      );
+    }
+    const archives = await prisma.upstreamUsageArchive.findMany({
+      where: { providerId: id },
+      select: { fileName: true },
+    });
     await prisma.upstreamProvider.delete({ where: { id } });
-    return NextResponse.json({ success: true });
+    const archiveCleanupErrors: string[] = [];
+    for (const archive of archives) {
+      try {
+        await unlink(
+          /* turbopackIgnore: true */ resolveUsageArchivePath(archive.fileName),
+        );
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          archiveCleanupErrors.push(archive.fileName);
+        }
+      }
+    }
+    return NextResponse.json({ success: true, archiveCleanupErrors });
   } catch (e) {
     return NextResponse.json(
       { error: e instanceof Error ? e.message : "Delete failed" },

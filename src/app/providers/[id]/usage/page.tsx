@@ -5,15 +5,18 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { TopBar } from "@/components/layout/top-bar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input, Label, Select } from "@/components/ui/input";
 import { formatRmb, cn } from "@/lib/utils";
 import {
   ArrowLeft,
+  Archive,
   Database,
   Download,
+  FileDown,
   Filter,
+  RefreshCw,
 } from "lucide-react";
 
 interface UsageItem {
@@ -66,10 +69,50 @@ interface StatsPayload {
   keys: KeyOpt[];
 }
 
+interface RetentionStatus {
+  provider: { id: string; name: string; retiredAt: string | null };
+  policy: { rawRetentionDays: number; detailRetentionDays: number };
+  online: {
+    detailRows: number;
+    rawRows: number;
+    rawDue: number;
+    detailDue: number;
+  };
+  archived: {
+    batches: number;
+    rows: number;
+    rawBytes: number;
+    archiveBytes: number;
+  };
+  recentArchives: {
+    id: string;
+    rowCount: number;
+    rawBytes: number;
+    archiveBytes: number;
+    firstRequestAt: string;
+    lastRequestAt: string;
+    createdAt: string;
+  }[];
+  scheduler: {
+    state?: string;
+    at?: string;
+    message?: string;
+  } | null;
+}
+
 function fmtDay(d = new Date(), offset = 0) {
   const x = new Date(d);
   x.setDate(x.getDate() + offset);
   return x.toISOString().slice(0, 10);
+}
+
+function fmtBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  if (bytes < 1024 * 1024 * 1024) {
+    return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+  }
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GiB`;
 }
 
 export default function UsagePage() {
@@ -89,9 +132,12 @@ export default function UsagePage() {
 
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [maintaining, setMaintaining] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [providerName, setProviderName] = useState("上游");
+  const [providerRetired, setProviderRetired] = useState(false);
+  const [retention, setRetention] = useState<RetentionStatus | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -112,22 +158,31 @@ export default function UsagePage() {
       });
       if (remoteKeyId) lq.set("remoteKeyId", remoteKeyId);
 
-      const [sRes, lRes, pRes] = await Promise.all([
+      const [sRes, lRes, pRes, rRes] = await Promise.all([
         fetch(`/api/upstream/${id}/usage?${q}`),
         fetch(`/api/upstream/${id}/usage?${lq}`),
         fetch("/api/providers"),
+        fetch(`/api/upstream/${id}/usage/retention`),
       ]);
       const sJson = await sRes.json();
       const lJson = await lRes.json();
       const pJson = await pRes.json();
+      const rJson = await rRes.json();
       if (!sRes.ok) throw new Error(sJson.error || "统计加载失败");
       if (!lRes.ok) throw new Error(lJson.error || "明细加载失败");
+      if (!rRes.ok) throw new Error(rJson.error || "存储状态加载失败");
 
       setStats(sJson.data);
       setLogs(lJson.data.items || []);
       setTotal(lJson.data.total || 0);
-      const p = (pJson.data || []).find((x: { id: string }) => x.id === id);
-      if (p) setProviderName(p.name);
+      setRetention(rJson.data);
+      const p = (pJson.data || []).find(
+        (x: { id: string; retiredAt?: string | null }) => x.id === id,
+      );
+      if (p) {
+        setProviderName(p.name);
+        setProviderRetired(!!p.retiredAt);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "加载失败");
     } finally {
@@ -165,6 +220,28 @@ export default function UsagePage() {
       setError(e instanceof Error ? e.message : "同步失败");
     } finally {
       setSyncing(false);
+    }
+  }
+
+  async function runMaintenance() {
+    setMaintaining(true);
+    setMsg(null);
+    setError(null);
+    try {
+      const res = await fetch(`/api/upstream/${id}/usage/retention`, {
+        method: "POST",
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "维护失败");
+      const result = json.data.result;
+      setRetention(json.data.status);
+      setMsg(
+        `维护完成：归档 ${result.rowsArchived} 条，清理 ${result.detailRowsDeleted} 条在线明细`,
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "维护失败");
+    } finally {
+      setMaintaining(false);
     }
   }
 
@@ -259,9 +336,14 @@ export default function UsagePage() {
             <Filter className="h-3.5 w-3.5" />
             查询本地
           </Button>
-          <Button size="sm" onClick={pullRemote} disabled={syncing}>
+          <Button
+            size="sm"
+            onClick={pullRemote}
+            disabled={syncing || providerRetired}
+            title={providerRetired ? "已弃用上游不再访问远端" : undefined}
+          >
             <Download className={cn("h-3.5 w-3.5", syncing && "animate-pulse")} />
-            {syncing ? "同步中…" : "从远端同步"}
+            {providerRetired ? "已停止同步" : syncing ? "同步中…" : "从远端同步"}
           </Button>
           {msg && <span className="text-xs text-mint font-data">{msg}</span>}
           {error && <span className="text-xs text-coral">{error}</span>}
@@ -409,7 +491,11 @@ export default function UsagePage() {
           ) : logs.length === 0 ? (
             <div className="py-12 text-center text-sm text-muted space-y-2">
               <p>本地暂无记录</p>
-              <p className="text-xs">选择日期后点「从远端同步」拉取 EasyTokens 使用记录</p>
+              <p className="text-xs">
+                {providerRetired
+                  ? "该区间没有在线明细，可在下方下载历史归档"
+                  : "选择日期后点「从远端同步」拉取 EasyTokens 使用记录"}
+              </p>
             </div>
           ) : (
             <table className="w-full text-sm">
@@ -460,9 +546,119 @@ export default function UsagePage() {
         </CardContent>
       </Card>
 
+      {retention && (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between gap-4 pb-3">
+            <div>
+              <CardTitle className="flex items-center gap-2 text-sm font-semibold normal-case tracking-normal text-text">
+                <Archive className="h-4 w-4 text-cyan" />
+                存储维护
+              </CardTitle>
+              <p className="mt-1 text-[11px] text-muted">
+                原始 JSON {retention.policy.rawRetentionDays} 天 · 在线明细{" "}
+                {retention.policy.detailRetentionDays} 天 · 日汇总长期保留
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={runMaintenance}
+              disabled={maintaining}
+            >
+              <RefreshCw
+                className={cn("h-3.5 w-3.5", maintaining && "animate-spin")}
+              />
+              {maintaining ? "维护中…" : "立即维护"}
+            </Button>
+          </CardHeader>
+          <CardContent className="p-0">
+            <div className="grid border-y border-border-subtle sm:grid-cols-2 lg:grid-cols-4">
+              <div className="border-b border-border-subtle px-4 py-3 sm:border-r lg:border-b-0">
+                <div className="text-[10px] uppercase text-muted">在线明细</div>
+                <div className="mt-1 font-data text-lg font-semibold">
+                  {retention.online.detailRows.toLocaleString()}
+                </div>
+              </div>
+              <div className="border-b border-border-subtle px-4 py-3 lg:border-b-0 lg:border-r">
+                <div className="text-[10px] uppercase text-muted">含原始 JSON</div>
+                <div className="mt-1 font-data text-lg font-semibold">
+                  {retention.online.rawRows.toLocaleString()}
+                </div>
+              </div>
+              <div className="border-b border-border-subtle px-4 py-3 sm:border-r sm:border-b-0">
+                <div className="text-[10px] uppercase text-muted">待维护</div>
+                <div className="mt-1 font-data text-lg font-semibold text-amber">
+                  {(retention.online.rawDue + retention.online.detailDue).toLocaleString()}
+                </div>
+              </div>
+              <div className="px-4 py-3">
+                <div className="text-[10px] uppercase text-muted">归档</div>
+                <div className="mt-1 font-data text-lg font-semibold">
+                  {retention.archived.batches} 批
+                </div>
+                <div className="text-[10px] text-muted">
+                  {fmtBytes(retention.archived.rawBytes)} →{" "}
+                  {fmtBytes(retention.archived.archiveBytes)}
+                </div>
+              </div>
+            </div>
+
+            {retention.recentArchives.length > 0 && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-border-subtle text-left text-[10px] uppercase text-muted">
+                      <th className="px-4 py-2">期间</th>
+                      <th className="px-4 py-2 text-right">记录</th>
+                      <th className="px-4 py-2 text-right">压缩后</th>
+                      <th className="w-14 px-4 py-2" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {retention.recentArchives.map((archive) => (
+                      <tr
+                        key={archive.id}
+                        className="border-b border-border-subtle/60 last:border-0"
+                      >
+                        <td className="px-4 py-2 font-data text-secondary">
+                          {new Date(archive.firstRequestAt).toLocaleDateString("zh-CN")}
+                          {archive.firstRequestAt !== archive.lastRequestAt
+                            ? ` - ${new Date(archive.lastRequestAt).toLocaleDateString("zh-CN")}`
+                            : ""}
+                        </td>
+                        <td className="px-4 py-2 text-right font-data">
+                          {archive.rowCount.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-2 text-right font-data text-muted">
+                          {fmtBytes(archive.archiveBytes)}
+                        </td>
+                        <td className="px-4 py-2 text-right">
+                          <a
+                            href={`/api/upstream/${id}/usage/archives/${archive.id}`}
+                            className={buttonVariants({
+                              variant: "ghost",
+                              size: "icon",
+                              className: "h-8 w-8",
+                            })}
+                            aria-label="下载归档"
+                            title="下载 gzip 归档"
+                          >
+                            <FileDown className="h-4 w-4" />
+                          </a>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       <p className="text-[11px] text-muted max-w-3xl leading-relaxed">
         数据来自 EasyTokens <code className="font-data text-cyan">GET /api/v1/usage</code>
-        ，按 <code className="font-data">remoteId</code> 去重写入本地 SQLite。
+        ，按 <code className="font-data">remoteId</code> 去重写入本地数据库。
         勾选「计入中转」的 Key 才会把实际扣费 × 购入成本计入业务成本。
         可反复同步同一时间段做增量更新。
       </p>

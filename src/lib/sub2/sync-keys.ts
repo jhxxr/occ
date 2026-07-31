@@ -31,6 +31,15 @@ const MAX_KEY_PAGES = 20;
 export async function syncSub2ApiKeys(
   providerId: string,
 ): Promise<KeyCostSyncResult> {
+  const provider = await prisma.upstreamProvider.findUnique({
+    where: { id: providerId },
+    select: { retiredAt: true },
+  });
+  if (!provider) throw new Error("上游不存在");
+  if (provider.retiredAt) {
+    throw new Error("该上游已弃用，只能查询本地历史，不能继续远端同步");
+  }
+
   // Key 可能超过一页；漏掉的 Key 会被当成「远端已删除」，增量永久丢失
   const items = [];
   for (let page = 1; page <= MAX_KEY_PAGES; page++) {

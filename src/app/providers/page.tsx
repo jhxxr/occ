@@ -8,7 +8,20 @@ import { Input, Label, Select, Textarea } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { formatRmb } from "@/lib/utils";
 import Link from "next/link";
-import { Pencil, Plus, Trash2, KeyRound, SlidersHorizontal, ExternalLink, Wallet } from "lucide-react";
+import {
+  Archive,
+  Database,
+  ExternalLink,
+  KeyRound,
+  Pencil,
+  Plus,
+  RotateCcw,
+  SlidersHorizontal,
+  Trash2,
+  TriangleAlert,
+  Wallet,
+  X,
+} from "lucide-react";
 
 interface Provider {
   id: string;
@@ -29,6 +42,21 @@ interface Provider {
   lastBalance: number | null;
   lastSyncAt: string | null;
   lastError: string | null;
+  retiredAt: string | null;
+  retirementType: "NORMAL" | "BALANCE_LOSS" | null;
+  retirementNote: string | null;
+  retiredBalance: number | null;
+  retiredCostRate: number | null;
+  balanceWriteOffRmb: number | null;
+}
+
+interface RetirementDraft {
+  provider: Provider;
+  type: "NORMAL" | "BALANCE_LOSS";
+  balance: string;
+  costRate: string;
+  day: string;
+  note: string;
 }
 
 const emptyForm = {
@@ -46,14 +74,24 @@ const emptyForm = {
   notes: "",
 };
 
+function shanghaiDay() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
 export default function ProvidersPage() {
   const [list, setList] = useState<Provider[]>([]);
   const [form, setForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [retirement, setRetirement] = useState<RetirementDraft | null>(null);
 
-async function load() {
+  async function load() {
     const res = await fetch("/api/providers");
     const json = await res.json();
     setList(json.data || []);
@@ -154,10 +192,107 @@ async function load() {
     }
   }
 
-  async function remove(id: string) {
-    if (!confirm("确认删除该上游站点？相关快照也会删除。")) return;
-    await fetch(`/api/providers?id=${id}`, { method: "DELETE" });
-    await load();
+  async function remove(p: Provider) {
+    if (
+      !confirm(
+        `永久删除「${p.name}」？在线明细、日汇总和归档文件都会清除，财务核销记录会保留。`,
+      )
+    ) {
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/providers?id=${p.id}&permanent=1`, {
+        method: "DELETE",
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "永久删除失败");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "永久删除失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function openRetirement(p: Provider) {
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/providers/${p.id}/lifecycle`);
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "弃用信息加载失败");
+      const defaults = json.data.defaults;
+      setRetirement({
+        provider: p,
+        type: "NORMAL",
+        balance: String(defaults.balance ?? p.lastBalance ?? 0),
+        costRate: String(defaults.costRate ?? p.discountRate),
+        day: defaults.day || shanghaiDay(),
+        note: "",
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "弃用信息加载失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function submitRetirement() {
+    if (!retirement) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const isLoss = retirement.type === "BALANCE_LOSS";
+      const res = await fetch(
+        `/api/providers/${retirement.provider.id}/lifecycle`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "retire",
+            type: retirement.type,
+            balance: isLoss ? Number(retirement.balance) : undefined,
+            costRate: isLoss ? Number(retirement.costRate) : undefined,
+            day: isLoss ? retirement.day : undefined,
+            note: retirement.note || undefined,
+          }),
+        },
+      );
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "弃用失败");
+      setRetirement(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "弃用失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function restore(p: Provider) {
+    const detail =
+      p.retirementType === "BALANCE_LOSS"
+        ? "恢复后，本次余额损失核销会标记为作废。"
+        : "恢复后将重新启用同步。";
+    if (!confirm(`恢复「${p.name}」？${detail}`)) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/providers/${p.id}/lifecycle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "restore" }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "恢复失败");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "恢复失败");
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function relogin(id: string) {
@@ -180,6 +315,13 @@ async function load() {
   }
 
   const isSub2 = form.type === "SUB2API";
+  const editingRetired = editingId
+    ? list.find((provider) => provider.id === editingId)?.retiredAt != null
+    : false;
+  const writeOffEstimate = retirement
+    ? Math.max(0, Number(retirement.balance) || 0) *
+      Math.max(0, Number(retirement.costRate) || 0)
+    : 0;
 
   return (
     <div className="space-y-6">
@@ -384,12 +526,13 @@ async function load() {
                 <input
                   type="checkbox"
                   checked={form.enabled}
+                  disabled={editingRetired}
                   onChange={(e) =>
                     setForm({ ...form, enabled: e.target.checked })
                   }
                   className="rounded border-border"
                 />
-                启用同步
+                {editingRetired ? "已弃用（需从站点列表恢复）" : "启用同步"}
               </label>
               {error && <p className="text-xs text-coral" role="alert">{error}</p>}
               <div className="flex gap-2 pt-1">
@@ -433,7 +576,19 @@ async function load() {
                       {p.type === "SUB2API" && p.refreshTokenSet && (
                         <Badge variant="violet">可刷新 JWT</Badge>
                       )}
-                      {!p.enabled && <Badge>已停用</Badge>}
+                      {p.retiredAt ? (
+                        <Badge
+                          variant={
+                            p.retirementType === "BALANCE_LOSS" ? "coral" : "amber"
+                          }
+                        >
+                          {p.retirementType === "BALANCE_LOSS"
+                            ? "已弃用 · 余额已核销"
+                            : "已弃用"}
+                        </Badge>
+                      ) : (
+                        !p.enabled && <Badge>已停用</Badge>
+                      )}
                     </div>
                     <p className="truncate text-xs text-muted">{p.baseUrl}</p>
                     <p className="text-xs text-secondary font-data">
@@ -460,6 +615,14 @@ async function load() {
                         <span className="text-coral"> · {p.lastError}</span>
                       )}
                     </p>
+                    {p.retiredAt && (
+                      <p className="text-xs text-amber">
+                        弃用于 {new Date(p.retiredAt).toLocaleDateString("zh-CN")}
+                        {p.balanceWriteOffRmb != null && p.balanceWriteOffRmb > 0
+                          ? ` · 核销 ${formatRmb(p.balanceWriteOffRmb)}`
+                          : ""}
+                      </p>
+                    )}
                   </div>
                   <div className="flex flex-wrap justify-end gap-2">
                     <a
@@ -482,7 +645,7 @@ async function load() {
                         <Wallet className="h-4 w-4" />
                       </Link>
                     )}
-                    {p.type === "SUB2API" && (
+                    {p.type === "SUB2API" && !p.retiredAt && (
                       <Link
                         href={`/providers/${p.id}`}
                         aria-label="密钥与分组"
@@ -492,7 +655,17 @@ async function load() {
                         <SlidersHorizontal className="h-4 w-4" />
                       </Link>
                     )}
-                    {p.type === "SUB2API" && p.accountPasswordSet && (
+                    {p.type === "SUB2API" && p.retiredAt && (
+                      <Link
+                        href={`/providers/${p.id}/usage`}
+                        aria-label="本地使用记录"
+                        title="查看本地使用记录"
+                        className={buttonVariants({ variant: "default", size: "icon" })}
+                      >
+                        <Database className="h-4 w-4" />
+                      </Link>
+                    )}
+                    {p.type === "SUB2API" && p.accountPasswordSet && !p.retiredAt && (
                       <Button
                         size="icon"
                         variant="secondary"
@@ -512,14 +685,41 @@ async function load() {
                     >
                       <Pencil className="h-4 w-4" />
                     </Button>
-                    <Button
-                      size="icon"
-                      variant="danger"
-                      onClick={() => remove(p.id)}
-                      aria-label="删除"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                    {p.retiredAt ? (
+                      <>
+                        <Button
+                          size="icon"
+                          variant="secondary"
+                          onClick={() => restore(p)}
+                          aria-label="恢复使用"
+                          title="恢复使用"
+                          disabled={saving}
+                        >
+                          <RotateCcw className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          size="icon"
+                          variant="danger"
+                          onClick={() => remove(p)}
+                          aria-label="永久删除"
+                          title="永久删除"
+                          disabled={saving}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </>
+                    ) : (
+                      <Button
+                        size="icon"
+                        variant="outline"
+                        onClick={() => openRetirement(p)}
+                        aria-label="弃用上游"
+                        title="弃用上游"
+                        disabled={saving}
+                      >
+                        <Archive className="h-4 w-4" />
+                      </Button>
+                    )}
                   </div>
                 </CardContent>
               </Card>
@@ -527,6 +727,172 @@ async function load() {
           )}
         </div>
       </div>
+
+      {retirement && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.currentTarget === event.target && !saving) {
+              setRetirement(null);
+            }
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="retirement-title"
+            className="w-full max-w-lg overflow-hidden rounded-md border border-border bg-surface shadow-2xl"
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-border-subtle px-5 py-4">
+              <div>
+                <h2 id="retirement-title" className="text-base font-semibold text-text">
+                  弃用 {retirement.provider.name}
+                </h2>
+                <p className="mt-1 text-xs text-muted">
+                  停止远端同步并保留日汇总、充值台账和财务历史
+                </p>
+              </div>
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                className="h-8 w-8"
+                onClick={() => setRetirement(null)}
+                disabled={saving}
+                aria-label="关闭"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+
+            <div className="space-y-4 px-5 py-4">
+              <div className="grid grid-cols-2 overflow-hidden rounded-md border border-border">
+                <button
+                  type="button"
+                  className={`h-10 text-sm font-medium transition-colors ${
+                    retirement.type === "NORMAL"
+                      ? "bg-cyan text-white"
+                      : "bg-surface text-secondary hover:bg-surface-2"
+                  }`}
+                  onClick={() =>
+                    setRetirement({ ...retirement, type: "NORMAL" })
+                  }
+                >
+                  正常弃用
+                </button>
+                <button
+                  type="button"
+                  className={`flex h-10 items-center justify-center gap-2 border-l border-border text-sm font-medium transition-colors ${
+                    retirement.type === "BALANCE_LOSS"
+                      ? "bg-coral text-white"
+                      : "bg-surface text-secondary hover:bg-surface-2"
+                  }`}
+                  onClick={() =>
+                    setRetirement({ ...retirement, type: "BALANCE_LOSS" })
+                  }
+                >
+                  <TriangleAlert className="h-4 w-4" />
+                  跑路核销
+                </button>
+              </div>
+
+              {retirement.type === "BALANCE_LOSS" && (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="retiredBalance">无法追回余额</Label>
+                    <Input
+                      id="retiredBalance"
+                      type="number"
+                      min="0"
+                      step="0.0001"
+                      value={retirement.balance}
+                      onChange={(event) =>
+                        setRetirement({
+                          ...retirement,
+                          balance: event.target.value,
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="retiredCostRate">购入成本（元 / 面值）</Label>
+                    <Input
+                      id="retiredCostRate"
+                      type="number"
+                      min="0.0001"
+                      step="0.0001"
+                      value={retirement.costRate}
+                      onChange={(event) =>
+                        setRetirement({
+                          ...retirement,
+                          costRate: event.target.value,
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="retiredDay">确认损失日期</Label>
+                    <Input
+                      id="retiredDay"
+                      type="date"
+                      value={retirement.day}
+                      onChange={(event) =>
+                        setRetirement({ ...retirement, day: event.target.value })
+                      }
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>本次核销成本</Label>
+                    <div className="flex h-10 items-center rounded-md border border-coral/30 bg-coral/5 px-3 font-data font-semibold text-coral">
+                      {formatRmb(writeOffEstimate)}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                <Label htmlFor="retirementNote">备注</Label>
+                <Textarea
+                  id="retirementNote"
+                  value={retirement.note}
+                  onChange={(event) =>
+                    setRetirement({ ...retirement, note: event.target.value })
+                  }
+                  placeholder="退款、失联或处置说明"
+                />
+              </div>
+              {error && <p className="text-xs text-coral">{error}</p>}
+            </div>
+
+            <div className="flex justify-end gap-2 border-t border-border-subtle px-5 py-4">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => setRetirement(null)}
+                disabled={saving}
+              >
+                取消
+              </Button>
+              <Button
+                type="button"
+                variant={retirement.type === "BALANCE_LOSS" ? "danger" : "default"}
+                onClick={submitRetirement}
+                disabled={
+                  saving ||
+                  (retirement.type === "BALANCE_LOSS" &&
+                    (!retirement.day ||
+                      Number(retirement.balance) < 0 ||
+                      Number(retirement.costRate) <= 0))
+                }
+              >
+                <Archive className="h-4 w-4" />
+                {saving ? "处理中…" : "确认弃用"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

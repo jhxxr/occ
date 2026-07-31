@@ -81,7 +81,6 @@ export function SelfHostedGrid({
                   </Badge>
                 )}
               </div>
-              <p className="mt-1 truncate text-xs text-muted">{s.baseUrl}</p>
             </div>
           </CardHeader>
           <CardContent className="space-y-3">

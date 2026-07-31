@@ -166,7 +166,6 @@ export function ProviderGrid({
                     </Badge>
                   )}
                 </div>
-                <p className="mt-1 truncate text-xs text-muted">{p.baseUrl}</p>
               </div>
               <OrbitRing
                 balanceRmb={p.balanceRmb}

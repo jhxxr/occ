@@ -127,13 +127,6 @@ export interface DownstreamDailyUsageResult {
   error?: string;
 }
 
-export interface DownstreamGroupRateRow {
-  groupName: string;
-  ratio: number;
-  /** ratio 是否为真实读到的值 */
-  known: boolean;
-}
-
 /** 日志里按渠道聚合的消费 */
 export interface DownstreamChannelUsageRow {
   channelId: number;
@@ -162,10 +155,3 @@ export interface DownstreamChannelUsageResult {
   error?: string;
 }
 
-export interface DownstreamGroupRatesResult {
-  success: boolean;
-  rates: DownstreamGroupRateRow[];
-  /** option = 管理端 GroupRatio；user-groups = 可用分组倍率；group-list = 只拿到名字 */
-  source: "option" | "user-groups" | "group-list" | "none";
-  error?: string;
-}

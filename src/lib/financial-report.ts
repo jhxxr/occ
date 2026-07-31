@@ -1,19 +1,21 @@
 /**
- * 周期收益报表：双口径互校
+ * 周期收益报表
  *
- * 收入两条算法同时跑，互为校验（上下游计费细节不完全一致，单条都做不到绝对精准）：
- *
- *   A 实测法：Σ 下游 NewAPI 日志里真实扣掉的额度 → 人民币
- *   B 倍率法：Σ 上游计费 Key 的官方基准用量 × 该批流量在下游卖出的分组倍率
- *
- * 成本两法共用：
+ *   收入     = Σ 下游 NewAPI 日志里付费账号真实扣掉的额度 → 人民币
  *   上游成本 = Σ 勾选「计入中转」Key 的当日实际扣费 × 当日购入成本率
- *   额外成本 = 成本台账（自建号采购 / 订阅，按记账日或按有效期摊销）
+ *   额外成本 = 成本台账（自建号采购 / 订阅）+ 旧渠道补录
  *
  *   服务毛利 = 收入 − 上游成本 − 额外成本
  *
+ * 每一项都取「当时落库的事实」：成本率写入当日冻结，消费按日快照。
+ * 改今天的配置不会改写历史周期。
+ *
+ * 曾经有个「倍率法」（官方基准用量 × 下游卖出倍率）想跟实测法互校，已删除：
+ * 倍率只存当前值、没有生效时间，改一次倍率就会把所有历史报表重算一遍 ——
+ * 会改写历史的估算比没有估算更糟。
+ *
  * 不计入收入的东西：客户充值（负债/现金流）、下游已发放余额（存量）、
- * 自建站「官方用量 × 卖出倍率」（那是同一批流量的中间层估算，会重复确认）。
+ * 测试账号消费（没人付钱，只烧了上游成本）。
  */
 
 import { prisma } from "@/lib/db";
@@ -60,11 +62,9 @@ export interface DailyPoint {
   revenueMeasuredRmb: number;
   /** 含测试号的全站消费，对账用 */
   grossConsumptionRmb: number;
-  revenueRatioRmb: number;
   upstreamCostRmb: number;
   operatingCostRmb: number;
   profitMeasuredRmb: number;
-  profitRatioRmb: number;
 }
 
 export interface SiteRow {
@@ -104,21 +104,15 @@ export interface KeyRow {
   providerName: string;
   remoteKeyId: string;
   keyName: string;
-  /** 上游分组倍率 */
+  /** 上游分组倍率，仅作展示（当前值，不参与任何计算） */
   upstreamRate: number | null;
-  /** 下游卖出倍率 */
-  downstreamRate: number | null;
-  downstreamSiteName: string | null;
-  downstreamGroup: string | null;
-  rateSource: "key" | "group" | "site-default" | "none";
-  /** 官方基准用量（未乘任何倍率的面值） */
+  /** 官方计价面值，来自明细里当日冻结的 standardCost */
   officialBase: number;
+  /** 实际扣费面值 */
   actualCost: number;
+  /** 折算成本 */
   costRmb: number;
-  /** 倍率法估算卖出收入 */
-  estimatedRevenueRmb: number | null;
-  estimatedProfitRmb: number | null;
-  marginPct: number | null;
+  requests: number;
 }
 
 export interface FinancialReport {
@@ -127,12 +121,6 @@ export interface FinancialReport {
   usdCny: number;
   revenue: {
     measuredRmb: number;
-    ratioRmb: number | null;
-    /** 两法差额（倍率法 − 实测法） */
-    diffRmb: number | null;
-    diffPct: number | null;
-    /** 两法中位值，都可用时给一个折中数 */
-    midpointRmb: number | null;
     /** 全部账号消费（含测试号），跟上游成本对差值用，**不是收入** */
     grossConsumptionRmb: number;
     /** 测试号烧掉的额度，已从收入里剔除 */
@@ -148,11 +136,7 @@ export interface FinancialReport {
   };
   profit: {
     measuredRmb: number;
-    ratioRmb: number | null;
     measuredMarginPct: number | null;
-    ratioMarginPct: number | null;
-    /** 两法毛利差额，越小说明估算越可信 */
-    spreadRmb: number | null;
   };
   daily: DailyPoint[];
   bySite: SiteRow[];
@@ -172,8 +156,7 @@ export interface FinancialReport {
     ignored: boolean;
   }[];
   reference: {
-    /** 自建站官方用量 × 卖出倍率，仅参考，已排除在毛利之外 */
-    selfHostedSellRmb: number;
+    /** 自建站官方计价用量，仅参考，不计入毛利 */
     selfHostedOfficialCost: number;
     /** 下游当前已发放额度（存量，不是收益） */
     downstreamIssuedRmb: number;
@@ -182,11 +165,7 @@ export interface FinancialReport {
   };
   coverage: {
     measuredComplete: boolean;
-    ratioComplete: boolean;
     costComplete: boolean;
-    /** 有成本但没绑定下游倍率的 Key 数 */
-    unmappedKeys: number;
-    unmappedCostRmb: number;
     billableKeys: number;
     sitesMissingDays: number;
     /** 拿不到逐账号消费、测试号还混在收入里的站点数 */
@@ -213,7 +192,6 @@ export async function buildFinancialReport(
     usageDailies,
     snapshots,
     keys,
-    groupRates,
     costEntries,
     downstreamDaily,
     selfHostedDaily,
@@ -232,7 +210,6 @@ export async function buildFinancialReport(
       orderBy: { timestamp: "asc" },
     }),
     prisma.upstreamApiKey.findMany({}),
-    prisma.downstreamGroupRate.findMany({}),
     prisma.operatingCostEntry.findMany({ where: { status: { not: "void" } } }),
     prisma.downstreamUsageDaily.findMany({
       where: { day: { gte: period.startDay, lte: period.endDay } },
@@ -250,7 +227,6 @@ export async function buildFinancialReport(
   const providerNameById = new Map(
     [...relayProviders, ...selfHostedProviders].map((p) => [p.id, p.name]),
   );
-  const siteById = new Map(sites.map((s) => [s.id, s]));
   const warnings: string[] = [];
 
   // ——— 上游成本：Key 级日聚合优先，缺日再用快照估算 ———
@@ -436,136 +412,43 @@ export async function buildFinancialReport(
     );
   }
 
-  // ——— B 倍率法收入：官方基准用量 × 下游卖出倍率 ———
-  const rateByKey = new Map<string, number>(
-    groupRates
-      .filter((g) => g.known && g.ratio > 0)
-      .map((g) => [`${g.downstreamId}|${g.groupName}`, g.ratio]),
-  );
-
-  function resolveDownstreamRate(key: {
-    downstreamSiteId: string | null;
-    downstreamGroup: string | null;
-    downstreamRate: number | null;
-  }): { rate: number | null; source: KeyRow["rateSource"] } {
-    if (key.downstreamRate != null && key.downstreamRate > 0) {
-      return { rate: key.downstreamRate, source: "key" };
-    }
-    if (key.downstreamSiteId) {
-      if (key.downstreamGroup) {
-        const hit = rateByKey.get(`${key.downstreamSiteId}|${key.downstreamGroup}`);
-        if (hit) return { rate: hit, source: "group" };
-      }
-      const fallback = rateByKey.get(`${key.downstreamSiteId}|default`);
-      if (fallback) return { rate: fallback, source: "site-default" };
-    }
-    return { rate: null, source: "none" };
-  }
-
+  // ——— 按 Key 的成本明细（纯事实，不做任何倍率推算）———
   const usageByKey = new Map<
     string,
-    { actualCost: number; standardCost: number; costRmb: number; requests: number; byDay: Map<string, { standardCost: number; actualCost: number }> }
+    { actualCost: number; standardCost: number; costRmb: number; requests: number }
   >();
   for (const row of billableUsage) {
     const id = `${row.providerId}|${row.remoteKeyId}`;
     const cur =
       usageByKey.get(id) ||
-      { actualCost: 0, standardCost: 0, costRmb: 0, requests: 0, byDay: new Map() };
+      { actualCost: 0, standardCost: 0, costRmb: 0, requests: 0 };
     cur.actualCost += row.actualCost || 0;
     cur.standardCost += row.standardCost || 0;
     cur.costRmb += row.costRmb || 0;
     cur.requests += row.requests || 0;
-    const d = cur.byDay.get(row.day) || { standardCost: 0, actualCost: 0 };
-    d.standardCost += row.standardCost || 0;
-    d.actualCost += row.actualCost || 0;
-    cur.byDay.set(row.day, d);
     usageByKey.set(id, cur);
   }
 
-  const ratioRevenueByDay = new Map<string, number>();
   const byKey: KeyRow[] = [];
-  let ratioRevenueRmb = 0;
-  let unmappedKeys = 0;
-  let unmappedCostRmb = 0;
-  let mappedKeys = 0;
-
   for (const key of keys) {
     if (!key.countAsCost) continue;
     if (!relayIds.has(key.providerId)) continue;
     const usage = usageByKey.get(`${key.providerId}|${key.remoteKeyId}`);
-    const actualCost = usage?.actualCost ?? 0;
-    const costRmb = usage?.costRmb ?? 0;
-    const upstreamRate = key.rateMultiplier ?? null;
-
-    /** 官方基准用量：优先用明细里的官方计价，缺失时按上游倍率还原 */
-    const officialBase = (() => {
-      if (usage && usage.standardCost > 0) return usage.standardCost;
-      if (upstreamRate && upstreamRate > 0) return actualCost / upstreamRate;
-      return actualCost;
-    })();
-
-    const { rate, source } = resolveDownstreamRate(key);
-    const estimatedRevenueRmb = rate != null ? round2(officialBase * rate) : null;
-
-    if (rate == null) {
-      if (costRmb > 0 || actualCost > 0) {
-        unmappedKeys++;
-        unmappedCostRmb += costRmb;
-      }
-    } else {
-      mappedKeys++;
-      ratioRevenueRmb += estimatedRevenueRmb ?? 0;
-      if (usage) {
-        for (const [day, d] of usage.byDay) {
-          const base =
-            d.standardCost > 0
-              ? d.standardCost
-              : upstreamRate && upstreamRate > 0
-                ? d.actualCost / upstreamRate
-                : d.actualCost;
-          ratioRevenueByDay.set(day, (ratioRevenueByDay.get(day) || 0) + base * rate);
-        }
-      }
-    }
 
     byKey.push({
       providerId: key.providerId,
       providerName: providerNameById.get(key.providerId) || "?",
       remoteKeyId: key.remoteKeyId,
       keyName: key.name || key.keyPreview || key.remoteKeyId,
-      upstreamRate,
-      downstreamRate: rate,
-      downstreamSiteName: key.downstreamSiteId
-        ? siteById.get(key.downstreamSiteId)?.name ?? null
-        : null,
-      downstreamGroup: key.downstreamGroup ?? null,
-      rateSource: source,
-      officialBase: round2(officialBase),
-      actualCost: round2(actualCost),
-      costRmb: round2(costRmb),
-      estimatedRevenueRmb,
-      estimatedProfitRmb:
-        estimatedRevenueRmb != null ? round2(estimatedRevenueRmb - costRmb) : null,
-      marginPct:
-        estimatedRevenueRmb != null && estimatedRevenueRmb > 0
-          ? pct(estimatedRevenueRmb - costRmb, estimatedRevenueRmb)
-          : null,
+      upstreamRate: key.rateMultiplier ?? null,
+      officialBase: round2(usage?.standardCost ?? 0),
+      actualCost: round2(usage?.actualCost ?? 0),
+      costRmb: round2(usage?.costRmb ?? 0),
+      requests: usage?.requests ?? 0,
     });
   }
 
   byKey.sort((a, b) => b.costRmb - a.costRmb);
-
-  const ratioAvailable = mappedKeys > 0;
-  const ratioComplete = ratioAvailable && unmappedKeys === 0;
-  if (!ratioAvailable) {
-    warnings.push(
-      "倍率法不可用：请给「计入中转」的 Key 绑定下游站点/分组倍率",
-    );
-  } else if (unmappedKeys > 0) {
-    warnings.push(
-      `倍率法有 ${unmappedKeys} 个计费 Key 未绑定下游倍率（涉及成本 ¥${round2(unmappedCostRmb)}），估算收入偏低`,
-    );
-  }
 
   // ——— 额外成本台账 ———
   const costSummary = summarizeCosts(
@@ -595,7 +478,6 @@ export async function buildFinancialReport(
   const daily: DailyPoint[] = dayList.map((day) => {
     const revenueMeasured = round2(revenueByDay.get(day) || 0);
     const grossConsumption = round2(grossByDay.get(day) || 0);
-    const revenueRatio = round2(ratioRevenueByDay.get(day) || 0);
     const upstream = round2(costByDay.get(day) || 0);
     const operating = round2(
       (costSummary.byDay.get(day) || 0) + (orphan.byDay.get(day) || 0),
@@ -604,18 +486,15 @@ export async function buildFinancialReport(
       day,
       revenueMeasuredRmb: revenueMeasured,
       grossConsumptionRmb: grossConsumption,
-      revenueRatioRmb: revenueRatio,
       upstreamCostRmb: upstream,
       operatingCostRmb: operating,
       profitMeasuredRmb: round2(revenueMeasured - upstream - operating),
-      profitRatioRmb: round2(revenueRatio - upstream - operating),
     };
   });
 
   // ——— 汇总 ———
   const operatingRmb = costSummary.totalRmb;
   const totalCostRmb = round2(upstreamCostRmb + operatingRmb + orphan.totalRmb);
-  const ratioRevenue = ratioAvailable ? round2(ratioRevenueRmb) : null;
 
   if (orphan.unresolvedCount > 0) {
     warnings.push(
@@ -629,7 +508,6 @@ export async function buildFinancialReport(
   }
 
   const measuredProfit = round2(measuredRevenueRmb - totalCostRmb);
-  const ratioProfit = ratioRevenue != null ? round2(ratioRevenue - totalCostRmb) : null;
 
   const byProvider: ProviderRow[] = relayProviders
     .map((p): ProviderRow => {
@@ -665,9 +543,6 @@ export async function buildFinancialReport(
     );
   }
 
-  const selfHostedSellRmb = round2(
-    selfHostedDaily.reduce((s, d) => s + (d.sellRevenueRmb || 0), 0),
-  );
   const selfHostedOfficialCost = round2(
     selfHostedDaily.reduce((s, d) => s + (d.officialCost || 0), 0),
   );
@@ -685,16 +560,6 @@ export async function buildFinancialReport(
     usdCny,
     revenue: {
       measuredRmb: measuredRevenueRmb,
-      ratioRmb: ratioRevenue,
-      diffRmb: ratioRevenue != null ? round2(ratioRevenue - measuredRevenueRmb) : null,
-      diffPct:
-        ratioRevenue != null && measuredRevenueRmb > 0
-          ? pct(ratioRevenue - measuredRevenueRmb, measuredRevenueRmb)
-          : null,
-      midpointRmb:
-        ratioRevenue != null && measuredRevenueRmb > 0
-          ? round2((ratioRevenue + measuredRevenueRmb) / 2)
-          : null,
       grossConsumptionRmb,
       excludedRmb: excludedRevenueRmb,
     },
@@ -707,13 +572,8 @@ export async function buildFinancialReport(
     },
     profit: {
       measuredRmb: measuredProfit,
-      ratioRmb: ratioProfit,
       measuredMarginPct:
         measuredRevenueRmb > 0 ? pct(measuredProfit, measuredRevenueRmb) : null,
-      ratioMarginPct:
-        ratioRevenue != null && ratioRevenue > 0 ? pct(ratioProfit ?? 0, ratioRevenue) : null,
-      spreadRmb:
-        ratioProfit != null ? round2(Math.abs(ratioProfit - measuredProfit)) : null,
     },
     daily,
     bySite,
@@ -722,7 +582,6 @@ export async function buildFinancialReport(
     operatingCosts: costSummary.entries,
     orphanChannels: orphan.entries,
     reference: {
-      selfHostedSellRmb,
       selfHostedOfficialCost,
       downstreamIssuedRmb,
       upstreamRechargePaidRmb: round2(
@@ -731,10 +590,7 @@ export async function buildFinancialReport(
     },
     coverage: {
       measuredComplete,
-      ratioComplete,
       costComplete,
-      unmappedKeys,
-      unmappedCostRmb: round2(unmappedCostRmb),
       billableKeys,
       sitesMissingDays,
       sitesUnresolvedExclude,

@@ -14,11 +14,9 @@ interface DailyPoint {
   day: string;
   revenueMeasuredRmb: number;
   grossConsumptionRmb: number;
-  revenueRatioRmb: number;
   upstreamCostRmb: number;
   operatingCostRmb: number;
   profitMeasuredRmb: number;
-  profitRatioRmb: number;
 }
 
 interface ReportPayload {
@@ -26,10 +24,6 @@ interface ReportPayload {
   usdCny: number;
   revenue: {
     measuredRmb: number;
-    ratioRmb: number | null;
-    diffRmb: number | null;
-    diffPct: number | null;
-    midpointRmb: number | null;
     grossConsumptionRmb: number;
     excludedRmb: number;
   };
@@ -42,10 +36,7 @@ interface ReportPayload {
   };
   profit: {
     measuredRmb: number;
-    ratioRmb: number | null;
     measuredMarginPct: number | null;
-    ratioMarginPct: number | null;
-    spreadRmb: number | null;
   };
   daily: DailyPoint[];
   bySite: {
@@ -74,16 +65,10 @@ interface ReportPayload {
     remoteKeyId: string;
     keyName: string;
     upstreamRate: number | null;
-    downstreamRate: number | null;
-    downstreamSiteName: string | null;
-    downstreamGroup: string | null;
-    rateSource: string;
     officialBase: number;
     actualCost: number;
     costRmb: number;
-    estimatedRevenueRmb: number | null;
-    estimatedProfitRmb: number | null;
-    marginPct: number | null;
+    requests: number;
   }[];
   operatingCosts: {
     id: string;
@@ -100,17 +85,13 @@ interface ReportPayload {
     openEnded: boolean;
   }[];
   reference: {
-    selfHostedSellRmb: number;
     selfHostedOfficialCost: number;
     downstreamIssuedRmb: number;
     upstreamRechargePaidRmb: number;
   };
   coverage: {
     measuredComplete: boolean;
-    ratioComplete: boolean;
     costComplete: boolean;
-    unmappedKeys: number;
-    unmappedCostRmb: number;
     billableKeys: number;
     sitesMissingDays: number;
     sitesUnresolvedExclude: number;
@@ -126,13 +107,6 @@ const COST_SOURCE_LABEL: Record<string, string> = {
   snapshots: "快照估算",
   mixed: "混合来源",
   none: "无数据",
-};
-
-const RATE_SOURCE_LABEL: Record<string, string> = {
-  key: "手工绑定",
-  group: "分组同步",
-  "site-default": "站点默认",
-  none: "未绑定",
 };
 
 function Metric({
@@ -331,17 +305,9 @@ export function ReportView() {
               tone="violet"
             />
             <Metric
-              label="消费收入 · 倍率估算"
-              value={
-                data.revenue.ratioRmb != null
-                  ? formatRmb(data.revenue.ratioRmb)
-                  : "—"
-              }
-              hint={
-                data.revenue.diffPct != null
-                  ? `与实测差 ${data.revenue.diffPct > 0 ? "+" : ""}${data.revenue.diffPct.toFixed(1)}%`
-                  : "需给计费 Key 绑定下游倍率"
-              }
+              label="全站消费"
+              value={formatRmb(data.revenue.grossConsumptionRmb)}
+              hint="含测试号，用来跟上游成本对差值"
               tone="cyan"
             />
             <Metric
@@ -354,11 +320,9 @@ export function ReportView() {
               label="服务毛利"
               value={formatRmb(data.profit.measuredRmb)}
               hint={
-                data.profit.ratioRmb != null
-                  ? `倍率法 ${formatRmb(data.profit.ratioRmb)} · 两法差 ${formatRmb(data.profit.spreadRmb ?? 0)}`
-                  : data.profit.measuredMarginPct != null
-                    ? `毛利率 ${data.profit.measuredMarginPct.toFixed(1)}%`
-                    : "收入为 0，无法算毛利率"
+                data.profit.measuredMarginPct != null
+                  ? `毛利率 ${data.profit.measuredMarginPct.toFixed(1)}%`
+                  : "收入为 0，无法算毛利率"
               }
               tone={data.profit.measuredRmb >= 0 ? "mint" : "coral"}
             />
@@ -375,10 +339,10 @@ export function ReportView() {
             <Card>
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm font-semibold normal-case tracking-normal text-text">
-                  按计费 Key 估算毛利（倍率法）
+                  按计费 Key 的上游成本
                 </CardTitle>
                 <p className="text-[11px] text-muted">
-                  官方基准用量 × 下游卖出倍率 − 上游成本；未绑定倍率的 Key 无法估算
+                  当日实扣 × 当日购入成本率，成本率写入即冻结 · 官方基准来自明细快照
                 </p>
               </CardHeader>
               <CardContent className="overflow-x-auto p-0">
@@ -386,13 +350,11 @@ export function ReportView() {
                   <thead>
                     <tr className="border-b border-border-subtle text-left text-[11px] uppercase tracking-wider text-muted">
                       <th className="px-4 py-2">Key</th>
-                      <th className="px-4 py-2">下游归属</th>
                       <th className="px-4 py-2 text-right">上游倍率</th>
-                      <th className="px-4 py-2 text-right">下游倍率</th>
                       <th className="px-4 py-2 text-right">官方基准</th>
+                      <th className="px-4 py-2 text-right">实扣面值</th>
+                      <th className="px-4 py-2 text-right">请求</th>
                       <th className="px-4 py-2 text-right">上游成本</th>
-                      <th className="px-4 py-2 text-right">估算卖出</th>
-                      <th className="px-4 py-2 text-right">估算毛利</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -402,52 +364,25 @@ export function ReportView() {
                         className="border-b border-border-subtle/60"
                       >
                         <td className="px-4 py-2">
-                          <div className="max-w-[180px] truncate font-medium">
+                          <div className="max-w-[200px] truncate font-medium">
                             {k.keyName}
                           </div>
                           <div className="text-[11px] text-muted">{k.providerName}</div>
                         </td>
-                        <td className="px-4 py-2 text-xs">
-                          {k.downstreamSiteName ? (
-                            <div>
-                              <div className="truncate max-w-[140px]">
-                                {k.downstreamSiteName}
-                              </div>
-                              <div className="text-[11px] text-muted">
-                                {k.downstreamGroup || "—"} ·{" "}
-                                {RATE_SOURCE_LABEL[k.rateSource] ?? k.rateSource}
-                              </div>
-                            </div>
-                          ) : (
-                            <Badge variant="default">未绑定</Badge>
-                          )}
-                        </td>
-                        <td className="px-4 py-2 text-right font-data text-xs">
+                        <td className="px-4 py-2 text-right font-data text-xs text-muted">
                           {k.upstreamRate != null ? `${k.upstreamRate}x` : "—"}
                         </td>
                         <td className="px-4 py-2 text-right font-data text-xs">
-                          {k.downstreamRate != null ? `${k.downstreamRate}x` : "—"}
+                          {k.officialBase > 0 ? k.officialBase.toFixed(2) : "—"}
                         </td>
                         <td className="px-4 py-2 text-right font-data text-xs">
-                          {k.officialBase.toFixed(2)}
+                          {k.actualCost > 0 ? k.actualCost.toFixed(4) : "—"}
+                        </td>
+                        <td className="px-4 py-2 text-right font-data text-xs text-muted">
+                          {k.requests || "—"}
                         </td>
                         <td className="px-4 py-2 text-right font-data text-xs text-amber">
                           {formatRmb(k.costRmb)}
-                        </td>
-                        <td className="px-4 py-2 text-right font-data text-xs">
-                          {k.estimatedRevenueRmb != null
-                            ? formatRmb(k.estimatedRevenueRmb)
-                            : "—"}
-                        </td>
-                        <td
-                          className={cn(
-                            "px-4 py-2 text-right font-data text-xs",
-                            (k.estimatedProfitRmb ?? 0) >= 0 ? "text-mint" : "text-coral",
-                          )}
-                        >
-                          {k.estimatedProfitRmb != null
-                            ? `${formatRmb(k.estimatedProfitRmb)}${k.marginPct != null ? ` · ${k.marginPct.toFixed(0)}%` : ""}`
-                            : "—"}
                         </td>
                       </tr>
                     ))}
@@ -704,15 +639,6 @@ export function ReportView() {
                   {formatRmb(data.reference.upstreamRechargePaidRmb)}
                 </div>
                 <p className="text-[11px] text-muted">现金流，成本按实际消耗入账</p>
-              </div>
-              <div>
-                <div className="text-[11px] uppercase tracking-wider text-muted">
-                  自建站卖出估算
-                </div>
-                <div className="font-data text-lg">
-                  {formatRmb(data.reference.selfHostedSellRmb)}
-                </div>
-                <p className="text-[11px] text-muted">中间层估算，避免与下游消费重复</p>
               </div>
               <div>
                 <div className="text-[11px] uppercase tracking-wider text-muted">

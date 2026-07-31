@@ -47,8 +47,9 @@ model UpstreamProvider {
 
 /// 第三方 Sub2API 用户侧 API Key（邮箱密码登录那套）
 ///
-/// 倍率法归因：rateMultiplier 是上游分组倍率，downstreamRate 是这批流量在下游
-/// 卖出的分组倍率。两者配上「官方基准用量」即可估算该 Key 赚了多少。
+/// countAsCost 决定这个 Key 的消耗算不算中转成本。
+/// rateMultiplier 只作展示（当前值），不参与任何金额计算 ——
+/// 倍率会变且没有生效时间，用它算历史金额会改写历史。
 model UpstreamApiKey {
   id              String    @id @default(cuid())
   providerId      String
@@ -62,13 +63,6 @@ model UpstreamApiKey {
   countAsCost     Boolean   @default(false)
   totalActualCost Float     @default(0)
   todayActualCost Float     @default(0)
-  /// 这个 Key 的流量卖到哪个下游站点（倍率法估算收入用）
-  downstreamSiteId     String?
-  /// 对应的下游分组名
-  downstreamGroup      String?  @db.VarChar(200)
-  /// 下游分组倍率快照；auto 表示跟随同步，manual 表示手工覆盖
-  downstreamRate       Float?
-  downstreamRateSource String   @default("auto") @db.VarChar(20)
   lastSyncAt      DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
@@ -77,7 +71,6 @@ model UpstreamApiKey {
 
   @@unique([providerId, remoteKeyId])
   @@index([providerId, countAsCost])
-  @@index([downstreamSiteId])
 }
 
 /// 自建 Sub2API 的分组（卖出倍率 + 是否纳入统计）
@@ -252,7 +245,7 @@ model DownstreamSite {
 
   snapshots DownstreamSnapshot[]
   usageDaily DownstreamUsageDaily[]
-  groupRates DownstreamGroupRate[]
+
   orphanChannels DownstreamOrphanChannel[]
   channelDays DownstreamChannelDay[]
 }
@@ -384,22 +377,6 @@ model DownstreamOrphanChannel {
 
   @@unique([downstreamId, channelId])
   @@index([downstreamId, resolved])
-}
-
-/// 下游分组倍率（自动同步，倍率法估算卖出收入用）
-model DownstreamGroupRate {
-  id           String   @id @default(cuid())
-  downstreamId String
-  groupName    String   @db.VarChar(200)
-  ratio        Float    @default(1)
-  /// option | user-groups | group-list（group-list 拿不到倍率，ratio 视为未知）
-  source       String   @default("option") @db.VarChar(20)
-  known        Boolean  @default(true)
-  syncedAt     DateTime @default(now())
-
-  downstream DownstreamSite @relation(fields: [downstreamId], references: [id], onDelete: Cascade)
-
-  @@unique([downstreamId, groupName])
 }
 
 /// 额外成本台账（自建号采购 / 订阅 / 其他固定支出）

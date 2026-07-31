@@ -50,24 +50,6 @@ interface ApiKeyRow {
   todayActualCost?: number;
   costRmbTotal?: number;
   costRmbToday?: number;
-  /** 这个 Key 的流量卖到哪个下游站点（倍率法估算收入用） */
-  downstreamSiteId?: string | null;
-  downstreamGroup?: string | null;
-  downstreamRate?: number | null;
-  downstreamRateSource?: string;
-}
-
-interface DownstreamSiteOption {
-  id: string;
-  name: string;
-  enabled: boolean;
-}
-
-interface DownstreamGroupRate {
-  downstreamId: string;
-  groupName: string;
-  ratio: number;
-  known: boolean;
 }
 
 interface ProviderMeta {
@@ -159,8 +141,6 @@ export default function Sub2ManagePage() {
   const [provider, setProvider] = useState<ProviderMeta | null>(null);
   const [groups, setGroups] = useState<Group[]>([]);
   const [keys, setKeys] = useState<ApiKeyRow[]>([]);
-  const [downstreamSites, setDownstreamSites] = useState<DownstreamSiteOption[]>([]);
-  const [downstreamRates, setDownstreamRates] = useState<DownstreamGroupRate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -196,8 +176,6 @@ export default function Sub2ManagePage() {
       setProvider(p || { id, name: "上游", baseUrl: "", type: "SUB2API", lastBalance: null, accountEmail: null });
       setGroups(dataJson.data.groups || []);
       setKeys(dataJson.data.keys || []);
-      setDownstreamSites(dataJson.data.downstreamSites || []);
-      setDownstreamRates(dataJson.data.downstreamGroupRates || []);
       setBillableKeys(dataJson.data.billable_keys || 0);
       setBillableCostRmb(dataJson.data.billable_cost_rmb || 0);
     } catch (e) {
@@ -374,83 +352,6 @@ export default function Sub2ManagePage() {
     }
   }
 
-  /** 绑定这个 Key 卖到哪个下游站点/分组 —— 倍率法估算收入的依据 */
-  /**
-   * 绑定下游归属。
-   *
-   * 乐观更新：这是纯本地字段，不影响远端 Sub2API，所以直接改这一行就行。
-   * 之前每次选择都 load() 整页（含远端 Key 列表与用量），下拉框会闪、还慢。
-   */
-  async function bindDownstream(
-    key: ApiKeyRow,
-    patch: {
-      downstreamSiteId?: string | null;
-      downstreamGroup?: string | null;
-      downstreamRate?: number | null;
-    },
-  ) {
-    const prev = {
-      downstreamSiteId: key.downstreamSiteId ?? null,
-      downstreamGroup: key.downstreamGroup ?? null,
-      downstreamRate: key.downstreamRate ?? null,
-      downstreamRateSource: key.downstreamRateSource,
-    };
-
-    // 换站点时清掉分组；倍率跟着新分组重新推导
-    const nextSiteId =
-      patch.downstreamSiteId !== undefined
-        ? patch.downstreamSiteId
-        : prev.downstreamSiteId;
-    const nextGroup =
-      patch.downstreamSiteId !== undefined
-        ? null
-        : patch.downstreamGroup !== undefined
-          ? patch.downstreamGroup
-          : prev.downstreamGroup;
-    const manualRate =
-      patch.downstreamRate !== undefined ? patch.downstreamRate : null;
-    const autoRate =
-      nextSiteId && nextGroup
-        ? (downstreamRates.find(
-            (r) =>
-              r.downstreamId === nextSiteId &&
-              r.groupName === nextGroup &&
-              r.known,
-          )?.ratio ?? null)
-        : null;
-
-    setError(null);
-    setKeys((list) =>
-      list.map((k) =>
-        k.id === key.id
-          ? {
-              ...k,
-              downstreamSiteId: nextSiteId,
-              downstreamGroup: nextGroup,
-              downstreamRate: manualRate ?? autoRate,
-              downstreamRateSource: manualRate != null ? "manual" : "auto",
-            }
-          : k,
-      ),
-    );
-
-    try {
-      const res = await fetch(`/api/upstream/${id}/sub2/keys/${key.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "绑定失败");
-      setMsg(`「${key.name}」下游归属已更新`);
-    } catch (e) {
-      // 失败只回滚这一行，不动其它状态
-      setKeys((list) =>
-        list.map((k) => (k.id === key.id ? { ...k, ...prev } : k)),
-      );
-      setError(e instanceof Error ? e.message : "绑定失败");
-    }
-  }
 
   // 分类 + 同类型低倍率优先
   const sortedGroups = useMemo(() => [...groups].sort(compareGroups), [groups]);
@@ -877,71 +778,6 @@ export default function Sub2ManagePage() {
                       </div>
                     </div>
 
-                    {/* 倍率法归因：这批流量卖到哪个下游分组，才能算出赚了多少 */}
-                    {k.countAsCost && (
-                      <div className="grid gap-2 rounded-lg border border-border-subtle bg-surface-2/40 p-2.5 sm:grid-cols-3">
-                        <div className="space-y-1.5">
-                          <Label className="text-[11px]">卖到下游站点</Label>
-                          <Select
-                            value={k.downstreamSiteId ?? ""}
-                            onChange={(e) =>
-                              bindDownstream(k, {
-                                downstreamSiteId: e.target.value || null,
-                                downstreamGroup: null,
-                              })
-                            }
-                          >
-                            <option value="">未绑定</option>
-                            {downstreamSites.map((s) => (
-                              <option key={s.id} value={s.id}>
-                                {s.name}
-                                {s.enabled ? "" : "（停用）"}
-                              </option>
-                            ))}
-                          </Select>
-                        </div>
-                        <div className="space-y-1.5">
-                          <Label className="text-[11px]">下游分组</Label>
-                          <Select
-                            value={k.downstreamGroup ?? ""}
-                            disabled={!k.downstreamSiteId}
-                            onChange={(e) =>
-                              bindDownstream(k, {
-                                downstreamGroup: e.target.value || null,
-                              })
-                            }
-                          >
-                            <option value="">未指定</option>
-                            {downstreamRates
-                              .filter((r) => r.downstreamId === k.downstreamSiteId)
-                              .map((r) => (
-                                <option key={r.groupName} value={r.groupName}>
-                                  {r.groupName}
-                                  {r.known ? ` · ${r.ratio}x` : " · 倍率未知"}
-                                </option>
-                              ))}
-                          </Select>
-                        </div>
-                        <div className="text-xs text-muted font-data sm:pb-2 sm:self-end">
-                          卖出倍率{" "}
-                          <span className="text-mint text-sm font-semibold">
-                            {k.downstreamRate != null
-                              ? `${k.downstreamRate}x`
-                              : "—"}
-                          </span>
-                          {k.downstreamRate != null &&
-                            g?.rate_multiplier != null &&
-                            g.rate_multiplier > 0 && (
-                              <span className="ml-2 text-[11px]">
-                                差值 ×
-                                {(
-                                  k.downstreamRate / g.rate_multiplier
-                                ).toFixed(2)}
-                              </span>
-                            )}
-                        </div>
-                      </div>
-                    )}
                   </CardContent>
                 </Card>
               );

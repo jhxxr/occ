@@ -18,7 +18,6 @@ interface DailyPoint {
   day: string;
   revenueMeasuredRmb: number;
   grossConsumptionRmb: number;
-  revenueRatioRmb: number;
   upstreamCostRmb: number;
   operatingCostRmb: number;
 }
@@ -55,7 +54,6 @@ export function ReportTrendChart({ data }: { data: DailyPoint[] }) {
     ...d,
     label: d.day.slice(5),
   }));
-  const hasRatio = data.some((d) => d.revenueRatioRmb > 0);
   // 只有测试号真的产生了消费才画这条线，否则跟收入线重叠没意义
   const hasGross = data.some(
     (d) => d.grossConsumptionRmb - d.revenueMeasuredRmb > 0.005,
@@ -63,7 +61,6 @@ export function ReportTrendChart({ data }: { data: DailyPoint[] }) {
   const hasAny = data.some(
     (d) =>
       d.revenueMeasuredRmb > 0 ||
-      d.revenueRatioRmb > 0 ||
       d.upstreamCostRmb > 0 ||
       d.operatingCostRmb > 0,
   );
@@ -73,7 +70,7 @@ export function ReportTrendChart({ data }: { data: DailyPoint[] }) {
       <CardHeader>
         <CardTitle>本周期逐日走势</CardTitle>
         <p className="text-xs text-muted">
-          柱：上游成本 + 额外成本 · 线：付费账号收入（虚线为对账口径与倍率估算）
+          柱：上游成本 + 额外成本 · 线：付费账号收入（虚线为含测试号的对账口径）
         </p>
       </CardHeader>
       <CardContent className="h-[320px]">
@@ -142,17 +139,6 @@ export function ReportTrendChart({ data }: { data: DailyPoint[] }) {
                   stroke="var(--series-5)"
                   strokeWidth={1.5}
                   strokeDasharray="2 3"
-                  dot={false}
-                />
-              )}
-              {hasRatio && (
-                <Line
-                  type="monotone"
-                  dataKey="revenueRatioRmb"
-                  name="收入·倍率估算"
-                  stroke="var(--series-1)"
-                  strokeWidth={2}
-                  strokeDasharray="4 3"
                   dot={false}
                 />
               )}

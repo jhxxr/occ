@@ -1,7 +1,7 @@
 /**
- * 下游按日消费 + 分组倍率同步
+ * 下游按日消费同步
  *
- * 写入 DownstreamUsageDaily（收入事实）与 DownstreamGroupRate（倍率法用）。
+ * 写入 DownstreamUsageDaily（收入事实）。
  * 同一天重复同步走 upsert 覆盖，不累加。
  *
  * 收入只算付费账号：测试号（站点里排除掉的那些）的消费另存一列，
@@ -12,7 +12,6 @@ import { prisma } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
 import {
   fetchDownstreamDailyUsage,
-  fetchDownstreamGroupRates,
   listDownstreamUsers,
 } from "@/lib/adapters";
 import { addDays, assertDay, shanghaiDay } from "@/lib/reporting-period";
@@ -37,8 +36,8 @@ export interface DownstreamUsageSyncResult {
   source: string;
   complete: boolean;
   failedDays: string[];
-  ratesSynced: number;
-  ratesSource: string;
+
+
   error?: string;
 }
 
@@ -72,8 +71,8 @@ export async function syncDownstreamUsage(
       source: "none",
       complete: false,
       failedDays: [],
-      ratesSynced: 0,
-      ratesSource: "none",
+
+
       error: "下游站点不存在",
     };
   }
@@ -95,8 +94,8 @@ export async function syncDownstreamUsage(
       source: "none",
       complete: false,
       failedDays: [],
-      ratesSynced: 0,
-      ratesSource: "none",
+
+
       error: "结束日期不能早于开始日期",
     };
   }
@@ -135,10 +134,12 @@ export async function syncDownstreamUsage(
     }
   }
 
-  const [usage, rates] = await Promise.all([
-    fetchDownstreamDailyUsage({ ...input, startDay, endDay, excludeUsernames }),
-    fetchDownstreamGroupRates(input),
-  ]);
+  const usage = await fetchDownstreamDailyUsage({
+    ...input,
+    startDay,
+    endDay,
+    excludeUsernames,
+  });
 
   if (!usage.success) {
     await prisma.downstreamSite.update({
@@ -160,8 +161,6 @@ export async function syncDownstreamUsage(
       source: usage.totalSource,
       complete: false,
       failedDays: usage.failedDays,
-      ratesSynced: 0,
-      ratesSource: rates.source,
       error: usage.error,
     };
   }
@@ -248,45 +247,12 @@ export async function syncDownstreamUsage(
     });
   }
 
-  let ratesSynced = 0;
-  if (rates.success) {
-    for (const rate of rates.rates) {
-      await prisma.downstreamGroupRate.upsert({
-        where: {
-          downstreamId_groupName: {
-            downstreamId: siteId,
-            groupName: rate.groupName,
-          },
-        },
-        create: {
-          downstreamId: siteId,
-          groupName: rate.groupName,
-          ratio: rate.ratio,
-          source: rates.source,
-          known: rate.known,
-        },
-        update: {
-          ratio: rate.ratio,
-          source: rates.source,
-          known: rate.known,
-          syncedAt: new Date(),
-        },
-      });
-      ratesSynced++;
-    }
-  }
-
   const notes: string[] = [];
   if (usage.failedDays.length) {
     notes.push(`${usage.failedDays.length} 天消费数据拉取失败`);
   }
   if (!excludeResolved) {
     notes.push("拿不到逐账号消费，测试号未从收入中剔除（需开启数据看板导出）");
-  }
-  if (!rates.success) {
-    notes.push("分组倍率未同步（倍率法估算不可用）");
-  } else if (rates.source === "group-list") {
-    notes.push("只读到分组名单、拿不到倍率，请用 root 令牌或手工填写倍率");
   }
 
   await prisma.downstreamSite.update({
@@ -310,8 +276,6 @@ export async function syncDownstreamUsage(
     source: usage.totalSource,
     complete: usage.complete,
     failedDays: usage.failedDays,
-    ratesSynced,
-    ratesSource: rates.source,
   };
 }
 

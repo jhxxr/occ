@@ -4,7 +4,7 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { TopBar } from "@/components/layout/top-bar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input, Label, Textarea } from "@/components/ui/input";
 import {
@@ -177,19 +177,20 @@ export default function SelfHostedListPage() {
             <CardTitle className="text-sm font-semibold text-text normal-case tracking-normal">
               绑定管理员 API Key
             </CardTitle>
-            <Button size="icon" variant="ghost" onClick={() => setShowForm(false)}>
+            <Button size="icon" variant="ghost" onClick={() => setShowForm(false)} aria-label="关闭">
               <X className="h-4 w-4" />
             </Button>
           </CardHeader>
           <CardContent>
             <form onSubmit={onCreate} className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1">
-                <Label>名称</Label>
-                <Input value={name} onChange={(e) => setName(e.target.value)} required />
+                <Label htmlFor="selfHostedName">名称</Label>
+                <Input id="selfHostedName" value={name} onChange={(e) => setName(e.target.value)} required />
               </div>
               <div className="space-y-1">
-                <Label>站点 URL</Label>
+                <Label htmlFor="selfHostedUrl">站点 URL</Label>
                 <Input
+                  id="selfHostedUrl"
                   value={baseUrl}
                   onChange={(e) => setBaseUrl(e.target.value)}
                   required
@@ -197,8 +198,9 @@ export default function SelfHostedListPage() {
                 />
               </div>
               <div className="space-y-1 sm:col-span-2">
-                <Label>Admin API Key</Label>
+                <Label htmlFor="selfHostedAdminKey">Admin API Key</Label>
                 <Input
+                  id="selfHostedAdminKey"
                   type="password"
                   value={adminKey}
                   onChange={(e) => setAdminKey(e.target.value)}
@@ -206,14 +208,15 @@ export default function SelfHostedListPage() {
                   required
                   autoComplete="off"
                 />
-                <p className="text-[11px] text-muted">
+                <p className="text-xs leading-5 text-muted">
                   使用请求头 <code className="font-data text-cyan">X-API-Key</code>
                   ，与用户侧 JWT / 邮箱密码完全独立。
                 </p>
               </div>
               <div className="space-y-1 sm:col-span-2">
-                <Label>备注</Label>
+                <Label htmlFor="selfHostedNotes">备注</Label>
                 <Textarea
+                  id="selfHostedNotes"
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
                   className="min-h-[56px]"
@@ -261,7 +264,7 @@ export default function SelfHostedListPage() {
       ) : (
         <div className="space-y-3">
           {list.map((s) => (
-            <Card key={s.id}>
+            <Card key={s.id} className="transition-[border-color,box-shadow] hover:border-border hover:shadow-sm">
               <CardContent className="flex flex-wrap items-start justify-between gap-4 p-5">
                 <div className="min-w-0 space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
@@ -278,7 +281,7 @@ export default function SelfHostedListPage() {
                       <> · 官方累计用量面值 {s.lastConsumed.toFixed(2)}</>
                     )}
                   </p>
-                  <p className="text-[11px] text-muted">
+                  <p className="text-xs text-muted">
                     {s.lastSyncAt
                       ? `同步于 ${new Date(s.lastSyncAt).toLocaleString("zh-CN")}`
                       : "尚未同步"}
@@ -318,11 +321,14 @@ export default function SelfHostedListPage() {
                   )}
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <a href={s.baseUrl} target="_blank" rel="noopener noreferrer">
-                    <Button size="sm" variant="outline">
-                      <ExternalLink className="h-3.5 w-3.5" />
-                      打开
-                    </Button>
+                  <a
+                    href={s.baseUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={buttonVariants({ variant: "outline", size: "sm" })}
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    打开
                   </a>
                   <Button
                     size="sm"
@@ -349,11 +355,12 @@ export default function SelfHostedListPage() {
                     />
                     同步
                   </Button>
-                  <Link href={`/self-hosted/${s.id}`}>
-                    <Button size="sm">
-                      <Settings2 className="h-3.5 w-3.5" />
-                      分组与账号
-                    </Button>
+                  <Link
+                    href={`/self-hosted/${s.id}`}
+                    className={buttonVariants({ variant: "default", size: "sm" })}
+                  >
+                    <Settings2 className="h-3.5 w-3.5" />
+                    分组与账号
                   </Link>
                   <Button
                     size="icon"

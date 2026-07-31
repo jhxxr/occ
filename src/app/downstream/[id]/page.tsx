@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { TopBar } from "@/components/layout/top-bar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { formatRmb, cn } from "@/lib/utils";
 import { ArrowLeft, ExternalLink, RefreshCw, Save, Users } from "lucide-react";
@@ -181,7 +181,7 @@ export default function DownstreamUsersPage() {
 
   if (!data) {
     return (
-      <div className="rounded-xl border border-coral/30 bg-coral/5 p-6 text-sm text-coral">
+      <div className="rounded-lg border border-coral/30 bg-coral/5 p-6 text-sm text-coral" role="alert">
         {error || "无数据"}
       </div>
     );
@@ -254,11 +254,10 @@ export default function DownstreamUsersPage() {
           href={data.site.baseUrl}
           target="_blank"
           rel="noopener noreferrer"
+          className={buttonVariants({ variant: "outline", size: "sm" })}
         >
-          <Button size="sm" variant="outline">
-            <ExternalLink className="h-3.5 w-3.5" />
-            打开网站
-          </Button>
+          <ExternalLink className="h-3.5 w-3.5" />
+          打开网站
         </a>
         <Button size="sm" variant="secondary" onClick={load}>
           <RefreshCw className="h-3.5 w-3.5" />

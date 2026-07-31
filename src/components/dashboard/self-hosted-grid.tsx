@@ -2,7 +2,7 @@
 
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { formatRmb, cn } from "@/lib/utils";
 import {
   RefreshCw,
@@ -63,8 +63,8 @@ export function SelfHostedGrid({
         <Card
           key={s.id}
           className={cn(
-            "transition-colors border-violet/25 bg-violet/[0.02]",
-            !s.enabled && "opacity-60",
+            "border-violet/20 transition-[border-color,box-shadow] hover:border-violet/35 hover:shadow-sm",
+            !s.enabled && "border-dashed bg-surface-2",
           )}
         >
           <CardHeader className="flex flex-row items-start justify-between gap-3 pb-2">
@@ -86,46 +86,46 @@ export function SelfHostedGrid({
           <CardContent className="space-y-3">
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div>
-                <div className="text-[11px] uppercase tracking-wider text-muted">
+                <div className="text-xs text-muted">
                   本月官方用量
                 </div>
                 <div className="font-data text-lg text-text">
                   {s.monthOfficialCost.toFixed(2)}
                 </div>
-                <div className="text-[10px] text-muted font-data">
+                <div className="text-xs text-muted font-data">
                   {s.monthRequests} 次请求
                 </div>
               </div>
               <div>
-                <div className="text-[11px] uppercase tracking-wider text-muted">
+                <div className="text-xs text-muted">
                   卖出估算
                 </div>
                 <div className="font-data text-lg text-mint">
                   {formatRmb(s.monthSellRevenueRmb)}
                 </div>
-                <div className="text-[10px] text-muted font-data">
+                <div className="text-xs text-muted font-data">
                   {s.trackedGroups}/{s.groupCount} 分组 · 仅参考
                 </div>
               </div>
               <div>
-                <div className="text-[11px] uppercase tracking-wider text-muted">
+                <div className="text-xs text-muted">
                   本月成本入账
                 </div>
                 <div className="font-data text-amber">
                   {formatRmb(s.operatingCostRmb)}
                 </div>
-                <div className="text-[10px] text-muted font-data">
+                <div className="text-xs text-muted font-data">
                   成本台账摊销
                 </div>
               </div>
               <div>
-                <div className="text-[11px] uppercase tracking-wider text-muted">
+                <div className="text-xs text-muted">
                   账号采购登记
                 </div>
                 <div className="font-data text-secondary">
                   {formatRmb(s.accountPurchaseRmb)}
                 </div>
-                <div className="text-[10px] text-muted font-data">
+                <div className="text-xs text-muted font-data">
                   {s.trackedAccounts}/{s.accountCount} 账号 · 不直接扣
                 </div>
               </div>
@@ -143,29 +143,29 @@ export function SelfHostedGrid({
               </p>
             )}
 
-            <div className="flex items-center justify-between gap-2 pt-1">
-              <span className="text-[11px] text-muted font-data">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border-subtle pt-3">
+              <span className="text-xs text-muted font-data">
                 {s.lastSyncAt
                   ? `同步于 ${new Date(s.lastSyncAt).toLocaleString("zh-CN")}`
                   : "尚未同步"}
               </span>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap justify-end gap-2">
                 <a
                   href={s.baseUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                   title="打开面板"
+                  className={buttonVariants({ variant: "outline", size: "sm" })}
                 >
-                  <Button size="sm" variant="outline">
-                    <ExternalLink className="h-3.5 w-3.5" />
-                    打开
-                  </Button>
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  打开
                 </a>
-                <Link href={`/self-hosted/${s.id}`}>
-                  <Button size="sm" variant="outline">
-                    <Settings2 className="h-3.5 w-3.5" />
-                    分组/账号
-                  </Button>
+                <Link
+                  href={`/self-hosted/${s.id}`}
+                  className={buttonVariants({ variant: "outline", size: "sm" })}
+                >
+                  <Settings2 className="h-3.5 w-3.5" />
+                  分组/账号
                 </Link>
                 <Button
                   size="sm"

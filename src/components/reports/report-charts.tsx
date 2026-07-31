@@ -10,6 +10,7 @@ import {
   CartesianGrid,
   Tooltip,
   Legend,
+  ReferenceLine,
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatRmb } from "@/lib/utils";
@@ -20,6 +21,7 @@ interface DailyPoint {
   grossConsumptionRmb: number;
   upstreamCostRmb: number;
   operatingCostRmb: number;
+  profitMeasuredRmb: number;
 }
 
 function ChartTooltip({
@@ -54,10 +56,6 @@ export function ReportTrendChart({ data }: { data: DailyPoint[] }) {
     ...d,
     label: d.day.slice(5),
   }));
-  // 只有测试号真的产生了消费才画这条线，否则跟收入线重叠没意义
-  const hasGross = data.some(
-    (d) => d.grossConsumptionRmb - d.revenueMeasuredRmb > 0.005,
-  );
   const hasAny = data.some(
     (d) =>
       d.revenueMeasuredRmb > 0 ||
@@ -67,17 +65,21 @@ export function ReportTrendChart({ data }: { data: DailyPoint[] }) {
 
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="pb-2">
         <CardTitle>本周期逐日走势</CardTitle>
         <p className="text-xs text-muted">
-          柱：上游成本 + 额外成本 · 线：付费账号收入（虚线为含测试号的对账口径）
+          柱：上游成本 + 额外成本 · 实线：付费账号收入 · 虚线：服务毛利
         </p>
       </CardHeader>
-      <CardContent className="h-[320px]">
+      <CardContent className="h-[320px] pl-2 sm:pl-5">
         {!hasAny ? (
-          <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
-            <div className="h-16 w-16 rounded-full border border-dashed border-border opacity-60" />
-            <p className="max-w-[260px] text-xs text-muted">
+          <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
+            <div className="w-28 space-y-2" aria-hidden="true">
+              <div className="h-1.5 w-full rounded-full bg-surface-3" />
+              <div className="h-1.5 w-3/4 rounded-full bg-surface-3" />
+              <div className="h-1.5 w-1/2 rounded-full bg-surface-3" />
+            </div>
+            <p className="max-w-[280px] text-xs leading-5 text-muted">
               同步下游消费与上游使用记录后，这里会显示逐日收入与成本
             </p>
           </div>
@@ -105,6 +107,7 @@ export function ReportTrendChart({ data }: { data: DailyPoint[] }) {
                 tickLine={false}
                 width={48}
               />
+              <ReferenceLine y={0} stroke="var(--border)" />
               <Tooltip content={<ChartTooltip />} />
               <Legend wrapperStyle={{ fontSize: 12, color: "var(--text-secondary)" }} />
               <Bar
@@ -131,17 +134,16 @@ export function ReportTrendChart({ data }: { data: DailyPoint[] }) {
                 dot={false}
                 activeDot={{ r: 4 }}
               />
-              {hasGross && (
-                <Line
-                  type="monotone"
-                  dataKey="grossConsumptionRmb"
-                  name="全站消费（含测试号）"
-                  stroke="var(--series-5)"
-                  strokeWidth={1.5}
-                  strokeDasharray="2 3"
-                  dot={false}
-                />
-              )}
+              <Line
+                type="monotone"
+                dataKey="profitMeasuredRmb"
+                name="服务毛利"
+                stroke="var(--series-1)"
+                strokeWidth={2}
+                strokeDasharray="5 4"
+                dot={false}
+                activeDot={{ r: 4 }}
+              />
             </ComposedChart>
           </ResponsiveContainer>
         )}

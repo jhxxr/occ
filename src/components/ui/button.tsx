@@ -2,26 +2,26 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 import { ButtonHTMLAttributes, forwardRef } from "react";
 
-const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium transition-colors disabled:pointer-events-none disabled:opacity-50 cursor-pointer",
+export const buttonVariants = cva(
+  "inline-flex shrink-0 cursor-pointer items-center justify-center gap-2 rounded-md text-sm font-semibold transition-[background-color,border-color,color,box-shadow] duration-150 disabled:pointer-events-none disabled:opacity-45",
   {
     variants: {
       variant: {
         default:
-          "bg-cyan text-void hover:bg-cyan/90 shadow-[0_0_20px_rgba(77,178,255,0.15)]",
+          "border border-cyan bg-cyan text-white shadow-sm hover:border-cyan-dim hover:bg-cyan-dim",
         secondary:
-          "bg-surface-2 text-text border border-border hover:bg-surface-3",
+          "border border-border bg-surface text-text shadow-sm hover:bg-surface-2 hover:border-border",
         ghost: "text-secondary hover:text-text hover:bg-surface-2",
         danger:
-          "bg-coral/15 text-coral border border-coral/30 hover:bg-coral/25",
+          "border border-coral/30 bg-coral/5 text-coral hover:bg-coral/10",
         outline:
-          "border border-border bg-transparent text-text hover:bg-surface-2",
+          "border border-border bg-transparent text-secondary hover:bg-surface-2 hover:text-text",
       },
       size: {
-        default: "h-9 px-4 py-2",
-        sm: "h-8 px-3 text-xs",
-        lg: "h-11 px-6",
-        icon: "h-9 w-9",
+        default: "h-10 px-4 py-2",
+        sm: "h-9 px-3 text-xs",
+        lg: "h-11 px-5",
+        icon: "h-10 w-10",
       },
     },
     defaultVariants: {

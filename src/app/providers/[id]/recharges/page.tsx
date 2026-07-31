@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { TopBar } from "@/components/layout/top-bar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input, Label } from "@/components/ui/input";
 import { formatRmb, cn } from "@/lib/utils";
@@ -185,7 +185,7 @@ export default function RechargesPage() {
 
   if (!data) {
     return (
-      <div className="rounded-xl border border-coral/30 bg-coral/5 p-6 text-sm text-coral">
+      <div className="rounded-lg border border-coral/30 bg-coral/5 p-6 text-sm text-coral" role="alert">
         {error || "无数据"}
       </div>
     );
@@ -259,11 +259,14 @@ export default function RechargesPage() {
       </div>
 
       <div className="flex flex-wrap gap-2 items-center">
-        <a href={provider.baseUrl} target="_blank" rel="noopener noreferrer">
-          <Button size="sm" variant="outline">
-            <ExternalLink className="h-3.5 w-3.5" />
-            去充值
-          </Button>
+        <a
+          href={provider.baseUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={buttonVariants({ variant: "outline", size: "sm" })}
+        >
+          <ExternalLink className="h-3.5 w-3.5" />
+          去充值
         </a>
         <Button size="sm" onClick={() => setShowForm((v) => !v)}>
           <Plus className="h-3.5 w-3.5" />

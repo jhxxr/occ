@@ -1,138 +1,297 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 import {
-  LayoutDashboard,
-  Server,
-  Settings,
-  Satellite,
   ArrowDownToLine,
   Database,
+  LayoutDashboard,
   LineChart,
+  LoaderCircle,
+  LogOut,
   Menu,
+  Satellite,
+  Server,
+  Settings,
   X,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
-const nav = [
-  { href: "/", label: "总览", icon: LayoutDashboard },
-  { href: "/reports", label: "收益报表", icon: LineChart },
-  { href: "/providers", label: "上游站点", icon: Server },
-  { href: "/downstream", label: "下游站点", icon: ArrowDownToLine },
-  { href: "/self-hosted", label: "自建上游", icon: Database },
-  { href: "/settings", label: "设置", icon: Settings },
-];
+const MOBILE_DRAWER_ID = "orbit-mobile-navigation";
+
+const navGroups = [
+  {
+    label: "监控",
+    items: [
+      { href: "/", label: "总览", icon: LayoutDashboard },
+      { href: "/reports", label: "收益报表", icon: LineChart },
+    ],
+  },
+  {
+    label: "资源",
+    items: [
+      { href: "/providers", label: "上游", icon: Server },
+      { href: "/downstream", label: "下游", icon: ArrowDownToLine },
+      { href: "/self-hosted", label: "自建", icon: Database },
+    ],
+  },
+  {
+    label: "系统",
+    items: [{ href: "/settings", label: "设置", icon: Settings }],
+  },
+] as const;
+
+function Brand({ compact = false }: { compact?: boolean }) {
+  return (
+    <div className="flex min-w-0 items-center gap-3">
+      <div
+        className={cn(
+          "flex shrink-0 items-center justify-center rounded-md border border-sidebar-border bg-sidebar-surface",
+          compact ? "h-8 w-8" : "h-9 w-9",
+        )}
+      >
+        <Satellite className="h-4 w-4 text-cyan" aria-hidden="true" />
+      </div>
+      <div className="min-w-0">
+        <div className="truncate text-sm font-semibold text-sidebar-text">
+          Orbit Control
+        </div>
+        {!compact && (
+          <div className="mt-0.5 truncate text-xs text-sidebar-muted">
+            运营控制台
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
+
   return (
-    <nav className="flex flex-1 flex-col gap-1 p-3">
-      {nav.map((item) => {
-        const active =
-          item.href === "/"
-            ? pathname === "/"
-            : pathname.startsWith(item.href);
-        const Icon = item.icon;
-        return (
-          <Link
-            key={item.href}
-            href={item.href}
-            onClick={onNavigate}
-            className={cn(
-              "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors",
-              active
-                ? "bg-cyan/10 text-cyan border border-cyan/20"
-                : "text-secondary hover:bg-surface-2 hover:text-text border border-transparent",
-            )}
-          >
-            <Icon className="h-4 w-4 shrink-0" />
-            {item.label}
-          </Link>
-        );
-      })}
+    <nav
+      aria-label="主导航"
+      className="flex flex-1 flex-col gap-5 overflow-y-auto px-3 py-5"
+    >
+      {navGroups.map((group) => (
+        <div key={group.label} role="group" aria-label={group.label}>
+          <p className="mb-1.5 px-3 text-xs font-semibold text-sidebar-muted">
+            {group.label}
+          </p>
+          <ul className="space-y-1">
+            {group.items.map((item) => {
+              const active =
+                item.href === "/"
+                  ? pathname === "/"
+                  : pathname === item.href ||
+                    pathname.startsWith(`${item.href}/`);
+              const Icon = item.icon;
+
+              return (
+                <li key={item.href}>
+                  <Link
+                    href={item.href}
+                    onClick={onNavigate}
+                    aria-current={active ? "page" : undefined}
+                    className={cn(
+                      "relative flex h-10 items-center gap-3 rounded-md px-3 text-sm font-medium transition-colors",
+                      active
+                        ? "border border-sidebar-border bg-sidebar-surface text-sidebar-text before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-full before:bg-cyan"
+                        : "text-sidebar-muted hover:bg-sidebar-surface hover:text-sidebar-text",
+                    )}
+                  >
+                    <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+                    <span className="truncate">{item.label}</span>
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ))}
     </nav>
   );
 }
 
+interface SidebarFooterProps {
+  loggingOut: boolean;
+  logoutError: string | null;
+  onLogout: () => void;
+}
+
+function SidebarFooter({
+  loggingOut,
+  logoutError,
+  onLogout,
+}: SidebarFooterProps) {
+  return (
+    <div className="border-t border-sidebar-border p-3">
+      {logoutError && (
+        <p
+          role="alert"
+          className="mb-2 break-words px-3 text-xs leading-5 text-coral"
+        >
+          {logoutError}
+        </p>
+      )}
+      <Button
+        type="button"
+        variant="ghost"
+        onClick={onLogout}
+        disabled={loggingOut}
+        className="w-full justify-start text-sidebar-muted hover:bg-sidebar-surface hover:text-sidebar-text"
+      >
+        {loggingOut ? (
+          <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+        ) : (
+          <LogOut className="h-4 w-4" aria-hidden="true" />
+        )}
+        {loggingOut ? "正在退出…" : "退出登录"}
+      </Button>
+    </div>
+  );
+}
+
 export function Sidebar() {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [logoutError, setLogoutError] = useState<string | null>(null);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const drawerRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+
+    const menuButton = menuButtonRef.current;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    closeButtonRef.current?.focus();
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setOpen(false);
+        return;
+      }
+
+      if (event.key !== "Tab") return;
+
+      const focusable = drawerRef.current?.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled])',
+      );
+      if (!focusable?.length) return;
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+      menuButton?.focus();
+    };
+  }, [open]);
+
+  async function handleLogout() {
+    setLoggingOut(true);
+    setLogoutError(null);
+
+    try {
+      const response = await fetch("/api/auth/logout", { method: "POST" });
+      if (!response.ok) throw new Error("退出失败，请稍后重试");
+
+      setOpen(false);
+      router.replace("/login");
+      router.refresh();
+    } catch (error) {
+      setLogoutError(
+        error instanceof Error ? error.message : "退出失败，请稍后重试",
+      );
+      setLoggingOut(false);
+    }
+  }
 
   return (
     <>
-      {/* Mobile top bar */}
-      <div className="fixed inset-x-0 top-0 z-50 flex h-14 items-center gap-3 border-b border-border-subtle bg-void/95 px-4 backdrop-blur md:hidden">
+      <div className="fixed inset-x-0 top-0 z-40 flex h-14 items-center gap-3 border-b border-sidebar-border bg-sidebar px-3 text-sidebar-text md:hidden">
         <Button
+          ref={menuButtonRef}
+          type="button"
           size="icon"
           variant="ghost"
           onClick={() => setOpen(true)}
-          aria-label="打开菜单"
+          aria-label="打开主导航"
+          aria-expanded={open}
+          aria-controls={MOBILE_DRAWER_ID}
+          className="shrink-0 text-sidebar-text hover:bg-sidebar-surface hover:text-sidebar-text"
         >
-          <Menu className="h-5 w-5" />
+          <Menu className="h-5 w-5" aria-hidden="true" />
         </Button>
-        <div className="flex items-center gap-2">
-          <Satellite className="h-4 w-4 text-cyan" />
-          <span className="text-sm font-semibold">Orbit Control</span>
-        </div>
+        <Brand compact />
       </div>
 
-      {/* Mobile drawer */}
       {open && (
         <div className="fixed inset-0 z-50 md:hidden">
-          <button
-            className="absolute inset-0 bg-black/60"
-            aria-label="关闭菜单"
+          <div
+            className="absolute inset-0 bg-black/45"
+            aria-hidden="true"
             onClick={() => setOpen(false)}
           />
-          <aside className="absolute inset-y-0 left-0 flex w-64 flex-col border-r border-border-subtle bg-void">
-            <div className="flex items-center justify-between border-b border-border-subtle px-4 py-4">
-              <div className="flex items-center gap-2">
-                <Satellite className="h-4 w-4 text-cyan" />
-                <span className="text-sm font-semibold">Orbit Control</span>
-              </div>
+          <aside
+            ref={drawerRef}
+            id={MOBILE_DRAWER_ID}
+            role="dialog"
+            aria-modal="true"
+            aria-label="主导航菜单"
+            className="absolute inset-y-0 left-0 flex w-72 max-w-[calc(100vw-3rem)] flex-col border-r border-sidebar-border bg-sidebar shadow-2xl"
+          >
+            <div className="flex h-16 shrink-0 items-center justify-between border-b border-sidebar-border px-4">
+              <Brand />
               <Button
+                ref={closeButtonRef}
+                type="button"
                 size="icon"
                 variant="ghost"
                 onClick={() => setOpen(false)}
-                aria-label="关闭"
+                aria-label="关闭主导航"
+                className="shrink-0 text-sidebar-muted hover:bg-sidebar-surface hover:text-sidebar-text"
               >
-                <X className="h-5 w-5" />
+                <X className="h-5 w-5" aria-hidden="true" />
               </Button>
             </div>
             <NavLinks onNavigate={() => setOpen(false)} />
+            <SidebarFooter
+              loggingOut={loggingOut}
+              logoutError={logoutError}
+              onLogout={handleLogout}
+            />
           </aside>
         </div>
       )}
 
-      {/* Desktop sidebar */}
-      <aside className="fixed inset-y-0 left-0 z-40 hidden w-56 flex-col border-r border-border-subtle bg-void/90 backdrop-blur-md md:flex">
-        <div className="flex items-center gap-3 border-b border-border-subtle px-5 py-5">
-          <div className="relative flex h-9 w-9 items-center justify-center">
-            <span className="absolute inset-0 rounded-full border border-cyan/30" />
-            <span className="absolute inset-1 rounded-full border border-cyan/20 border-dashed animate-[spin_12s_linear_infinite]" />
-            <Satellite className="h-4 w-4 text-cyan" />
-          </div>
-          <div>
-            <div className="text-sm font-semibold tracking-tight text-text">
-              Orbit Control
-            </div>
-            <div className="text-[10px] uppercase tracking-[0.16em] text-muted">
-              Cost · Profit · Risk
-            </div>
-          </div>
+      <aside className="fixed inset-y-0 left-0 z-40 hidden w-60 flex-col border-r border-sidebar-border bg-sidebar md:flex">
+        <div className="flex h-16 shrink-0 items-center border-b border-sidebar-border px-4">
+          <Brand />
         </div>
-
         <NavLinks />
-
-        <div className="border-t border-border-subtle p-4">
-          <p className="text-[11px] leading-relaxed text-muted">
-            上游余额 · 下游收益 · 真实毛利
-            <br />
-            本地 SQLite · 密钥加密存储
-          </p>
-        </div>
+        <SidebarFooter
+          loggingOut={loggingOut}
+          logoutError={logoutError}
+          onLogout={handleLogout}
+        />
       </aside>
     </>
   );

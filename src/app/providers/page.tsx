@@ -3,7 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { TopBar } from "@/components/layout/top-bar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Input, Label, Select, Textarea } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { formatRmb } from "@/lib/utils";
@@ -189,8 +189,8 @@ async function load() {
         showSync={false}
       />
 
-      <div className="grid gap-6 lg:grid-cols-5">
-        <Card className="lg:col-span-2">
+      <div className="grid gap-6 xl:grid-cols-5">
+        <Card className="xl:col-span-2">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-text normal-case tracking-normal text-base font-semibold">
               <Plus className="h-4 w-4 text-cyan" />
@@ -243,7 +243,7 @@ async function load() {
 
               {isSub2 ? (
                 <div className="space-y-3 rounded-lg border border-cyan/20 bg-cyan/5 p-3">
-                  <p className="text-[11px] leading-relaxed text-secondary">
+                  <p className="text-xs leading-5 text-secondary">
                     Sub2API 绑定<strong className="text-text">面板邮箱+密码</strong>
                     后，同步时会自动登录 / 刷新 JWT，无需再手动复制
                     auth_token。密码 AES 加密存本地库。
@@ -322,7 +322,7 @@ async function load() {
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="space-y-1.5">
                   <Label htmlFor="discountRate">购入成本（元 / 面值单位）</Label>
                   <Input
@@ -391,7 +391,7 @@ async function load() {
                 />
                 启用同步
               </label>
-              {error && <p className="text-xs text-coral">{error}</p>}
+              {error && <p className="text-xs text-coral" role="alert">{error}</p>}
               <div className="flex gap-2 pt-1">
                 <Button type="submit" disabled={saving} className="flex-1">
                   {saving
@@ -412,7 +412,7 @@ async function load() {
           </CardContent>
         </Card>
 
-        <div className="space-y-3 lg:col-span-3">
+        <div className="space-y-3 xl:col-span-3">
           {list.length === 0 ? (
             <Card>
               <CardContent className="py-12 text-center text-sm text-muted">
@@ -421,7 +421,7 @@ async function load() {
             </Card>
           ) : (
             list.map((p) => (
-              <Card key={p.id}>
+              <Card key={p.id} className="transition-[border-color,box-shadow] hover:border-border hover:shadow-sm">
                 <CardContent className="flex flex-wrap items-start justify-between gap-4 p-5">
                   <div className="min-w-0 space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
@@ -461,39 +461,35 @@ async function load() {
                       )}
                     </p>
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap justify-end gap-2">
                     <a
                       href={p.baseUrl}
                       target="_blank"
                       rel="noopener noreferrer"
                       title="打开网站"
+                      aria-label="打开网站"
+                      className={buttonVariants({ variant: "outline", size: "icon" })}
                     >
-                      <Button size="icon" variant="outline" aria-label="打开网站">
-                        <ExternalLink className="h-4 w-4" />
-                      </Button>
+                      <ExternalLink className="h-4 w-4" />
                     </a>
                     {p.type === "SUB2API" && (
-                      <Link href={`/providers/${p.id}/recharges`}>
-                        <Button
-                          size="icon"
-                          variant="outline"
-                          aria-label="充值台账"
-                          title="充值台账"
-                        >
-                          <Wallet className="h-4 w-4" />
-                        </Button>
+                      <Link
+                        href={`/providers/${p.id}/recharges`}
+                        aria-label="充值台账"
+                        title="充值台账"
+                        className={buttonVariants({ variant: "outline", size: "icon" })}
+                      >
+                        <Wallet className="h-4 w-4" />
                       </Link>
                     )}
                     {p.type === "SUB2API" && (
-                      <Link href={`/providers/${p.id}`}>
-                        <Button
-                          size="icon"
-                          variant="default"
-                          aria-label="密钥与分组"
-                          title="密钥与分组管理"
-                        >
-                          <SlidersHorizontal className="h-4 w-4" />
-                        </Button>
+                      <Link
+                        href={`/providers/${p.id}`}
+                        aria-label="密钥与分组"
+                        title="密钥与分组管理"
+                        className={buttonVariants({ variant: "default", size: "icon" })}
+                      >
+                        <SlidersHorizontal className="h-4 w-4" />
                       </Link>
                     )}
                     {p.type === "SUB2API" && p.accountPasswordSet && (

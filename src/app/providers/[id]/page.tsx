@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { TopBar } from "@/components/layout/top-bar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input, Label, Select } from "@/components/ui/input";
 import { formatRmb, cn } from "@/lib/utils";
@@ -415,24 +415,25 @@ export default function Sub2ManagePage() {
             target="_blank"
             rel="noopener noreferrer"
             title="打开面板网站（充值/订阅）"
+            className={buttonVariants({ variant: "outline", size: "sm" })}
           >
-            <Button size="sm" variant="default">
-              <ExternalLink className="h-3.5 w-3.5" />
-              打开网站
-            </Button>
+            <ExternalLink className="h-3.5 w-3.5" />
+            打开网站
           </a>
         )}
-        <Link href={`/providers/${id}/recharges`}>
-          <Button size="sm" variant="outline">
-            <Wallet className="h-3.5 w-3.5" />
-            充值台账
-          </Button>
+        <Link
+          href={`/providers/${id}/recharges`}
+          className={buttonVariants({ variant: "outline", size: "sm" })}
+        >
+          <Wallet className="h-3.5 w-3.5" />
+          充值台账
         </Link>
-        <Link href={`/providers/${id}/usage`}>
-          <Button size="sm" variant="default">
-            <Database className="h-3.5 w-3.5" />
-            使用记录库
-          </Button>
+        <Link
+          href={`/providers/${id}/usage`}
+          className={buttonVariants({ variant: "default", size: "sm" })}
+        >
+          <Database className="h-3.5 w-3.5" />
+          使用记录库
         </Link>
         <Button size="sm" variant="secondary" onClick={load} disabled={!!busy}>
           <RefreshCw className={cn("h-3.5 w-3.5", busy && "animate-spin")} />

@@ -19,7 +19,7 @@ export function AlertsBanner({
   if (!alerts.length) return null;
 
   return (
-    <div className="rounded-xl border border-coral/30 bg-coral/5 px-4 py-3">
+    <div className="rounded-lg border border-coral/30 bg-coral/5 px-4 py-3" role="alert">
       <div className="flex items-start gap-3">
         <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-coral" />
         <div className="space-y-1">

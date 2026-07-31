@@ -17,12 +17,21 @@ interface MetricCardProps {
 }
 
 const iconTone: Record<string, string> = {
-  cyan: "text-cyan border-cyan/20 bg-cyan/5",
-  mint: "text-mint border-mint/20 bg-mint/5",
-  amber: "text-amber border-amber/20 bg-amber/5",
-  coral: "text-coral border-coral/20 bg-coral/5",
-  violet: "text-violet border-violet/20 bg-violet/5",
-  default: "text-secondary border-border bg-surface-2",
+  cyan: "text-cyan bg-cyan/8",
+  mint: "text-mint bg-mint/8",
+  amber: "text-amber bg-amber/8",
+  coral: "text-coral bg-coral/8",
+  violet: "text-violet bg-violet/8",
+  default: "text-secondary bg-surface-2",
+};
+
+const borderTone: Record<string, string> = {
+  cyan: "border-t-cyan",
+  mint: "border-t-mint",
+  amber: "border-t-amber",
+  coral: "border-t-coral",
+  violet: "border-t-violet",
+  default: "border-t-border",
 };
 
 function MetricCard({
@@ -33,33 +42,25 @@ function MetricCard({
   tone = "default",
 }: MetricCardProps) {
   return (
-    <Card className="relative overflow-hidden">
-      <div
-        className={cn(
-          "pointer-events-none absolute -right-4 -top-4 h-24 w-24 rounded-full opacity-25 blur-2xl",
-          tone === "cyan" && "bg-cyan",
-          tone === "mint" && "bg-mint",
-          tone === "amber" && "bg-amber",
-          tone === "coral" && "bg-coral",
-          tone === "violet" && "bg-violet",
-        )}
-      />
-      <CardHeader className="flex flex-row items-start justify-between space-y-0">
-        <CardTitle>{label}</CardTitle>
+    <Card className={cn("border-t-2", borderTone[tone])}>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 p-4 pb-2">
+        <CardTitle className="text-xs font-semibold text-secondary">
+          {label}
+        </CardTitle>
         <div
           className={cn(
-            "flex h-8 w-8 items-center justify-center rounded-lg border",
+            "flex h-8 w-8 items-center justify-center rounded-md",
             iconTone[tone],
           )}
         >
           <Icon className="h-4 w-4" />
         </div>
       </CardHeader>
-      <CardContent>
-        <div className="font-data text-2xl font-semibold tracking-tight text-text sm:text-3xl">
+      <CardContent className="p-4 pt-1">
+        <div className="font-data text-2xl font-semibold text-text">
           {value}
         </div>
-        {hint && <p className="mt-1.5 text-xs text-muted">{hint}</p>}
+        {hint && <p className="mt-2 text-xs leading-5 text-muted">{hint}</p>}
       </CardContent>
     </Card>
   );
@@ -106,24 +107,17 @@ export function MetricsRow({
   const operating = metrics.operatingCostRmb ?? 0;
 
   return (
-    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
       <MetricCard
-        label="上游总余额"
-        value={formatRmb(metrics.totalUpstreamBalanceRmb)}
-        hint="按各站购入成本折算的人民币"
-        icon={Wallet}
-        tone="cyan"
-      />
-      <MetricCard
-        label="本月成本"
-        value={formatRmb(metrics.monthCostRmb + operating)}
+        label="本月服务毛利"
+        value={formatRmb(metrics.monthProfitRmb)}
         hint={
-          operating > 0
-            ? `上游 ${formatRmb(metrics.monthCostRmb)} + 额外 ${formatRmb(operating)} · ${costSourceLabel}`
-            : costHint
+          metrics.marginPct != null
+            ? `消费收入 - 上游成本 - 额外成本 · 毛利率 ${metrics.marginPct.toFixed(1)}%`
+            : "消费收入 - 上游成本 - 额外成本"
         }
-        icon={TrendingDown}
-        tone="amber"
+        icon={Sparkles}
+        tone={profitTone}
       />
       <MetricCard
         label="本月消费收入"
@@ -139,15 +133,22 @@ export function MetricsRow({
         tone="violet"
       />
       <MetricCard
-        label="本月服务毛利"
-        value={formatRmb(metrics.monthProfitRmb)}
+        label="本月成本"
+        value={formatRmb(metrics.monthCostRmb + operating)}
         hint={
-          metrics.marginPct != null
-            ? `消费收入 − 上游成本 − 额外成本 · 毛利率 ${metrics.marginPct.toFixed(1)}%`
-            : "消费收入 − 上游成本 − 额外成本"
+          operating > 0
+            ? `上游 ${formatRmb(metrics.monthCostRmb)} + 额外 ${formatRmb(operating)} · ${costSourceLabel}`
+            : costHint
         }
-        icon={Sparkles}
-        tone={profitTone}
+        icon={TrendingDown}
+        tone="amber"
+      />
+      <MetricCard
+        label="上游总余额"
+        value={formatRmb(metrics.totalUpstreamBalanceRmb)}
+        hint="按各站购入成本折算的人民币"
+        icon={Wallet}
+        tone="cyan"
       />
     </div>
   );

@@ -121,12 +121,22 @@ function Metric({
   tone?: "mint" | "amber" | "coral" | "violet" | "cyan" | "default";
 }) {
   return (
-    <Card>
+    <Card
+      className={cn(
+        "border-t-2",
+        tone === "mint" && "border-t-mint",
+        tone === "amber" && "border-t-amber",
+        tone === "coral" && "border-t-coral",
+        tone === "violet" && "border-t-violet",
+        tone === "cyan" && "border-t-cyan",
+        tone === "default" && "border-t-border",
+      )}
+    >
       <CardContent className="p-4">
-        <div className="text-[11px] uppercase tracking-wider text-muted">{label}</div>
+        <div className="text-xs font-semibold text-secondary">{label}</div>
         <div
           className={cn(
-            "font-data text-2xl font-semibold tracking-tight",
+            "mt-1 font-data text-2xl font-semibold text-text",
             tone === "mint" && "text-mint",
             tone === "amber" && "text-amber",
             tone === "coral" && "text-coral",
@@ -136,7 +146,7 @@ function Metric({
         >
           {value}
         </div>
-        {hint && <p className="mt-1 text-[11px] leading-relaxed text-muted">{hint}</p>}
+        {hint && <p className="mt-1.5 text-xs leading-5 text-muted">{hint}</p>}
       </CardContent>
     </Card>
   );
@@ -211,7 +221,7 @@ export function ReportView() {
       />
 
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex overflow-hidden rounded-lg border border-border">
+        <div className="flex h-9 overflow-hidden rounded-md border border-border bg-surface">
           {(["week", "month"] as const).map((k) => (
             <button
               key={k}
@@ -220,7 +230,7 @@ export function ReportView() {
                 setOffset(0);
               }}
               className={cn(
-                "px-3 py-1.5 text-xs transition-colors",
+                "px-3 text-xs font-semibold transition-colors",
                 kind === k
                   ? "bg-cyan/10 text-cyan"
                   : "text-secondary hover:bg-surface-2 hover:text-text",
@@ -265,13 +275,19 @@ export function ReportView() {
       </div>
 
       {loading && (
-        <div className="flex min-h-[30vh] items-center justify-center">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-border border-t-cyan" />
+        <div className="space-y-4" role="status" aria-live="polite">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            {Array.from({ length: 4 }).map((_, index) => (
+              <div key={index} className="h-32 animate-pulse rounded-lg border border-border-subtle bg-surface" />
+            ))}
+          </div>
+          <div className="h-80 animate-pulse rounded-lg border border-border-subtle bg-surface" />
+          <span className="sr-only">正在加载收益报表</span>
         </div>
       )}
 
       {error && !loading && (
-        <div className="rounded-xl border border-coral/30 bg-coral/5 p-6 text-sm text-coral">
+        <div className="rounded-lg border border-coral/30 bg-coral/5 p-6 text-sm text-coral" role="alert">
           {error}
         </div>
       )}
@@ -279,7 +295,7 @@ export function ReportView() {
       {data && !loading && (
         <>
           {data.coverage.warnings.length > 0 && (
-            <div className="space-y-1.5 rounded-xl border border-amber/30 bg-amber/5 p-4">
+            <div className="space-y-1.5 rounded-lg border border-amber/30 bg-amber/5 p-4" role="status">
               {data.coverage.warnings.map((w) => (
                 <div key={w} className="flex items-start gap-2 text-xs text-amber">
                   <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -290,6 +306,16 @@ export function ReportView() {
           )}
 
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <Metric
+              label="服务毛利"
+              value={formatRmb(data.profit.measuredRmb)}
+              hint={
+                data.profit.measuredMarginPct != null
+                  ? `毛利率 ${data.profit.measuredMarginPct.toFixed(1)}%`
+                  : "收入为 0，无法算毛利率"
+              }
+              tone={data.profit.measuredRmb >= 0 ? "mint" : "coral"}
+            />
             <Metric
               label="消费收入 · 实测"
               value={formatRmb(data.revenue.measuredRmb)}
@@ -305,26 +331,16 @@ export function ReportView() {
               tone="violet"
             />
             <Metric
-              label="全站消费"
-              value={formatRmb(data.revenue.grossConsumptionRmb)}
-              hint="含测试号，用来跟上游成本对差值"
-              tone="cyan"
-            />
-            <Metric
               label="总成本"
               value={formatRmb(data.cost.totalRmb)}
               hint={`上游 ${formatRmb(data.cost.upstreamRmb)} · 额外 ${formatRmb(data.cost.operatingRmb)}${data.cost.orphanRmb > 0 ? ` · 旧渠道 ${formatRmb(data.cost.orphanRmb)}` : ""} · ${COST_SOURCE_LABEL[data.cost.source] ?? data.cost.source}`}
               tone="amber"
             />
             <Metric
-              label="服务毛利"
-              value={formatRmb(data.profit.measuredRmb)}
-              hint={
-                data.profit.measuredMarginPct != null
-                  ? `毛利率 ${data.profit.measuredMarginPct.toFixed(1)}%`
-                  : "收入为 0，无法算毛利率"
-              }
-              tone={data.profit.measuredRmb >= 0 ? "mint" : "coral"}
+              label="全站消费"
+              value={formatRmb(data.revenue.grossConsumptionRmb)}
+              hint="含测试号，用来跟上游成本对差值"
+              tone="cyan"
             />
           </div>
 

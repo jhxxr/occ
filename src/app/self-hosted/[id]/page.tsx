@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { TopBar } from "@/components/layout/top-bar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input, Label } from "@/components/ui/input";
 import { CostLedger } from "@/components/self-hosted/cost-ledger";
@@ -285,11 +285,14 @@ export default function SelfHostedDetailPage() {
       </div>
 
       <div className="flex flex-wrap gap-2 items-center">
-        <a href={provider.baseUrl} target="_blank" rel="noopener noreferrer">
-          <Button size="sm" variant="outline">
-            <ExternalLink className="h-3.5 w-3.5" />
-            打开面板
-          </Button>
+        <a
+          href={provider.baseUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={buttonVariants({ variant: "outline", size: "sm" })}
+        >
+          <ExternalLink className="h-3.5 w-3.5" />
+          打开面板
         </a>
         <Button size="sm" variant="secondary" disabled={busy} onClick={syncMeta}>
           <RefreshCw className={cn("h-3.5 w-3.5", busy && "animate-spin")} />

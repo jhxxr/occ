@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { formatRmb, cn } from "@/lib/utils";
 import { ExternalLink, RefreshCw, SlidersHorizontal } from "lucide-react";
@@ -83,7 +83,13 @@ export function DownstreamGrid({
   return (
     <div className="grid gap-4 sm:grid-cols-2">
       {sites.map((s) => (
-        <Card key={s.id} className={cn(!s.enabled && "opacity-60")}>
+        <Card
+          key={s.id}
+          className={cn(
+            "transition-[border-color,box-shadow] hover:border-border hover:shadow-sm",
+            !s.enabled && "border-dashed bg-surface-2",
+          )}
+        >
           <CardHeader className="flex flex-row items-center justify-between gap-2 pb-2">
             <CardTitle className="text-base font-semibold normal-case tracking-normal text-text">
               {s.name}
@@ -95,13 +101,13 @@ export function DownstreamGrid({
           <CardContent className="space-y-3">
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div>
-                <div className="text-[11px] uppercase tracking-wider text-muted">
+                <div className="text-xs text-muted">
                   最近消耗
                 </div>
                 <div className="font-data text-lg">{formatRmb(s.lastConsumed)}</div>
               </div>
               <div>
-                <div className="text-[11px] uppercase tracking-wider text-muted">
+                <div className="text-xs text-muted">
                   已发放额度
                 </div>
                 <div className="font-data text-lg">
@@ -109,11 +115,11 @@ export function DownstreamGrid({
                     ? formatRmb(s.lastRevenue != null ? s.lastRevenue * usdCny : null)
                     : formatRmb(s.lastRevenue)}
                 </div>
-                <div className="text-[10px] text-muted">存量，非收益</div>
+                <div className="text-xs text-muted">存量，非收益</div>
               </div>
             </div>
 
-            <div className="text-[11px] font-data text-muted">
+            <div className="text-xs font-data text-muted">
               {s.lastSyncAt
                 ? `同步于 ${new Date(s.lastSyncAt).toLocaleString("zh-CN")}`
                 : "尚未同步"}
@@ -127,18 +133,22 @@ export function DownstreamGrid({
               <p className="text-xs font-data text-mint">{msg[s.id]}</p>
             )}
 
-            <div className="flex flex-wrap gap-2">
-              <a href={s.baseUrl} target="_blank" rel="noopener noreferrer">
-                <Button size="sm" variant="outline">
-                  <ExternalLink className="h-3.5 w-3.5" />
-                  打开
-                </Button>
+            <div className="flex flex-wrap gap-2 border-t border-border-subtle pt-3">
+              <a
+                href={s.baseUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={buttonVariants({ variant: "outline", size: "sm" })}
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+                打开
               </a>
-              <Link href={`/downstream/${s.id}`}>
-                <Button size="sm" variant="outline">
-                  <SlidersHorizontal className="h-3.5 w-3.5" />
-                  用户/排除
-                </Button>
+              <Link
+                href={`/downstream/${s.id}`}
+                className={buttonVariants({ variant: "outline", size: "sm" })}
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5" />
+                用户/排除
               </Link>
               <Button
                 size="sm"

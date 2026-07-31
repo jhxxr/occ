@@ -2,7 +2,7 @@
 
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { formatRmb, cn } from "@/lib/utils";
 import {
   AlertTriangle,
@@ -30,7 +30,7 @@ export interface ProviderCardData {
   isLow: boolean;
 }
 
-function OrbitRing({
+function BalanceMeter({
   balanceRmb,
   thresholdRmb,
   isLow,
@@ -39,66 +39,46 @@ function OrbitRing({
   thresholdRmb: number;
   isLow: boolean;
 }) {
-  const cap = Math.max(thresholdRmb * 3, 1);
-  const pct =
-    balanceRmb == null ? 0 : Math.min(1, Math.max(0, balanceRmb / cap));
-  const r = 28;
-  const c = 2 * Math.PI * r;
-  const offset = c * (1 - pct);
-  const stroke = isLow ? "var(--coral)" : "var(--cyan)";
-  const label =
-    balanceRmb == null
-      ? "—"
-      : balanceRmb >= 1000
-        ? `${(balanceRmb / 1000).toFixed(1)}k`
-        : balanceRmb.toFixed(0);
+  const scale = Math.max(balanceRmb ?? 0, thresholdRmb * 1.6, 1);
+  const balancePct =
+    balanceRmb == null ? 0 : Math.min(100, Math.max(0, (balanceRmb / scale) * 100));
+  const thresholdPct = Math.min(100, Math.max(0, (thresholdRmb / scale) * 100));
 
   return (
-    <svg width="72" height="72" viewBox="0 0 72 72" className="shrink-0">
-      <circle
-        cx="36"
-        cy="36"
-        r={r}
-        fill="none"
-        stroke="var(--border-subtle)"
-        strokeWidth="4"
-      />
-      <circle
-        cx="36"
-        cy="36"
-        r={r}
-        fill="none"
-        stroke={stroke}
-        strokeWidth="4"
-        strokeLinecap="round"
-        strokeDasharray={c}
-        strokeDashoffset={offset}
-        transform="rotate(-90 36 36)"
-        className="transition-all duration-700"
-        style={{ filter: `drop-shadow(0 0 6px ${stroke}55)` }}
-      />
-      <circle
-        cx="36"
-        cy="36"
-        r="18"
-        fill="none"
-        stroke="var(--border)"
-        strokeWidth="1"
-        strokeDasharray="2 4"
-        opacity="0.5"
-      />
-      <text
-        x="36"
-        y="38"
-        textAnchor="middle"
-        className="font-data"
-        fill="var(--text)"
-        fontSize="10"
-        fontWeight="600"
+    <div className="space-y-2">
+      <div className="flex items-end justify-between gap-3">
+        <div>
+          <p className="text-xs text-muted">当前余额</p>
+          <p className={cn("mt-0.5 font-data text-2xl font-semibold", isLow ? "text-coral" : "text-text")}>
+            {formatRmb(balanceRmb)}
+          </p>
+        </div>
+        <span className="text-right text-xs text-muted">
+          预警线
+          <span className="ml-1 font-data text-secondary">
+            {formatRmb(thresholdRmb)}
+          </span>
+        </span>
+      </div>
+      <div
+        className="relative h-2 overflow-hidden rounded-full bg-surface-3"
+        role="progressbar"
+        aria-label="余额相对预警线"
+        aria-valuemin={0}
+        aria-valuemax={scale}
+        aria-valuenow={Math.max(0, balanceRmb ?? 0)}
       >
-        {label}
-      </text>
-    </svg>
+        <div
+          className={cn("h-full rounded-full transition-[width] duration-500", isLow ? "bg-coral" : "bg-cyan")}
+          style={{ width: `${balancePct}%` }}
+        />
+        <span
+          className="absolute inset-y-0 w-px bg-amber"
+          style={{ left: `${thresholdPct}%` }}
+          title="余额预警线"
+        />
+      </div>
+    </div>
   );
 }
 
@@ -147,12 +127,12 @@ export function ProviderGrid({
           <Card
             key={p.id}
             className={cn(
-              "transition-colors",
+              "transition-[border-color,box-shadow] hover:border-border hover:shadow-sm",
               p.isLow && "border-coral/40 bg-coral/[0.03]",
               !p.enabled && "opacity-60",
             )}
           >
-            <CardHeader className="flex flex-row items-start justify-between gap-3 pb-2">
+            <CardHeader className="pb-3">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <h3 className="truncate text-base font-semibold text-text">
@@ -167,24 +147,17 @@ export function ProviderGrid({
                   )}
                 </div>
               </div>
-              <OrbitRing
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <BalanceMeter
                 balanceRmb={p.balanceRmb}
                 thresholdRmb={thresholdRmb}
                 isLow={p.isLow}
               />
-            </CardHeader>
-            <CardContent className="space-y-3">
+
               <div className="grid grid-cols-2 gap-3 text-sm">
                 <div>
-                  <div className="text-[11px] uppercase tracking-wider text-muted">
-                    余额
-                  </div>
-                  <div className="font-data text-lg text-text">
-                    {formatRmb(p.balanceRmb)}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[11px] uppercase tracking-wider text-muted">
+                  <div className="text-xs text-muted">
                     购入成本
                   </div>
                   <div className="font-data text-secondary">
@@ -193,15 +166,7 @@ export function ProviderGrid({
                   </div>
                 </div>
                 <div>
-                  <div className="text-[11px] uppercase tracking-wider text-muted">
-                    预警线
-                  </div>
-                  <div className="font-data text-secondary">
-                    {formatRmb(thresholdRmb)}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[11px] uppercase tracking-wider text-muted">
+                  <div className="text-xs text-muted">
                     累计消耗成本
                   </div>
                   <div className="font-data text-secondary">
@@ -218,30 +183,30 @@ export function ProviderGrid({
                 </p>
               )}
 
-              <div className="flex items-center justify-between gap-2 pt-1">
-                <span className="text-[11px] text-muted font-data">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border-subtle pt-3">
+                <span className="text-xs text-muted font-data">
                   {p.lastSyncAt
                     ? `同步于 ${new Date(p.lastSyncAt).toLocaleString("zh-CN")}`
                     : "尚未同步"}
                 </span>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap justify-end gap-2">
                   <a
                     href={p.baseUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     title="打开网站"
+                    className={buttonVariants({ variant: "outline", size: "sm" })}
                   >
-                    <Button size="sm" variant="outline">
-                      <ExternalLink className="h-3.5 w-3.5" />
-                      打开
-                    </Button>
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    打开
                   </a>
                   {p.type === "SUB2API" && (
-                    <Link href={`/providers/${p.id}`}>
-                      <Button size="sm" variant="outline">
-                        <SlidersHorizontal className="h-3.5 w-3.5" />
-                        密钥/分组
-                      </Button>
+                    <Link
+                      href={`/providers/${p.id}`}
+                      className={buttonVariants({ variant: "outline", size: "sm" })}
+                    >
+                      <SlidersHorizontal className="h-3.5 w-3.5" />
+                      密钥/分组
                     </Link>
                   )}
                   <Button

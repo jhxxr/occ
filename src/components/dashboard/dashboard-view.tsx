@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { TopBar } from "@/components/layout/top-bar";
 import { MetricsRow } from "@/components/dashboard/metric-cards";
 import { ProviderGrid, type ProviderCardData } from "@/components/dashboard/provider-grid";
@@ -69,6 +69,28 @@ interface DashboardPayload {
   }[];
 }
 
+function SectionHeading({
+  title,
+  description,
+  meta,
+}: {
+  title: string;
+  description?: string;
+  meta?: ReactNode;
+}) {
+  return (
+    <div className="flex flex-wrap items-end justify-between gap-2 border-b border-border-subtle pb-2.5">
+      <div className="min-w-0">
+        <h2 className="text-sm font-semibold text-text">{title}</h2>
+        {description && (
+          <p className="mt-0.5 text-xs leading-5 text-muted">{description}</p>
+        )}
+      </div>
+      {meta && <div className="text-xs text-muted font-data">{meta}</div>}
+    </div>
+  );
+}
+
 export function DashboardView() {
   const [data, setData] = useState<DashboardPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -94,25 +116,36 @@ export function DashboardView() {
 
   if (loading) {
     return (
-      <div className="flex min-h-[50vh] items-center justify-center">
-        <div className="flex flex-col items-center gap-3">
-          <div className="h-10 w-10 animate-spin rounded-full border-2 border-border border-t-cyan" />
-          <p className="text-sm text-muted">正在接入轨道数据…</p>
+      <div className="space-y-6" role="status" aria-live="polite">
+        <div className="space-y-2 border-b border-border-subtle pb-5">
+          <div className="h-3 w-28 animate-pulse rounded bg-surface-3" />
+          <div className="h-7 w-52 animate-pulse rounded bg-surface-3" />
+          <div className="h-4 w-full max-w-lg animate-pulse rounded bg-surface-3" />
         </div>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div
+              key={index}
+              className="h-36 animate-pulse rounded-lg border border-border-subtle bg-surface"
+            />
+          ))}
+        </div>
+        <div className="h-80 animate-pulse rounded-lg border border-border-subtle bg-surface" />
+        <span className="sr-only">正在加载总览数据</span>
       </div>
     );
   }
 
   if (error || !data) {
     return (
-      <div className="rounded-xl border border-coral/30 bg-coral/5 p-6 text-sm text-coral">
+      <div className="rounded-lg border border-coral/30 bg-coral/5 p-6 text-sm text-coral" role="alert">
         {error || "无数据"}
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <TopBar
         title="资金轨道总览"
         subtitle={
@@ -126,63 +159,48 @@ export function DashboardView() {
       <AlertsBanner alerts={data.alerts} />
       <MetricsRow metrics={data.metrics} />
 
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-medium tracking-wide text-secondary">
-            中转上游
-          </h2>
-          <span className="text-xs text-muted font-data">
-            {data.providers.filter((p) => p.enabled).length} 在线配置
-          </span>
-        </div>
-        <ProviderGrid providers={data.providers} onSynced={load} />
-      </section>
-
-      {data.selfHosted.length > 0 && (
-        <section className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h2 className="text-sm font-medium tracking-wide text-secondary">
-                自建上游
-              </h2>
-              <p className="text-[11px] text-muted">
-                自己部署的 Sub2API，管理员 Key 直连管理端 · 卖出估算不计入总账，成本走成本台账
-              </p>
-            </div>
-            <span className="text-xs text-muted font-data">
-              本月卖出估算 {formatRmb(data.selfHostedTotals.monthSellRevenueRmb)} ·
-              成本入账 {formatRmb(data.selfHostedTotals.operatingCostRmb)}
-            </span>
-          </div>
-          <SelfHostedGrid sites={data.selfHosted} onSynced={load} />
-        </section>
-      )}
-
-      <section className="grid gap-4 xl:grid-cols-3">
+      <section className="grid gap-4 xl:grid-cols-3" aria-label="经营趋势">
         <TrendChart data={data.dailySeries} />
         <SharePie data={data.providerShares} />
       </section>
 
       <section className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h2 className="text-sm font-medium tracking-wide text-secondary">
-              下游自营站
-            </h2>
-            <p className="text-[11px] text-muted">
-              同步会拉余额快照 + 最近 7 天的真实消费（收入口径）
-            </p>
-          </div>
-          <span className="text-xs text-muted font-data">
-            {data.sites.filter((s) => s.enabled).length} 在线
-          </span>
-        </div>
+        <SectionHeading
+          title="中转上游"
+          description="供应商余额、购入成本与同步状态"
+          meta={`${data.providers.filter((p) => p.enabled).length} 个启用`}
+        />
+        <ProviderGrid providers={data.providers} onSynced={load} />
+      </section>
+
+      <section className="space-y-3">
+        <SectionHeading
+          title="下游自营站"
+          description="余额快照与最近 7 天真实消费"
+          meta={`${data.sites.filter((s) => s.enabled).length} 个启用`}
+        />
         <DownstreamGrid
           sites={data.sites}
           usdCny={data.usdCny}
           onSynced={load}
         />
       </section>
+
+      {data.selfHosted.length > 0 && (
+        <section className="space-y-3">
+          <SectionHeading
+            title="自建上游"
+            description="卖出估算仅作参考，实际成本以成本台账为准"
+            meta={
+              <>
+                卖出估算 {formatRmb(data.selfHostedTotals.monthSellRevenueRmb)} ·
+                成本入账 {formatRmb(data.selfHostedTotals.operatingCostRmb)}
+              </>
+            }
+          />
+          <SelfHostedGrid sites={data.selfHosted} onSynced={load} />
+        </section>
+      )}
     </div>
   );
 }

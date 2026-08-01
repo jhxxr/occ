@@ -7,6 +7,15 @@ import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import {
+  Table,
+  THead,
+  TBody,
+  HeadRow,
+  TH,
+  TR,
+  TD,
+} from "@/components/ui/table";
+import {
   Shield,
   Coins,
   Puzzle,
@@ -285,30 +294,27 @@ export default function SettingsPage() {
                 还没有注入链接。生成一条，粘到扩展里就能用。
               </p>
             ) : (
-              <div className="overflow-x-auto rounded-lg border border-border-subtle">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-border-subtle text-left text-[11px] uppercase tracking-wider text-muted">
-                      <th className="px-3 py-2">前缀</th>
-                      <th className="px-3 py-2">备注</th>
-                      <th className="px-3 py-2">绑定</th>
-                      <th className="px-3 py-2">有效期</th>
-                      <th className="px-3 py-2">使用</th>
-                      <th className="px-3 py-2">最近</th>
-                      <th className="px-3 py-2" />
-                    </tr>
-                  </thead>
-                  <tbody>
+              <div className="overflow-x-auto rounded-[var(--r-lg)] border border-border-subtle">
+                <Table>
+                  <THead>
+                    <HeadRow>
+                      <TH className="px-3">前缀</TH>
+                      <TH className="px-3">备注</TH>
+                      <TH className="px-3">绑定</TH>
+                      <TH className="px-3">有效期</TH>
+                      <TH className="px-3">使用</TH>
+                      <TH className="px-3">最近</TH>
+                      <TH className="px-3" />
+                    </HeadRow>
+                  </THead>
+                  <TBody>
                     {tokens.map((t) => (
-                      <tr
-                        key={t.id}
-                        className="border-b border-border-subtle/60 last:border-0"
-                      >
-                        <td className="px-3 py-2 font-data text-xs text-cyan">
+                      <TR key={t.id}>
+                        <TD className="px-3 font-data text-xs text-cyan">
                           {t.tokenPrefix}…
-                        </td>
-                        <td className="px-3 py-2 text-xs">{t.label || "—"}</td>
-                        <td className="px-3 py-2">
+                        </TD>
+                        <TD className="px-3 text-xs">{t.label || "—"}</TD>
+                        <TD className="px-3">
                           {t.providerName ? (
                             <Badge variant="cyan">{t.providerName}</Badge>
                           ) : (
@@ -319,8 +325,8 @@ export default function SettingsPage() {
                               已停用
                             </Badge>
                           )}
-                        </td>
-                        <td className="px-3 py-2 text-[11px] font-data">
+                        </TD>
+                        <TD className="px-3 text-[11px] font-data">
                           {t.expired ? (
                             <Badge variant="coral">已过期</Badge>
                           ) : t.expiresAt ? (
@@ -330,16 +336,16 @@ export default function SettingsPage() {
                           ) : (
                             <span className="text-muted">永久</span>
                           )}
-                        </td>
-                        <td className="px-3 py-2 font-data text-xs">
+                        </TD>
+                        <TD className="px-3 font-data text-xs">
                           {t.useCount}
-                        </td>
-                        <td className="px-3 py-2 text-[11px] text-muted font-data">
+                        </TD>
+                        <TD className="px-3 text-[11px] text-muted font-data">
                           {t.lastUsedAt
                             ? new Date(t.lastUsedAt).toLocaleString("zh-CN")
                             : "从未"}
-                        </td>
-                        <td className="px-3 py-2 text-right">
+                        </TD>
+                        <TD className="px-3 text-right">
                           <Button
                             size="icon"
                             variant="ghost"
@@ -348,11 +354,11 @@ export default function SettingsPage() {
                           >
                             <Trash2 className="h-3.5 w-3.5 text-coral" />
                           </Button>
-                        </td>
-                      </tr>
+                        </TD>
+                      </TR>
                     ))}
-                  </tbody>
-                </table>
+                  </TBody>
+                </Table>
               </div>
             )}
           </div>

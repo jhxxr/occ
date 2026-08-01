@@ -2,24 +2,28 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 import { ButtonHTMLAttributes, forwardRef } from "react";
 
+/*
+ * iOS 26 的按钮是胶囊形，按下有轻微回弹缩放。active:scale 配合 --ease-spring
+ * 提供触感反馈；reduced-motion 下 globals.css 会把过渡时长压到 0。
+ */
 export const buttonVariants = cva(
-  "inline-flex shrink-0 cursor-pointer items-center justify-center gap-2 rounded-md text-sm font-semibold transition-[background-color,border-color,color,box-shadow] duration-150 disabled:pointer-events-none disabled:opacity-45",
+  "inline-flex shrink-0 cursor-pointer items-center justify-center gap-2 rounded-full text-sm font-semibold transition-all duration-200 ease-[var(--ease-spring)] active:scale-[0.97] disabled:pointer-events-none disabled:opacity-45",
   {
     variants: {
       variant: {
         default:
-          "border border-cyan bg-cyan text-white shadow-sm hover:border-cyan-dim hover:bg-cyan-dim",
+          "bg-accent text-on-accent shadow-sm hover:bg-accent-strong hover:shadow-md",
         secondary:
-          "border border-border bg-surface text-text shadow-sm hover:bg-surface-2 hover:border-border",
-        ghost: "text-secondary hover:text-text hover:bg-surface-2",
+          "glass text-text hover:bg-surface-2 hover:shadow-md",
+        ghost: "text-secondary hover:bg-surface-2 hover:text-text",
         danger:
-          "border border-coral/30 bg-coral/5 text-coral hover:bg-coral/10",
+          "border border-coral/35 bg-coral/10 text-coral hover:bg-coral/20",
         outline:
-          "border border-border bg-transparent text-secondary hover:bg-surface-2 hover:text-text",
+          "border border-border bg-transparent text-secondary hover:border-glass-border hover:bg-surface-2 hover:text-text",
       },
       size: {
         default: "h-10 px-4 py-2",
-        sm: "h-9 px-3 text-xs",
+        sm: "h-9 px-3.5 text-xs",
         lg: "h-11 px-5",
         icon: "h-10 w-10",
       },

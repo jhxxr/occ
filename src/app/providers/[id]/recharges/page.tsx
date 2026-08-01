@@ -5,10 +5,12 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { TopBar } from "@/components/layout/top-bar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Spinner } from "@/components/ui/spinner";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input, Label } from "@/components/ui/input";
-import { formatRmb, cn } from "@/lib/utils";
+import { Table, THead, TBody, HeadRow, TH, TR, TD } from "@/components/ui/table";
+import { formatRmb } from "@/lib/utils";
 import {
   ArrowLeft,
   Plus,
@@ -178,7 +180,7 @@ export default function RechargesPage() {
   if (loading) {
     return (
       <div className="flex min-h-[40vh] items-center justify-center">
-        <div className="h-10 w-10 animate-spin rounded-full border-2 border-border border-t-cyan" />
+        <Spinner />
       </div>
     );
   }
@@ -347,42 +349,39 @@ export default function RechargesPage() {
               还没有充值记录。充值后同步上游，再点「记录一笔充值」填实付即可。
             </div>
           ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border-subtle text-left text-[11px] uppercase tracking-wider text-muted">
-                  <th className="px-4 py-2">时间</th>
-                  <th className="px-4 py-2">来源</th>
-                  <th className="px-4 py-2 text-right">实付</th>
-                  <th className="px-4 py-2 text-right">到账面值</th>
-                  <th className="px-4 py-2 text-right">单价</th>
-                  <th className="px-4 py-2">状态</th>
-                  <th className="px-4 py-2">备注</th>
-                  <th className="px-4 py-2" />
-                </tr>
-              </thead>
-              <tbody>
+            <Table>
+              <THead>
+                <HeadRow>
+                  <TH>时间</TH>
+                  <TH>来源</TH>
+                  <TH className="text-right">实付</TH>
+                  <TH className="text-right">到账面值</TH>
+                  <TH className="text-right">单价</TH>
+                  <TH>状态</TH>
+                  <TH>备注</TH>
+                  <TH />
+                </HeadRow>
+              </THead>
+              <TBody>
                 {items.map((r) => {
                   const unit =
                     r.creditGained > 0 && r.paidRmb > 0
                       ? r.paidRmb / r.creditGained
                       : null;
                   return (
-                    <tr
+                    <TR
                       key={r.id}
-                      className={cn(
-                        "border-b border-border-subtle/60",
-                        r.status === "pending" && "bg-amber/[0.04]",
-                      )}
+                      tone={r.status === "pending" ? "warn" : undefined}
                     >
-                      <td className="px-4 py-2.5 font-data text-xs text-secondary whitespace-nowrap">
+                      <TD className="font-data text-xs text-secondary whitespace-nowrap">
                         {new Date(r.rechargedAt).toLocaleString("zh-CN")}
-                      </td>
-                      <td className="px-4 py-2.5">
+                      </TD>
+                      <TD>
                         <Badge variant={r.source === "auto" ? "violet" : "cyan"}>
                           {r.source === "auto" ? "自动检测" : "手动"}
                         </Badge>
-                      </td>
-                      <td className="px-4 py-2.5 text-right font-data">
+                      </TD>
+                      <TD className="text-right font-data">
                         {editingId === r.id ? (
                           <Input
                             className="h-8 w-24 ml-auto text-right"
@@ -394,14 +393,14 @@ export default function RechargesPage() {
                         ) : (
                           formatRmb(r.paidRmb)
                         )}
-                      </td>
-                      <td className="px-4 py-2.5 text-right font-data">
+                      </TD>
+                      <TD className="text-right font-data">
                         {r.creditGained.toFixed(2)}
-                      </td>
-                      <td className="px-4 py-2.5 text-right font-data text-amber">
+                      </TD>
+                      <TD className="text-right font-data text-amber">
                         {unit != null ? formatRmb(unit) : "—"}
-                      </td>
-                      <td className="px-4 py-2.5">
+                      </TD>
+                      <TD>
                         <Badge
                           variant={
                             r.status === "confirmed" ? "mint" : "amber"
@@ -409,11 +408,11 @@ export default function RechargesPage() {
                         >
                           {r.status === "confirmed" ? "已确认" : "待补金额"}
                         </Badge>
-                      </td>
-                      <td className="px-4 py-2.5 text-xs text-muted max-w-[180px] truncate">
+                      </TD>
+                      <TD className="text-xs text-muted max-w-[180px] truncate">
                         {r.note || "—"}
-                      </td>
-                      <td className="px-4 py-2.5">
+                      </TD>
+                      <TD>
                         <div className="flex gap-1 justify-end">
                           {editingId === r.id ? (
                             <>
@@ -462,12 +461,12 @@ export default function RechargesPage() {
                             </>
                           )}
                         </div>
-                      </td>
-                    </tr>
+                      </TD>
+                    </TR>
                   );
                 })}
-              </tbody>
-            </table>
+              </TBody>
+            </Table>
           )}
         </CardContent>
       </Card>

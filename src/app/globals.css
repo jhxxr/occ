@@ -1,56 +1,178 @@
 @import "tailwindcss";
 
-:root {
-  /* Quiet operations console: neutral workspace, graphite navigation. */
-  --void: #171a1d;
-  --bg: #f3f5f6;
-  --surface: #ffffff;
-  --surface-2: #f7f9fa;
-  --surface-3: #edf1f3;
-  --border: #cbd4da;
-  --border-subtle: #e2e7ea;
-  --text: #171b1e;
-  --text-secondary: #4d5961;
-  --muted: #68757d;
-  --cyan: #087f8c;
-  --cyan-dim: #075f68;
-  --mint: #13795b;
-  --mint-dim: #0e6048;
-  --amber: #a96100;
-  --amber-dim: #7e4b05;
-  --coral: #c34444;
-  --coral-dim: #9f3434;
-  --violet: #6656bd;
+/*
+ * Liquid Glass · 双主题设计令牌
+ *
+ * 主题机制：:root 为浅色，.dark 覆盖为深色。html 上的 class 由 layout.tsx 的
+ * 同步内联脚本在解析期写入，因此不会白闪。
+ *
+ * 品牌色保留原有青绿家族，仅按主题调整明度与饱和度以满足对比度要求。
+ * 若要换成 iOS 系统蓝，只需改下方 --accent / --accent-strong 两组值。
+ */
 
-  --sidebar: #171a1d;
-  --sidebar-surface: #22272b;
-  --sidebar-border: #30373c;
-  --sidebar-text: #f4f7f8;
-  --sidebar-muted: #aab4ba;
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  color-scheme: light;
+
+  /* 底层背景：色晕绘制在 body::before，这里只定基色 */
+  --bg: #eef1f5;
+  --bg-tint-a: rgba(8, 127, 140, 0.10);
+  --bg-tint-b: rgba(102, 86, 189, 0.09);
+  --bg-tint-c: rgba(19, 121, 91, 0.07);
+
+  /*
+   * 玻璃材质。--surface 是卡片实际填充色，白 72% —— 低于这个值，
+   * 表格里的财务数字会开始被背景色晕干扰。
+   */
+  --surface: rgba(255, 255, 255, 0.72);
+  --surface-2: rgba(255, 255, 255, 0.52);
+  --surface-3: rgba(15, 23, 32, 0.06);
+  --surface-solid: #ffffff;
+
+  --glass-border: rgba(255, 255, 255, 0.7);
+  --glass-highlight: rgba(255, 255, 255, 0.9);
+  --glass-shadow: rgba(15, 23, 32, 0.10);
+  --glass-blur: 24px;
+  --glass-saturate: 180%;
+
+  --border: rgba(15, 23, 32, 0.16);
+  --border-subtle: rgba(15, 23, 32, 0.09);
+
+  --text: #0b1013;
+  --text-secondary: #3d4a52;
+  --muted: #5f6d76;
+
+  /* 品牌 / 语义色 */
+  --accent: #06707c;
+  --accent-strong: #05555e;
+  --on-accent: #ffffff;
+
+  --cyan: #06707c;
+  --cyan-dim: #05555e;
+  --mint: #0f6d51;
+  --mint-dim: #0b5540;
+  --amber: #99590a;
+  --amber-dim: #74430a;
+  --coral: #b83a3a;
+  --coral-dim: #932d2d;
+  --violet: #5b4bb0;
+
+  /* 语义解耦：warn=警告，cost=成本数字。初值相近，可独立调整。 */
+  --warn: #99590a;
+  --cost: #a15f12;
+
+  /* 行底色。玻璃表面上 3% alpha 会消失，这里给到可见的下限。 */
+  --tint-warn: rgba(153, 89, 10, 0.10);
+  --tint-info: rgba(6, 112, 124, 0.09);
+
+  --scrim: rgba(15, 23, 32, 0.42);
+  --ring: rgba(6, 112, 124, 0.55);
+
+  --sidebar-text: #0b1013;
+  --sidebar-muted: #5f6d76;
 
   --background: var(--bg);
   --foreground: var(--text);
 
-  --series-1: #087f8c;
-  --series-2: #13795b;
-  --series-3: #b36a08;
-  --series-4: #6656bd;
-  --series-5: #c34444;
-  --series-6: #bf5b2c;
+  --series-1: #06707c;
+  --series-2: #0f6d51;
+  --series-3: #a4630a;
+  --series-4: #5b4bb0;
+  --series-5: #b83a3a;
+  --series-6: #ad5228;
+
+  /* iOS 26 圆角明显加大，容器与内嵌元素同心 */
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 18px;
+  --r-xl: 24px;
+
+  --ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.dark {
+  color-scheme: dark;
+
+  --bg: #06080a;
+  --bg-tint-a: rgba(45, 212, 226, 0.13);
+  --bg-tint-b: rgba(141, 124, 240, 0.12);
+  --bg-tint-c: rgba(45, 200, 156, 0.09);
+
+  /*
+   * 深色玻璃：白色薄膜叠在近黑底上。58% 是 --surface-solid 的兜底不透明度，
+   * 保证卡片内文字不被色晕穿透。
+   */
+  --surface: rgba(255, 255, 255, 0.075);
+  --surface-2: rgba(255, 255, 255, 0.048);
+  --surface-3: rgba(255, 255, 255, 0.10);
+  --surface-solid: #14181d;
+
+  --glass-border: rgba(255, 255, 255, 0.14);
+  --glass-highlight: rgba(255, 255, 255, 0.22);
+  --glass-shadow: rgba(0, 0, 0, 0.55);
+  --glass-blur: 26px;
+  --glass-saturate: 170%;
+
+  --border: rgba(255, 255, 255, 0.18);
+  --border-subtle: rgba(255, 255, 255, 0.10);
+
+  --text: #f4f7f9;
+  --text-secondary: #b9c4cc;
+  --muted: #8c99a3;
+
+  --accent: #3ddce8;
+  --accent-strong: #6ce9f2;
+  --on-accent: #04262a;
+
+  --cyan: #3ddce8;
+  --cyan-dim: #6ce9f2;
+  --mint: #3ddba4;
+  --mint-dim: #74e9c0;
+  --amber: #f0b455;
+  --amber-dim: #f7cd77;
+  --coral: #ff8080;
+  --coral-dim: #ffa3a3;
+  --violet: #a99bf5;
+
+  --warn: #f0b455;
+  --cost: #efb163;
+
+  --tint-warn: rgba(240, 180, 85, 0.14);
+  --tint-info: rgba(61, 220, 232, 0.12);
+
+  --scrim: rgba(0, 0, 0, 0.62);
+  --ring: rgba(108, 233, 242, 0.65);
+
+  --sidebar-text: #f4f7f9;
+  --sidebar-muted: #8c99a3;
+
+  --series-1: #3ddce8;
+  --series-2: #3ddba4;
+  --series-3: #f0b455;
+  --series-4: #a99bf5;
+  --series-5: #ff8080;
+  --series-6: #ff9e6b;
 }
 
 @theme inline {
+  /* inline 让工具类输出 var(...) 而非拷贝字面值 —— 主题翻转依赖这一点 */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-text: var(--text);
-  --color-void: var(--void);
   --color-surface: var(--surface);
   --color-surface-2: var(--surface-2);
   --color-surface-3: var(--surface-3);
+  --color-surface-solid: var(--surface-solid);
   --color-border: var(--border);
   --color-border-subtle: var(--border-subtle);
+  --color-glass-border: var(--glass-border);
+  --color-glass-highlight: var(--glass-highlight);
   --color-muted: var(--muted);
   --color-secondary: var(--text-secondary);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-on-accent: var(--on-accent);
   --color-cyan: var(--cyan);
   --color-cyan-dim: var(--cyan-dim);
   --color-mint: var(--mint);
@@ -60,9 +182,11 @@
   --color-coral: var(--coral);
   --color-coral-dim: var(--coral-dim);
   --color-violet: var(--violet);
-  --color-sidebar: var(--sidebar);
-  --color-sidebar-surface: var(--sidebar-surface);
-  --color-sidebar-border: var(--sidebar-border);
+  --color-warn: var(--warn);
+  --color-cost: var(--cost);
+  --color-tint-warn: var(--tint-warn);
+  --color-tint-info: var(--tint-info);
+  --color-scrim: var(--scrim);
   --color-sidebar-text: var(--sidebar-text);
   --color-sidebar-muted: var(--sidebar-muted);
   --color-series-1: var(--series-1);
@@ -71,8 +195,17 @@
   --color-series-4: var(--series-4);
   --color-series-5: var(--series-5);
   --color-series-6: var(--series-6);
-  --font-sans: "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", Arial, sans-serif;
-  --font-mono: "Cascadia Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+
+  --radius-sm: var(--r-sm);
+  --radius-md: var(--r-md);
+  --radius-lg: var(--r-lg);
+  --radius-xl: var(--r-xl);
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable",
+    "Segoe UI", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", "Microsoft YaHei",
+    system-ui, sans-serif;
+  --font-mono: "SF Mono", "SFMono-Regular", "Cascadia Mono", ui-monospace, Consolas,
+    "Liberation Mono", monospace;
 }
 
 * {
@@ -80,56 +213,111 @@
 }
 
 html {
-  color-scheme: light;
   background: var(--bg);
 }
 
 body {
+  position: relative;
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-sans);
   min-height: 100vh;
   text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+/*
+ * 背景色晕。固定在视口、大尺度、低透明 —— 不在表格区域制造局部明暗跳变，
+ * 否则滚动时数字会忽明忽暗。
+ */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(58rem 42rem at 12% -8%, var(--bg-tint-a), transparent 60%),
+    radial-gradient(52rem 38rem at 92% 4%, var(--bg-tint-b), transparent 62%),
+    radial-gradient(46rem 40rem at 68% 96%, var(--bg-tint-c), transparent 64%);
+}
+
+/* ---- 玻璃材质 ---- */
+
+/*
+ * .glass 是所有半透明表面的基类。顶部 1px 内高光是 Liquid Glass 的镜面边特征，
+ * 用 inset box-shadow 实现，避免多套一层伪元素。
+ *
+ * 只写标准 backdrop-filter：构建期 Lightning CSS 会按 browserslist 目标自动补
+ * -webkit- 前缀。手写前缀反而会被它去重掉标准属性，导致 Chrome 完全没有模糊。
+ */
+.glass {
+  background-color: var(--surface);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  border: 1px solid var(--glass-border);
+  box-shadow:
+    inset 0 1px 0 0 var(--glass-highlight),
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 8px 24px -12px var(--glass-shadow);
+}
+
+.glass-strong {
+  background-color: color-mix(in srgb, var(--surface-solid) 78%, transparent);
+  backdrop-filter: blur(32px) saturate(var(--glass-saturate));
+  border: 1px solid var(--glass-border);
+  box-shadow:
+    inset 0 1px 0 0 var(--glass-highlight),
+    0 24px 60px -20px var(--glass-shadow);
+}
+
+/*
+ * 不支持 backdrop-filter 时（旧 Firefox、部分嵌入式 WebView），半透明填充会让
+ * 背景色晕直接透到文字后面。这里退回近乎不透明的实色。
+ */
+@supports not (backdrop-filter: blur(1px)) {
+  .glass,
+  .glass-strong {
+    background-color: color-mix(in srgb, var(--surface-solid) 97%, transparent);
+  }
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--cyan) 18%, transparent);
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
   color: var(--text);
 }
 
 .font-data {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
 }
 
-/* Focus ring */
 :focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--cyan) 78%, white);
-  outline-offset: 3px;
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
 }
 
-/* Scrollbar */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
 }
 ::-webkit-scrollbar-track {
-  background: var(--surface-2);
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #aab5bc;
-  border-radius: 4px;
+  background: color-mix(in srgb, var(--muted) 40%, transparent);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #87949c;
+  background: color-mix(in srgb, var(--muted) 62%, transparent);
+  background-clip: content-box;
 }
 
 table {
   font-variant-numeric: tabular-nums;
-}
-
-thead th {
-  background: var(--surface-2);
 }
 
 @media (prefers-reduced-motion: reduce) {

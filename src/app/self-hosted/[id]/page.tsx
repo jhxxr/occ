@@ -5,10 +5,20 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { TopBar } from "@/components/layout/top-bar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Spinner } from "@/components/ui/spinner";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Input, Label } from "@/components/ui/input";
+import { Checkbox, Input, Label } from "@/components/ui/input";
 import { CostLedger } from "@/components/self-hosted/cost-ledger";
+import {
+  Table,
+  THead,
+  TBody,
+  HeadRow,
+  TH,
+  TR,
+  TD,
+} from "@/components/ui/table";
 import { formatRmb, cn } from "@/lib/utils";
 import {
   ArrowLeft,
@@ -206,7 +216,7 @@ export default function SelfHostedDetailPage() {
   if (loading) {
     return (
       <div className="flex min-h-[40vh] items-center justify-center">
-        <div className="h-10 w-10 animate-spin rounded-full border-2 border-border border-t-cyan" />
+        <Spinner />
       </div>
     );
   }
@@ -325,46 +335,37 @@ export default function SelfHostedDetailPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border-subtle text-left text-[11px] uppercase tracking-wider text-muted">
-                <th className="px-4 py-2">统计</th>
-                <th className="px-4 py-2">分组</th>
-                <th className="px-4 py-2">平台</th>
-                <th className="px-4 py-2 text-right">卖出倍率</th>
-                <th className="px-4 py-2 text-right">今日官方</th>
-                <th className="px-4 py-2 text-right">累计官方</th>
-                <th className="px-4 py-2 text-right">今日卖出¥</th>
-                <th className="px-4 py-2" />
-              </tr>
-            </thead>
-            <tbody>
+          <Table>
+            <THead>
+              <HeadRow>
+                <TH>统计</TH>
+                <TH>分组</TH>
+                <TH>平台</TH>
+                <TH className="text-right">卖出倍率</TH>
+                <TH className="text-right">今日官方</TH>
+                <TH className="text-right">累计官方</TH>
+                <TH className="text-right">今日卖出¥</TH>
+                <TH />
+              </HeadRow>
+            </THead>
+            <TBody>
               {groups.map((g) => (
-                <tr
-                  key={g.id}
-                  className={cn(
-                    "border-b border-border-subtle/60",
-                    g.track && "bg-cyan/[0.03]",
-                  )}
-                >
-                  <td className="px-4 py-2">
-                    <input
-                      type="checkbox"
-                      checked={g.track}
-                      onChange={() => toggleGroupTrack(g)}
-                      className="rounded border-border"
-                    />
-                  </td>
-                  <td className="px-4 py-2">
+                <TR key={g.id} tone={g.track ? "info" : undefined}>
+                  <TD>
+                    <Checkbox
+                                            checked={g.track}
+                      onChange={() => toggleGroupTrack(g)}/>
+                  </TD>
+                  <TD>
                     <div className="font-medium">{g.name}</div>
                     <div className="text-[11px] text-muted font-data">
                       #{g.remoteGroupId}
                     </div>
-                  </td>
-                  <td className="px-4 py-2">
+                  </TD>
+                  <TD>
                     <Badge variant="default">{g.platform || "—"}</Badge>
-                  </td>
-                  <td className="px-4 py-2 text-right">
+                  </TD>
+                  <TD className="text-right">
                     <Input
                       className="h-8 w-20 ml-auto text-right font-data"
                       type="number"
@@ -375,17 +376,17 @@ export default function SelfHostedDetailPage() {
                         setEditSell((s) => ({ ...s, [g.id]: e.target.value }))
                       }
                     />
-                  </td>
-                  <td className="px-4 py-2 text-right font-data text-xs">
+                  </TD>
+                  <TD className="text-right font-data text-xs">
                     {g.todayOfficialCost.toFixed(2)}
-                  </td>
-                  <td className="px-4 py-2 text-right font-data text-xs">
+                  </TD>
+                  <TD className="text-right font-data text-xs">
                     {g.lastOfficialCost.toFixed(2)}
-                  </td>
-                  <td className="px-4 py-2 text-right font-data text-mint text-xs">
+                  </TD>
+                  <TD className="text-right font-data text-mint text-xs">
                     {formatRmb(g.todayOfficialCost * g.sellRate)}
-                  </td>
-                  <td className="px-4 py-2 text-right">
+                  </TD>
+                  <TD className="text-right">
                     <Button
                       size="sm"
                       variant="secondary"
@@ -394,11 +395,11 @@ export default function SelfHostedDetailPage() {
                     >
                       保存倍率
                     </Button>
-                  </td>
-                </tr>
+                  </TD>
+                </TR>
               ))}
-            </tbody>
-          </table>
+            </TBody>
+          </Table>
         </CardContent>
       </Card>
 
@@ -410,50 +411,41 @@ export default function SelfHostedDetailPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border-subtle text-left text-[11px] uppercase tracking-wider text-muted">
-                <th className="px-4 py-2">统计</th>
-                <th className="px-4 py-2">账号</th>
-                <th className="px-4 py-2">平台</th>
-                <th className="px-4 py-2">分组</th>
-                <th className="px-4 py-2 text-right">采购成本 ¥</th>
-                <th className="px-4 py-2">状态</th>
-                <th className="px-4 py-2" />
-              </tr>
-            </thead>
-            <tbody>
+          <Table>
+            <THead>
+              <HeadRow>
+                <TH>统计</TH>
+                <TH>账号</TH>
+                <TH>平台</TH>
+                <TH>分组</TH>
+                <TH className="text-right">采购成本 ¥</TH>
+                <TH>状态</TH>
+                <TH />
+              </HeadRow>
+            </THead>
+            <TBody>
               {accounts.map((a) => (
-                <tr
-                  key={a.id}
-                  className={cn(
-                    "border-b border-border-subtle/60",
-                    a.track && "bg-amber/[0.03]",
-                  )}
-                >
-                  <td className="px-4 py-2">
-                    <input
-                      type="checkbox"
-                      checked={a.track}
-                      onChange={() => toggleAccountTrack(a)}
-                      className="rounded border-border"
-                    />
-                  </td>
-                  <td className="px-4 py-2">
+                <TR key={a.id} tone={a.track ? "warn" : undefined}>
+                  <TD>
+                    <Checkbox
+                                            checked={a.track}
+                      onChange={() => toggleAccountTrack(a)}/>
+                  </TD>
+                  <TD>
                     <div className="font-medium max-w-[200px] truncate">
                       {a.name}
                     </div>
                     <div className="text-[11px] text-muted font-data">
                       #{a.remoteAccountId} · {a.accountType}
                     </div>
-                  </td>
-                  <td className="px-4 py-2">
+                  </TD>
+                  <TD>
                     <Badge>{a.platform || "—"}</Badge>
-                  </td>
-                  <td className="px-4 py-2 text-xs text-muted max-w-[140px] truncate">
+                  </TD>
+                  <TD className="text-xs text-muted max-w-[140px] truncate">
                     {a.groupNames || "—"}
-                  </td>
-                  <td className="px-4 py-2 text-right">
+                  </TD>
+                  <TD className="text-right">
                     <Input
                       className="h-8 w-24 ml-auto text-right font-data"
                       type="number"
@@ -464,15 +456,15 @@ export default function SelfHostedDetailPage() {
                         setEditCost((s) => ({ ...s, [a.id]: e.target.value }))
                       }
                     />
-                  </td>
-                  <td className="px-4 py-2">
+                  </TD>
+                  <TD>
                     <Badge
                       variant={a.status === "active" ? "mint" : "default"}
                     >
                       {a.status}
                     </Badge>
-                  </td>
-                  <td className="px-4 py-2 text-right">
+                  </TD>
+                  <TD className="text-right">
                     <Button
                       size="sm"
                       variant="secondary"
@@ -481,11 +473,11 @@ export default function SelfHostedDetailPage() {
                     >
                       保存成本
                     </Button>
-                  </td>
-                </tr>
+                  </TD>
+                </TR>
               ))}
-            </tbody>
-          </table>
+            </TBody>
+          </Table>
         </CardContent>
       </Card>
 

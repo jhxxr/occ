@@ -4,7 +4,16 @@ import { useCallback, useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Input, Label } from "@/components/ui/input";
+import { Input, Label, Select } from "@/components/ui/input";
+import {
+  Table,
+  THead,
+  TBody,
+  HeadRow,
+  TH,
+  TR,
+  TD,
+} from "@/components/ui/table";
 import { formatRmb, cn } from "@/lib/utils";
 import { Plus, Trash2, CircleSlash } from "lucide-react";
 
@@ -220,8 +229,8 @@ export function CostLedger({
             </div>
             <div>
               <Label className="text-xs text-muted">入账方式</Label>
-              <select
-                className="h-8 w-full rounded-md border border-border bg-surface px-2 text-sm"
+              <Select
+                className="h-9"
                 value={mode}
                 onChange={(e) =>
                   setMode(e.target.value === PERIOD ? PERIOD : ONE_TIME)
@@ -229,7 +238,7 @@ export function CostLedger({
               >
                 <option value={ONE_TIME}>一次性整笔</option>
                 <option value={PERIOD}>按有效期摊销</option>
-              </select>
+              </Select>
             </div>
             <div>
               <Label className="text-xs text-muted">
@@ -255,8 +264,8 @@ export function CostLedger({
             )}
             <div>
               <Label className="text-xs text-muted">归属账号（可选）</Label>
-              <select
-                className="h-8 w-full rounded-md border border-border bg-surface px-2 text-sm"
+              <Select
+                className="h-9"
                 value={accountId}
                 onChange={(e) => setAccountId(e.target.value)}
               >
@@ -266,7 +275,7 @@ export function CostLedger({
                     {a.name}
                   </option>
                 ))}
-              </select>
+              </Select>
             </div>
             <div className="flex items-end">
               <Button size="sm" disabled={busy} onClick={submit}>
@@ -289,21 +298,21 @@ export function CostLedger({
           </p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border-subtle text-left text-[11px] uppercase tracking-wider text-muted">
-                  <th className="px-2 py-2">项目</th>
-                  <th className="px-2 py-2">方式</th>
-                  <th className="px-2 py-2">区间</th>
-                  <th className="px-2 py-2 text-right">总额</th>
-                  <th className="px-2 py-2 text-right">本期入账</th>
-                  <th className="px-2 py-2" />
-                </tr>
-              </thead>
-              <tbody>
+            <Table>
+              <THead>
+                <HeadRow>
+                  <TH className="px-2">项目</TH>
+                  <TH className="px-2">方式</TH>
+                  <TH className="px-2">区间</TH>
+                  <TH className="px-2 text-right">总额</TH>
+                  <TH className="px-2 text-right">本期入账</TH>
+                  <TH className="px-2" />
+                </HeadRow>
+              </THead>
+              <TBody>
                 {entries.map((e) => (
-                  <tr key={e.id} className="border-b border-border-subtle/60">
-                    <td className="px-2 py-2">
+                  <TR key={e.id}>
+                    <TD className="px-2">
                       <div className="max-w-[200px] truncate">{e.name}</div>
                       {e.accountId && (
                         <div className="text-[11px] text-muted">
@@ -311,8 +320,8 @@ export function CostLedger({
                             "已删除账号"}
                         </div>
                       )}
-                    </td>
-                    <td className="px-2 py-2">
+                    </TD>
+                    <TD className="px-2">
                       {e.mode === ONE_TIME ? (
                         <Badge variant="default">一次性</Badge>
                       ) : e.earlyEnded ? (
@@ -322,24 +331,24 @@ export function CostLedger({
                       ) : (
                         <Badge variant="mint">按期摊销</Badge>
                       )}
-                    </td>
-                    <td className="px-2 py-2 font-data text-[11px] text-muted">
+                    </TD>
+                    <TD className="px-2 font-data text-[11px] text-muted">
                       {e.mode === ONE_TIME
                         ? e.startDay
                         : `${e.startDay} ~ ${e.effectiveEndDay || "未定"}${e.effectiveDays ? ` · ${e.effectiveDays}天` : ""}`}
-                    </td>
-                    <td className="px-2 py-2 text-right font-data text-xs text-muted">
+                    </TD>
+                    <TD className="px-2 text-right font-data text-xs text-muted">
                       {formatRmb(e.amountRmb)}
-                    </td>
-                    <td
+                    </TD>
+                    <TD
                       className={cn(
-                        "px-2 py-2 text-right font-data text-xs",
-                        e.allocatedRmb > 0 ? "text-amber" : "text-muted",
+                        "px-2 text-right font-data text-xs",
+                        e.allocatedRmb > 0 ? "text-cost" : "text-muted",
                       )}
                     >
                       {formatRmb(e.allocatedRmb)}
-                    </td>
-                    <td className="px-2 py-2">
+                    </TD>
+                    <TD className="px-2">
                       <div className="flex items-center justify-end gap-1">
                         {e.mode === PERIOD && !e.actualEndDay && (
                           <Button
@@ -363,11 +372,11 @@ export function CostLedger({
                           <Trash2 className="h-3.5 w-3.5 text-coral" />
                         </Button>
                       </div>
-                    </td>
-                  </tr>
+                    </TD>
+                  </TR>
                 ))}
-              </tbody>
-            </table>
+              </TBody>
+            </Table>
           </div>
         )}
       </CardContent>

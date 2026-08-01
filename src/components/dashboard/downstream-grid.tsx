@@ -86,8 +86,8 @@ export function DownstreamGrid({
         <Card
           key={s.id}
           className={cn(
-            "transition-[border-color,box-shadow] hover:border-border hover:shadow-sm",
-            !s.enabled && "border-dashed bg-surface-2",
+            "transition-all duration-200 hover:shadow-lg",
+            !s.enabled && "border-dashed opacity-70",
           )}
         >
           <CardHeader className="flex flex-row items-center justify-between gap-2 pb-2">
@@ -125,7 +125,7 @@ export function DownstreamGrid({
                 : "尚未同步"}
             </div>
             {s.lastError && (
-              <p className="rounded-md border border-amber/20 bg-amber/5 px-2 py-1.5 text-xs text-amber">
+              <p className="rounded-[var(--r-md)] border border-warn/25 bg-warn/10 px-2.5 py-1.5 text-xs text-warn">
                 {s.lastError}
               </p>
             )}

@@ -55,14 +55,16 @@ function LoginForm() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-background px-4 py-10">
+    <main className="flex min-h-screen items-center justify-center px-4 py-10">
       <div className="w-full max-w-sm">
         <div className="mb-7 flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-sidebar text-sidebar-text shadow-sm">
+          <div className="flex h-12 w-12 items-center justify-center rounded-[var(--r-lg)] bg-accent text-on-accent shadow-md">
             <Satellite className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-lg font-semibold text-text">Orbit Control</h1>
+            <h1 className="text-lg font-bold tracking-[-0.02em] text-text">
+              Orbit Control
+            </h1>
             <p className="text-xs text-muted">成本 · 收益 · 风险</p>
           </div>
         </div>
@@ -116,7 +118,7 @@ function LoginForm() {
               </div>
               {error && (
                 <div
-                  className="flex items-start gap-2 rounded-md border border-coral/25 bg-coral/5 px-3 py-2 text-xs text-coral"
+                  className="flex items-start gap-2 rounded-[var(--r-md)] border border-coral/30 bg-coral/10 px-3 py-2 text-xs text-coral"
                   role="alert"
                 >
                   <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -140,7 +142,7 @@ export default function LoginPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted" role="status">
+        <div className="flex min-h-screen items-center justify-center text-sm text-muted" role="status">
           正在加载登录页
         </div>
       }

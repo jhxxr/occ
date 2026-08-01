@@ -7,7 +7,8 @@ import { TopBar } from "@/components/layout/top-bar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Input, Label, Select } from "@/components/ui/input";
+import { Checkbox, Input, Label, Select } from "@/components/ui/input";
+import { Table, THead, TBody, HeadRow, TH, TR, TD } from "@/components/ui/table";
 import { formatRmb, cn } from "@/lib/utils";
 import {
   ArrowLeft,
@@ -324,11 +325,9 @@ export default function UsagePage() {
             </Select>
           </div>
           <label className="flex items-center gap-2 text-sm text-secondary pb-2">
-            <input
-              type="checkbox"
+            <Checkbox
               checked={onlyBillable}
               onChange={(e) => setOnlyBillable(e.target.checked)}
-              className="rounded border-border"
             />
             统计仅中转 Key
           </label>
@@ -409,50 +408,47 @@ export default function UsagePage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="p-0 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border-subtle text-left text-[11px] uppercase tracking-wider text-muted">
-                  <th className="px-4 py-2">Key</th>
-                  <th className="px-4 py-2">归因</th>
-                  <th className="px-4 py-2 text-right">请求</th>
-                  <th className="px-4 py-2 text-right">实际扣费</th>
-                  <th className="px-4 py-2 text-right">业务成本</th>
-                  <th className="px-4 py-2 text-right">Tokens</th>
-                </tr>
-              </thead>
-              <tbody>
+            <Table>
+              <THead>
+                <HeadRow>
+                  <TH>Key</TH>
+                  <TH>归因</TH>
+                  <TH className="text-right">请求</TH>
+                  <TH className="text-right">实际扣费</TH>
+                  <TH className="text-right">业务成本</TH>
+                  <TH className="text-right">Tokens</TH>
+                </HeadRow>
+              </THead>
+              <TBody>
                 {stats.byKey.map((k) => (
-                  <tr
-                    key={k.remoteKeyId}
-                    className="border-b border-border-subtle/60"
-                  >
-                    <td className="px-4 py-2">
+                  <TR key={k.remoteKeyId}>
+                    <TD>
                       <div className="font-medium">{k.keyName || k.remoteKeyId}</div>
                       <div className="text-[11px] text-muted font-data">
                         #{k.remoteKeyId}
                       </div>
-                    </td>
-                    <td className="px-4 py-2">
+                    </TD>
+                    <TD>
                       <Badge variant={k.countAsCost ? "mint" : "default"}>
                         {k.countAsCost ? "中转" : "不计入"}
                       </Badge>
-                    </td>
-                    <td className="px-4 py-2 text-right font-data">
+                    </TD>
+                    <TD className="text-right font-data">
                       {k.requests}
-                    </td>
-                    <td className="px-4 py-2 text-right font-data">
+                    </TD>
+                    <TD className="text-right font-data">
                       {k.actualCost.toFixed(4)}
-                    </td>
-                    <td className="px-4 py-2 text-right font-data text-amber">
+                    </TD>
+                    <TD className="text-right font-data text-cost">
                       {formatRmb(k.costRmb)}
-                    </td>
-                    <td className="px-4 py-2 text-right font-data text-muted">
+                    </TD>
+                    <TD className="text-right font-data text-muted">
                       {(k.totalTokens / 1e3).toFixed(1)}k
-                    </td>
-                  </tr>
+                    </TD>
+                  </TR>
                 ))}
-              </tbody>
-            </table>
+              </TBody>
+            </Table>
           </CardContent>
         </Card>
       )}
@@ -498,50 +494,47 @@ export default function UsagePage() {
               </p>
             </div>
           ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border-subtle text-left text-[11px] uppercase tracking-wider text-muted">
-                  <th className="px-4 py-2">时间</th>
-                  <th className="px-4 py-2">Key</th>
-                  <th className="px-4 py-2">模型</th>
-                  <th className="px-4 py-2">分组</th>
-                  <th className="px-4 py-2 text-right">实际扣费</th>
-                  <th className="px-4 py-2 text-right">倍率</th>
-                  <th className="px-4 py-2 text-right">Tokens</th>
-                </tr>
-              </thead>
-              <tbody>
+            <Table>
+              <THead>
+                <HeadRow>
+                  <TH>时间</TH>
+                  <TH>Key</TH>
+                  <TH>模型</TH>
+                  <TH>分组</TH>
+                  <TH className="text-right">实际扣费</TH>
+                  <TH className="text-right">倍率</TH>
+                  <TH className="text-right">Tokens</TH>
+                </HeadRow>
+              </THead>
+              <TBody>
                 {logs.map((r) => (
-                  <tr
-                    key={r.id}
-                    className="border-b border-border-subtle/50 hover:bg-surface-2/40"
-                  >
-                    <td className="px-4 py-2 font-data text-xs text-secondary whitespace-nowrap">
+                  <TR key={r.id}>
+                    <TD className="font-data text-xs text-secondary whitespace-nowrap">
                       {new Date(r.requestAt).toLocaleString("zh-CN")}
-                    </td>
-                    <td className="px-4 py-2">
+                    </TD>
+                    <TD>
                       <div className="text-xs">{r.keyName || "—"}</div>
                       <div className="text-[10px] text-muted font-data">
                         {r.remoteKeyId}
                       </div>
-                    </td>
-                    <td className="px-4 py-2 text-xs font-data">{r.model || "—"}</td>
-                    <td className="px-4 py-2 text-xs text-muted">
+                    </TD>
+                    <TD className="text-xs font-data">{r.model || "—"}</TD>
+                    <TD className="text-xs text-muted">
                       {r.groupName || "—"}
-                    </td>
-                    <td className="px-4 py-2 text-right font-data text-xs">
+                    </TD>
+                    <TD className="text-right font-data text-xs">
                       {r.actualCost.toFixed(5)}
-                    </td>
-                    <td className="px-4 py-2 text-right font-data text-xs text-muted">
+                    </TD>
+                    <TD className="text-right font-data text-xs text-muted">
                       {r.rateMultiplier != null ? `${r.rateMultiplier}x` : "—"}
-                    </td>
-                    <td className="px-4 py-2 text-right font-data text-xs text-muted">
+                    </TD>
+                    <TD className="text-right font-data text-xs text-muted">
                       {r.totalTokens.toLocaleString()}
-                    </td>
-                  </tr>
+                    </TD>
+                  </TR>
                 ))}
-              </tbody>
-            </table>
+              </TBody>
+            </Table>
           )}
         </CardContent>
       </Card>
@@ -605,34 +598,31 @@ export default function UsagePage() {
 
             {retention.recentArchives.length > 0 && (
               <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="border-b border-border-subtle text-left text-[10px] uppercase text-muted">
-                      <th className="px-4 py-2">期间</th>
-                      <th className="px-4 py-2 text-right">记录</th>
-                      <th className="px-4 py-2 text-right">压缩后</th>
-                      <th className="w-14 px-4 py-2" />
-                    </tr>
-                  </thead>
-                  <tbody>
+                <Table className="text-xs">
+                  <THead>
+                    <HeadRow className="text-[10px]">
+                      <TH>期间</TH>
+                      <TH className="text-right">记录</TH>
+                      <TH className="text-right">压缩后</TH>
+                      <TH className="w-14" />
+                    </HeadRow>
+                  </THead>
+                  <TBody>
                     {retention.recentArchives.map((archive) => (
-                      <tr
-                        key={archive.id}
-                        className="border-b border-border-subtle/60 last:border-0"
-                      >
-                        <td className="px-4 py-2 font-data text-secondary">
+                      <TR key={archive.id}>
+                        <TD className="font-data text-secondary">
                           {new Date(archive.firstRequestAt).toLocaleDateString("zh-CN")}
                           {archive.firstRequestAt !== archive.lastRequestAt
                             ? ` - ${new Date(archive.lastRequestAt).toLocaleDateString("zh-CN")}`
                             : ""}
-                        </td>
-                        <td className="px-4 py-2 text-right font-data">
+                        </TD>
+                        <TD className="text-right font-data">
                           {archive.rowCount.toLocaleString()}
-                        </td>
-                        <td className="px-4 py-2 text-right font-data text-muted">
+                        </TD>
+                        <TD className="text-right font-data text-muted">
                           {fmtBytes(archive.archiveBytes)}
-                        </td>
-                        <td className="px-4 py-2 text-right">
+                        </TD>
+                        <TD className="text-right">
                           <a
                             href={`/api/upstream/${id}/usage/archives/${archive.id}`}
                             className={buttonVariants({
@@ -645,11 +635,11 @@ export default function UsagePage() {
                           >
                             <FileDown className="h-4 w-4" />
                           </a>
-                        </td>
-                      </tr>
+                        </TD>
+                      </TR>
                     ))}
-                  </tbody>
-                </table>
+                  </TBody>
+                </Table>
               </div>
             )}
           </CardContent>

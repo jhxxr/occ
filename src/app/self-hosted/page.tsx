@@ -264,7 +264,7 @@ export default function SelfHostedListPage() {
       ) : (
         <div className="space-y-3">
           {list.map((s) => (
-            <Card key={s.id} className="transition-[border-color,box-shadow] hover:border-border hover:shadow-sm">
+            <Card key={s.id} className="transition-all duration-200 hover:shadow-lg">
               <CardContent className="flex flex-wrap items-start justify-between gap-4 p-5">
                 <div className="min-w-0 space-y-1">
                   <div className="flex flex-wrap items-center gap-2">

@@ -17,21 +17,21 @@ interface MetricCardProps {
 }
 
 const iconTone: Record<string, string> = {
-  cyan: "text-cyan bg-cyan/8",
-  mint: "text-mint bg-mint/8",
-  amber: "text-amber bg-amber/8",
-  coral: "text-coral bg-coral/8",
-  violet: "text-violet bg-violet/8",
-  default: "text-secondary bg-surface-2",
+  cyan: "text-cyan bg-cyan/12",
+  mint: "text-mint bg-mint/12",
+  amber: "text-amber bg-amber/12",
+  coral: "text-coral bg-coral/12",
+  violet: "text-violet bg-violet/12",
+  default: "text-secondary bg-surface-3",
 };
 
-const borderTone: Record<string, string> = {
-  cyan: "border-t-cyan",
-  mint: "border-t-mint",
-  amber: "border-t-amber",
-  coral: "border-t-coral",
-  violet: "border-t-violet",
-  default: "border-t-border",
+const valueTone: Record<string, string> = {
+  cyan: "text-text",
+  mint: "text-mint",
+  amber: "text-text",
+  coral: "text-coral",
+  violet: "text-text",
+  default: "text-text",
 };
 
 function MetricCard({
@@ -42,22 +42,27 @@ function MetricCard({
   tone = "default",
 }: MetricCardProps) {
   return (
-    <Card className={cn("border-t-2", borderTone[tone])}>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 p-4 pb-2">
+    <Card className="transition-shadow duration-200 hover:shadow-lg">
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 p-5 pb-2">
         <CardTitle className="text-xs font-semibold text-secondary">
           {label}
         </CardTitle>
         <div
           className={cn(
-            "flex h-8 w-8 items-center justify-center rounded-md",
+            "flex h-9 w-9 items-center justify-center rounded-full",
             iconTone[tone],
           )}
         >
           <Icon className="h-4 w-4" />
         </div>
       </CardHeader>
-      <CardContent className="p-4 pt-1">
-        <div className="font-data text-2xl font-semibold text-text">
+      <CardContent className="p-5 pt-1">
+        <div
+          className={cn(
+            "font-data text-[28px] font-semibold leading-tight",
+            valueTone[tone],
+          )}
+        >
           {value}
         </div>
         {hint && <p className="mt-2 text-xs leading-5 text-muted">{hint}</p>}
@@ -107,7 +112,7 @@ export function MetricsRow({
   const operating = metrics.operatingCostRmb ?? 0;
 
   return (
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <MetricCard
         label="本月服务毛利"
         value={formatRmb(metrics.monthProfitRmb)}

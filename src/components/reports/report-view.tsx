@@ -5,6 +5,9 @@ import { TopBar } from "@/components/layout/top-bar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Callout } from "@/components/ui/callout";
+import { Segmented } from "@/components/ui/segmented";
+import { Table, THead, TBody, HeadRow, TH, TR, TD } from "@/components/ui/table";
 import { formatRmb, cn } from "@/lib/utils";
 import { ChevronLeft, ChevronRight, AlertTriangle, Download } from "lucide-react";
 import { ReportTrendChart } from "@/components/reports/report-charts";
@@ -121,24 +124,14 @@ function Metric({
   tone?: "mint" | "amber" | "coral" | "violet" | "cyan" | "default";
 }) {
   return (
-    <Card
-      className={cn(
-        "border-t-2",
-        tone === "mint" && "border-t-mint",
-        tone === "amber" && "border-t-amber",
-        tone === "coral" && "border-t-coral",
-        tone === "violet" && "border-t-violet",
-        tone === "cyan" && "border-t-cyan",
-        tone === "default" && "border-t-border",
-      )}
-    >
-      <CardContent className="p-4">
+    <Card className="transition-shadow duration-200 hover:shadow-lg">
+      <CardContent className="p-5">
         <div className="text-xs font-semibold text-secondary">{label}</div>
         <div
           className={cn(
-            "mt-1 font-data text-2xl font-semibold text-text",
+            "mt-1 font-data text-[26px] font-semibold leading-tight text-text",
             tone === "mint" && "text-mint",
-            tone === "amber" && "text-amber",
+            tone === "amber" && "text-cost",
             tone === "coral" && "text-coral",
             tone === "violet" && "text-violet",
             tone === "cyan" && "text-cyan",
@@ -221,25 +214,18 @@ export function ReportView() {
       />
 
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex h-9 overflow-hidden rounded-md border border-border bg-surface">
-          {(["week", "month"] as const).map((k) => (
-            <button
-              key={k}
-              onClick={() => {
-                setKind(k);
-                setOffset(0);
-              }}
-              className={cn(
-                "px-3 text-xs font-semibold transition-colors",
-                kind === k
-                  ? "bg-cyan/10 text-cyan"
-                  : "text-secondary hover:bg-surface-2 hover:text-text",
-              )}
-            >
-              {k === "week" ? "自然周" : "自然月"}
-            </button>
-          ))}
-        </div>
+        <Segmented
+          ariaLabel="统计周期"
+          value={kind}
+          onChange={(next) => {
+            setKind(next);
+            setOffset(0);
+          }}
+          options={[
+            { value: "week", label: "自然周" },
+            { value: "month", label: "自然月" },
+          ]}
+        />
         <div className="flex items-center gap-1">
           <Button
             size="icon"
@@ -276,36 +262,41 @@ export function ReportView() {
 
       {loading && (
         <div className="space-y-4" role="status" aria-live="polite">
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             {Array.from({ length: 4 }).map((_, index) => (
-              <div key={index} className="h-32 animate-pulse rounded-lg border border-border-subtle bg-surface" />
+              <div
+                key={index}
+                className="h-32 animate-pulse rounded-[var(--r-lg)] border border-border-subtle bg-surface-2"
+              />
             ))}
           </div>
-          <div className="h-80 animate-pulse rounded-lg border border-border-subtle bg-surface" />
+          <div className="h-80 animate-pulse rounded-[var(--r-lg)] border border-border-subtle bg-surface-2" />
           <span className="sr-only">正在加载收益报表</span>
         </div>
       )}
 
       {error && !loading && (
-        <div className="rounded-lg border border-coral/30 bg-coral/5 p-6 text-sm text-coral" role="alert">
+        <Callout tone="error" role="alert">
           {error}
-        </div>
+        </Callout>
       )}
 
       {data && !loading && (
         <>
           {data.coverage.warnings.length > 0 && (
-            <div className="space-y-1.5 rounded-lg border border-amber/30 bg-amber/5 p-4" role="status">
-              {data.coverage.warnings.map((w) => (
-                <div key={w} className="flex items-start gap-2 text-xs text-amber">
-                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                  <span>{w}</span>
-                </div>
-              ))}
-            </div>
+            <Callout tone="warn" icon={false} role="status">
+              <div className="space-y-1.5">
+                {data.coverage.warnings.map((w) => (
+                  <div key={w} className="flex items-start gap-2">
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
+                    <span>{w}</span>
+                  </div>
+                ))}
+              </div>
+            </Callout>
           )}
 
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <Metric
               label="服务毛利"
               value={formatRmb(data.profit.measuredRmb)}
@@ -362,48 +353,45 @@ export function ReportView() {
                 </p>
               </CardHeader>
               <CardContent className="overflow-x-auto p-0">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-border-subtle text-left text-[11px] uppercase tracking-wider text-muted">
-                      <th className="px-4 py-2">Key</th>
-                      <th className="px-4 py-2 text-right">上游倍率</th>
-                      <th className="px-4 py-2 text-right">官方基准</th>
-                      <th className="px-4 py-2 text-right">实扣面值</th>
-                      <th className="px-4 py-2 text-right">请求</th>
-                      <th className="px-4 py-2 text-right">上游成本</th>
-                    </tr>
-                  </thead>
-                  <tbody>
+                <Table>
+                  <THead>
+                    <HeadRow>
+                      <TH>Key</TH>
+                      <TH className="text-right">上游倍率</TH>
+                      <TH className="text-right">官方基准</TH>
+                      <TH className="text-right">实扣面值</TH>
+                      <TH className="text-right">请求</TH>
+                      <TH className="text-right">上游成本</TH>
+                    </HeadRow>
+                  </THead>
+                  <TBody>
                     {data.byKey.map((k) => (
-                      <tr
-                        key={`${k.providerId}-${k.remoteKeyId}`}
-                        className="border-b border-border-subtle/60"
-                      >
-                        <td className="px-4 py-2">
+                      <TR key={`${k.providerId}-${k.remoteKeyId}`}>
+                        <TD>
                           <div className="max-w-[200px] truncate font-medium">
                             {k.keyName}
                           </div>
                           <div className="text-[11px] text-muted">{k.providerName}</div>
-                        </td>
-                        <td className="px-4 py-2 text-right font-data text-xs text-muted">
+                        </TD>
+                        <TD className="text-right font-data text-xs text-muted">
                           {k.upstreamRate != null ? `${k.upstreamRate}x` : "—"}
-                        </td>
-                        <td className="px-4 py-2 text-right font-data text-xs">
+                        </TD>
+                        <TD className="text-right font-data text-xs">
                           {k.officialBase > 0 ? k.officialBase.toFixed(2) : "—"}
-                        </td>
-                        <td className="px-4 py-2 text-right font-data text-xs">
+                        </TD>
+                        <TD className="text-right font-data text-xs">
                           {k.actualCost > 0 ? k.actualCost.toFixed(4) : "—"}
-                        </td>
-                        <td className="px-4 py-2 text-right font-data text-xs text-muted">
+                        </TD>
+                        <TD className="text-right font-data text-xs text-muted">
                           {k.requests || "—"}
-                        </td>
-                        <td className="px-4 py-2 text-right font-data text-xs text-amber">
+                        </TD>
+                        <TD className="text-right font-data text-xs text-cost">
                           {formatRmb(k.costRmb)}
-                        </td>
-                      </tr>
+                        </TD>
+                      </TR>
                     ))}
-                  </tbody>
-                </table>
+                  </TBody>
+                </Table>
               </CardContent>
             </Card>
           )}
@@ -424,46 +412,46 @@ export function ReportView() {
                     尚未绑定下游站点
                   </div>
                 ) : (
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-border-subtle text-left text-[11px] uppercase tracking-wider text-muted">
-                        <th className="px-4 py-2">站点</th>
-                        <th className="px-4 py-2 text-right">收入</th>
-                        <th className="px-4 py-2 text-right">测试号</th>
-                        <th className="px-4 py-2 text-right">全站消费</th>
-                        <th className="px-4 py-2 text-right">缺失</th>
-                      </tr>
-                    </thead>
-                    <tbody>
+                  <Table>
+                    <THead>
+                      <HeadRow>
+                        <TH>站点</TH>
+                        <TH className="text-right">收入</TH>
+                        <TH className="text-right">测试号</TH>
+                        <TH className="text-right">全站消费</TH>
+                        <TH className="text-right">缺失</TH>
+                      </HeadRow>
+                    </THead>
+                    <TBody>
                       {data.bySite.map((s) => (
-                        <tr key={s.id} className="border-b border-border-subtle/60">
-                          <td className="px-4 py-2">
+                        <TR key={s.id}>
+                          <TD>
                             <div className="max-w-[140px] truncate">{s.name}</div>
                             <div className="text-[11px] text-muted">
                               {s.enabled ? `${s.requests} 次请求` : "已停用"}
                               {!s.excludeResolved && " · 未拆测试号"}
                             </div>
-                          </td>
-                          <td className="px-4 py-2 text-right font-data text-xs text-mint">
+                          </TD>
+                          <TD className="text-right font-data text-xs text-mint">
                             {formatRmb(s.revenueRmb)}
-                          </td>
-                          <td className="px-4 py-2 text-right font-data text-xs text-muted">
+                          </TD>
+                          <TD className="text-right font-data text-xs text-muted">
                             {s.excludedRmb > 0 ? `−${formatRmb(s.excludedRmb)}` : "—"}
-                          </td>
-                          <td className="px-4 py-2 text-right font-data text-xs text-secondary">
+                          </TD>
+                          <TD className="text-right font-data text-xs text-secondary">
                             {formatRmb(s.grossRmb)}
-                          </td>
-                          <td className="px-4 py-2 text-right font-data text-xs">
+                          </TD>
+                          <TD className="text-right font-data text-xs">
                             {s.missingDays > 0 ? (
                               <span className="text-amber">{s.missingDays}</span>
                             ) : (
                               <span className="text-muted">0</span>
                             )}
-                          </td>
-                        </tr>
+                          </TD>
+                        </TR>
                       ))}
-                    </tbody>
-                  </table>
+                    </TBody>
+                  </Table>
                 )}
               </CardContent>
             </Card>
@@ -480,38 +468,38 @@ export function ReportView() {
                     本周期没有上游成本记录
                   </div>
                 ) : (
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-border-subtle text-left text-[11px] uppercase tracking-wider text-muted">
-                        <th className="px-4 py-2">上游</th>
-                        <th className="px-4 py-2 text-right">成本</th>
-                        <th className="px-4 py-2 text-right">面值消耗</th>
-                        <th className="px-4 py-2">来源</th>
-                      </tr>
-                    </thead>
-                    <tbody>
+                  <Table>
+                    <THead>
+                      <HeadRow>
+                        <TH>上游</TH>
+                        <TH className="text-right">成本</TH>
+                        <TH className="text-right">面值消耗</TH>
+                        <TH>来源</TH>
+                      </HeadRow>
+                    </THead>
+                    <TBody>
                       {data.byProvider
                         .filter((p) => p.costRmb > 0)
                         .map((p) => (
-                          <tr key={p.id} className="border-b border-border-subtle/60">
-                            <td className="px-4 py-2 max-w-[150px] truncate">{p.name}</td>
-                            <td className="px-4 py-2 text-right font-data text-xs text-amber">
+                          <TR key={p.id}>
+                            <TD className="max-w-[150px] truncate">{p.name}</TD>
+                            <TD className="text-right font-data text-xs text-cost">
                               {formatRmb(p.costRmb)}
-                            </td>
-                            <td className="px-4 py-2 text-right font-data text-xs text-muted">
+                            </TD>
+                            <TD className="text-right font-data text-xs text-muted">
                               {p.actualCost.toFixed(2)}
-                            </td>
-                            <td className="px-4 py-2">
+                            </TD>
+                            <TD>
                               <Badge
                                 variant={p.source === "usage-logs" ? "mint" : "default"}
                               >
                                 {COST_SOURCE_LABEL[p.source] ?? p.source}
                               </Badge>
-                            </td>
-                          </tr>
+                            </TD>
+                          </TR>
                         ))}
-                    </tbody>
-                  </table>
+                    </TBody>
+                  </Table>
                 )}
               </CardContent>
             </Card>
@@ -528,24 +516,24 @@ export function ReportView() {
                 </p>
               </CardHeader>
               <CardContent className="overflow-x-auto p-0">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-border-subtle text-left text-[11px] uppercase tracking-wider text-muted">
-                      <th className="px-4 py-2">项目</th>
-                      <th className="px-4 py-2">模式</th>
-                      <th className="px-4 py-2">有效区间</th>
-                      <th className="px-4 py-2 text-right">总额</th>
-                      <th className="px-4 py-2 text-right">本期入账</th>
-                    </tr>
-                  </thead>
-                  <tbody>
+                <Table>
+                  <THead>
+                    <HeadRow>
+                      <TH>项目</TH>
+                      <TH>模式</TH>
+                      <TH>有效区间</TH>
+                      <TH className="text-right">总额</TH>
+                      <TH className="text-right">本期入账</TH>
+                    </HeadRow>
+                  </THead>
+                  <TBody>
                     {data.operatingCosts.map((c) => (
-                      <tr key={c.id} className="border-b border-border-subtle/60">
-                        <td className="px-4 py-2">
+                      <TR key={c.id}>
+                        <TD>
                           <div className="max-w-[200px] truncate">{c.name}</div>
                           <div className="text-[11px] text-muted">{c.category}</div>
-                        </td>
-                        <td className="px-4 py-2 text-xs">
+                        </TD>
+                        <TD className="text-xs">
                           {c.mode === "ONE_TIME" ? (
                             <Badge variant="default">一次性</Badge>
                           ) : c.earlyEnded ? (
@@ -555,22 +543,22 @@ export function ReportView() {
                           ) : (
                             <Badge variant="mint">按期摊销</Badge>
                           )}
-                        </td>
-                        <td className="px-4 py-2 font-data text-[11px] text-muted">
+                        </TD>
+                        <TD className="font-data text-[11px] text-muted">
                           {c.mode === "ONE_TIME"
                             ? c.effectiveStartDay
                             : `${c.effectiveStartDay} ~ ${c.effectiveEndDay} · ${c.effectiveDays}天`}
-                        </td>
-                        <td className="px-4 py-2 text-right font-data text-xs text-muted">
+                        </TD>
+                        <TD className="text-right font-data text-xs text-muted">
                           {formatRmb(c.amountRmb)}
-                        </td>
-                        <td className="px-4 py-2 text-right font-data text-xs text-amber">
+                        </TD>
+                        <TD className="text-right font-data text-xs text-cost">
                           {formatRmb(c.allocatedRmb)}
-                        </td>
-                      </tr>
+                        </TD>
+                      </TR>
                     ))}
-                  </tbody>
-                </table>
+                  </TBody>
+                </Table>
               </CardContent>
             </Card>
           )}

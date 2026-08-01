@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { TopBar } from "@/components/layout/top-bar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { Input, Label, Select, Textarea } from "@/components/ui/input";
+import { Checkbox, Input, Label, Select, Textarea } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { formatRmb, cn } from "@/lib/utils";
 import Link from "next/link";
@@ -301,13 +301,11 @@ export default function DownstreamPage() {
                 />
               </div>
               <label className="flex items-center gap-2 text-sm text-secondary">
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={form.enabled}
                   onChange={(e) =>
                     setForm({ ...form, enabled: e.target.checked })
                   }
-                  className="rounded border-border"
                 />
                 启用同步
               </label>
@@ -349,7 +347,7 @@ export default function DownstreamPage() {
             <Card
               key={s.id}
               className={cn(
-                "transition-[border-color,box-shadow] hover:border-border hover:shadow-sm",
+                "transition-all duration-200 hover:shadow-lg",
                 !s.enabled && "border-dashed bg-surface-2",
               )}
             >

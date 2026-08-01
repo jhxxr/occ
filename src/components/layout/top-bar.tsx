@@ -62,9 +62,9 @@ export function TopBar({
   }
 
   return (
-    <header className="flex flex-col gap-4 border-b border-border-subtle pb-4 sm:flex-row sm:items-end sm:justify-between">
+    <header className="flex flex-col gap-4 border-b border-border-subtle pb-5 sm:flex-row sm:items-end sm:justify-between">
       <div className="min-w-0">
-        <h1 className="break-words text-xl font-semibold text-text sm:text-2xl">
+        <h1 className="break-words text-2xl font-bold tracking-[-0.02em] text-text sm:text-[28px]">
           {title}
         </h1>
         {subtitle && (
@@ -83,8 +83,8 @@ export function TopBar({
             aria-atomic="true"
             className={cn(
               "min-w-0 flex-1 break-words text-xs font-medium leading-5 sm:max-w-72 sm:flex-none",
-              message?.tone === "success" && "text-mint-dim",
-              message?.tone === "error" && "text-coral-dim",
+              message?.tone === "success" && "text-mint",
+              message?.tone === "error" && "text-coral",
               !message && "sr-only",
             )}
           >

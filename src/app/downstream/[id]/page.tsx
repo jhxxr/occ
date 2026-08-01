@@ -5,9 +5,20 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { TopBar } from "@/components/layout/top-bar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Spinner } from "@/components/ui/spinner";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { formatRmb, cn } from "@/lib/utils";
+import { Checkbox, Input } from "@/components/ui/input";
+import {
+  Table,
+  THead,
+  TBody,
+  HeadRow,
+  TH,
+  TR,
+  TD,
+} from "@/components/ui/table";
+import { formatRmb } from "@/lib/utils";
 import { ArrowLeft, ExternalLink, RefreshCw, Save, Users } from "lucide-react";
 
 interface UserRow {
@@ -174,7 +185,7 @@ export default function DownstreamUsersPage() {
   if (loading) {
     return (
       <div className="flex min-h-[40vh] items-center justify-center">
-        <div className="h-10 w-10 animate-spin rounded-full border-2 border-border border-t-cyan" />
+        <Spinner />
       </div>
     );
   }
@@ -283,44 +294,36 @@ export default function DownstreamUsersPage() {
             <Users className="h-4 w-4 text-cyan" />
             用户列表
           </CardTitle>
-          <input
-            className="h-8 w-full max-w-xs rounded-lg border border-border bg-surface-2 px-3 text-sm text-text placeholder:text-muted"
+          <Input
+            className="h-9 w-full max-w-xs"
             placeholder="搜索用户名 / 邮箱 / ID"
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />
         </CardHeader>
         <CardContent className="p-0 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border-subtle text-left text-[11px] uppercase tracking-wider text-muted">
-                <th className="px-4 py-2 w-12">剔除</th>
-                <th className="px-4 py-2">用户</th>
-                <th className="px-4 py-2">角色</th>
-                <th className="px-4 py-2 text-right">已发放</th>
-                <th className="px-4 py-2 text-right">已用</th>
-                <th className="px-4 py-2 text-right">请求</th>
-              </tr>
-            </thead>
-            <tbody>
+          <Table>
+            <THead>
+              <HeadRow>
+                <TH className="w-12">剔除</TH>
+                <TH>用户</TH>
+                <TH>角色</TH>
+                <TH className="text-right">已发放</TH>
+                <TH className="text-right">已用</TH>
+                <TH className="text-right">请求</TH>
+              </HeadRow>
+            </THead>
+            <TBody>
               {filtered.map((u) => {
                 const locked = u.role >= 100;
                 const checked = locked || excluded.has(u.id);
                 return (
-                  <tr
-                    key={u.id}
-                    className={cn(
-                      "border-b border-border-subtle/60 hover:bg-surface-2/50",
-                      checked && "bg-amber/[0.04]",
-                    )}
-                  >
-                    <td className="px-4 py-2.5">
-                      <input
-                        type="checkbox"
+                  <TR key={u.id} tone={checked ? "warn" : undefined}>
+                    <TD>
+                      <Checkbox
                         checked={checked}
                         disabled={locked}
                         onChange={() => toggle(u.id, locked)}
-                        className="rounded border-border"
                         title={
                           locked
                             ? "超管默认不计入收入"
@@ -329,15 +332,15 @@ export default function DownstreamUsersPage() {
                               : "剔除出收入"
                         }
                       />
-                    </td>
-                    <td className="px-4 py-2.5">
+                    </TD>
+                    <TD>
                       <div className="font-medium text-text">{u.username}</div>
                       <div className="text-[11px] text-muted font-data">
                         #{u.id}
                         {u.email ? ` · ${u.email}` : ""}
                       </div>
-                    </td>
-                    <td className="px-4 py-2.5">
+                    </TD>
+                    <TD>
                       <Badge
                         variant={
                           u.role >= 100
@@ -349,21 +352,21 @@ export default function DownstreamUsersPage() {
                       >
                         {roleLabel(u.role)}
                       </Badge>
-                    </td>
-                    <td className="px-4 py-2.5 text-right font-data">
+                    </TD>
+                    <TD className="text-right font-data">
                       {formatRmb(u.issuedUsd)}
-                    </td>
-                    <td className="px-4 py-2.5 text-right font-data text-secondary">
+                    </TD>
+                    <TD className="text-right font-data text-secondary">
                       {formatRmb(u.usedUsd)}
-                    </td>
-                    <td className="px-4 py-2.5 text-right font-data text-muted">
+                    </TD>
+                    <TD className="text-right font-data text-muted">
                       {u.request_count ?? 0}
-                    </td>
-                  </tr>
+                    </TD>
+                  </TR>
                 );
               })}
-            </tbody>
-          </table>
+            </TBody>
+          </Table>
           {filtered.length === 0 && (
             <div className="py-10 text-center text-sm text-muted">无匹配用户</div>
           )}

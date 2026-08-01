@@ -5,9 +5,10 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { TopBar } from "@/components/layout/top-bar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Spinner } from "@/components/ui/spinner";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Input, Label, Select } from "@/components/ui/input";
+import { Checkbox, Input, Label, Select } from "@/components/ui/input";
 import { formatRmb, cn } from "@/lib/utils";
 import {
   ArrowLeft,
@@ -375,7 +376,7 @@ export default function Sub2ManagePage() {
   if (loading) {
     return (
       <div className="flex min-h-[40vh] items-center justify-center">
-        <div className="h-10 w-10 animate-spin rounded-full border-2 border-border border-t-cyan" />
+        <Spinner />
       </div>
     );
   }
@@ -704,17 +705,15 @@ export default function Sub2ManagePage() {
                       <div className="flex flex-wrap gap-2">
                         <label
                           className={cn(
-                            "inline-flex items-center gap-1.5 rounded-lg border px-2.5 h-8 text-xs cursor-pointer select-none",
+                            "inline-flex h-8 cursor-pointer select-none items-center gap-1.5 rounded-full border px-3 text-xs transition-colors",
                             k.countAsCost
-                              ? "border-amber/40 bg-amber/10 text-amber"
-                              : "border-border text-secondary hover:border-cyan/40",
+                              ? "border-cost/40 bg-cost/12 text-cost"
+                              : "border-border text-secondary hover:border-accent/40",
                           )}
                         >
-                          <input
-                            type="checkbox"
+                          <Checkbox
                             checked={!!k.countAsCost}
                             onChange={() => toggleCountAsCost(k)}
-                            className="rounded border-border"
                           />
                           计入中转成本
                         </label>

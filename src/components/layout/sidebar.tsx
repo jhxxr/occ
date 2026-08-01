@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { cn } from "@/lib/utils";
 
 const MOBILE_DRAWER_ID = "orbit-mobile-navigation";
@@ -48,14 +49,14 @@ function Brand({ compact = false }: { compact?: boolean }) {
     <div className="flex min-w-0 items-center gap-3">
       <div
         className={cn(
-          "flex shrink-0 items-center justify-center rounded-md border border-sidebar-border bg-sidebar-surface",
+          "flex shrink-0 items-center justify-center rounded-[var(--r-md)] bg-accent text-on-accent shadow-sm",
           compact ? "h-8 w-8" : "h-9 w-9",
         )}
       >
-        <Satellite className="h-4 w-4 text-cyan" aria-hidden="true" />
+        <Satellite className="h-4 w-4" aria-hidden="true" />
       </div>
       <div className="min-w-0">
-        <div className="truncate text-sm font-semibold text-sidebar-text">
+        <div className="truncate text-sm font-semibold tracking-[-0.01em] text-sidebar-text">
           Orbit Control
         </div>
         {!compact && (
@@ -78,7 +79,7 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
     >
       {navGroups.map((group) => (
         <div key={group.label} role="group" aria-label={group.label}>
-          <p className="mb-1.5 px-3 text-xs font-semibold text-sidebar-muted">
+          <p className="mb-1.5 px-3 text-[11px] font-semibold uppercase tracking-wider text-sidebar-muted">
             {group.label}
           </p>
           <ul className="space-y-1">
@@ -97,10 +98,10 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
                     onClick={onNavigate}
                     aria-current={active ? "page" : undefined}
                     className={cn(
-                      "relative flex h-10 items-center gap-3 rounded-md px-3 text-sm font-medium transition-colors",
+                      "relative flex h-10 items-center gap-3 rounded-[var(--r-md)] px-3 text-sm font-medium transition-all duration-200",
                       active
-                        ? "border border-sidebar-border bg-sidebar-surface text-sidebar-text before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-full before:bg-cyan"
-                        : "text-sidebar-muted hover:bg-sidebar-surface hover:text-sidebar-text",
+                        ? "bg-accent/12 font-semibold text-accent"
+                        : "text-secondary hover:bg-surface-2 hover:text-text",
                     )}
                   >
                     <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
@@ -128,11 +129,12 @@ function SidebarFooter({
   onLogout,
 }: SidebarFooterProps) {
   return (
-    <div className="border-t border-sidebar-border p-3">
+    <div className="space-y-2 border-t border-border-subtle p-3">
+      <ThemeToggle />
       {logoutError && (
         <p
           role="alert"
-          className="mb-2 break-words px-3 text-xs leading-5 text-coral"
+          className="break-words px-3 text-xs leading-5 text-coral"
         >
           {logoutError}
         </p>
@@ -142,7 +144,7 @@ function SidebarFooter({
         variant="ghost"
         onClick={onLogout}
         disabled={loggingOut}
-        className="w-full justify-start text-sidebar-muted hover:bg-sidebar-surface hover:text-sidebar-text"
+        className="w-full justify-start"
       >
         {loggingOut ? (
           <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
@@ -226,7 +228,7 @@ export function Sidebar() {
 
   return (
     <>
-      <div className="fixed inset-x-0 top-0 z-40 flex h-14 items-center gap-3 border-b border-sidebar-border bg-sidebar px-3 text-sidebar-text md:hidden">
+      <div className="glass fixed inset-x-0 top-0 z-40 flex h-16 items-center gap-3 rounded-none border-x-0 border-t-0 px-3 text-sidebar-text md:hidden">
         <Button
           ref={menuButtonRef}
           type="button"
@@ -236,7 +238,7 @@ export function Sidebar() {
           aria-label="打开主导航"
           aria-expanded={open}
           aria-controls={MOBILE_DRAWER_ID}
-          className="shrink-0 text-sidebar-text hover:bg-sidebar-surface hover:text-sidebar-text"
+          className="shrink-0"
         >
           <Menu className="h-5 w-5" aria-hidden="true" />
         </Button>
@@ -246,7 +248,7 @@ export function Sidebar() {
       {open && (
         <div className="fixed inset-0 z-50 md:hidden">
           <div
-            className="absolute inset-0 bg-black/45"
+            className="absolute inset-0 bg-scrim backdrop-blur-sm"
             aria-hidden="true"
             onClick={() => setOpen(false)}
           />
@@ -256,9 +258,9 @@ export function Sidebar() {
             role="dialog"
             aria-modal="true"
             aria-label="主导航菜单"
-            className="absolute inset-y-0 left-0 flex w-72 max-w-[calc(100vw-3rem)] flex-col border-r border-sidebar-border bg-sidebar shadow-2xl"
+            className="glass-strong absolute inset-y-0 left-0 flex w-72 max-w-[calc(100vw-3rem)] flex-col rounded-none border-y-0 border-l-0"
           >
-            <div className="flex h-16 shrink-0 items-center justify-between border-b border-sidebar-border px-4">
+            <div className="flex h-16 shrink-0 items-center justify-between border-b border-border-subtle px-4">
               <Brand />
               <Button
                 ref={closeButtonRef}
@@ -267,7 +269,7 @@ export function Sidebar() {
                 variant="ghost"
                 onClick={() => setOpen(false)}
                 aria-label="关闭主导航"
-                className="shrink-0 text-sidebar-muted hover:bg-sidebar-surface hover:text-sidebar-text"
+                className="shrink-0"
               >
                 <X className="h-5 w-5" aria-hidden="true" />
               </Button>
@@ -282,8 +284,8 @@ export function Sidebar() {
         </div>
       )}
 
-      <aside className="fixed inset-y-0 left-0 z-40 hidden w-60 flex-col border-r border-sidebar-border bg-sidebar md:flex">
-        <div className="flex h-16 shrink-0 items-center border-b border-sidebar-border px-4">
+      <aside className="glass fixed inset-y-0 left-0 z-40 hidden w-64 flex-col rounded-none border-y-0 border-l-0 md:flex">
+        <div className="flex h-16 shrink-0 items-center border-b border-border-subtle px-4">
           <Brand />
         </div>
         <NavLinks />

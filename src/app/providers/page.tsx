@@ -4,8 +4,9 @@ import { FormEvent, useEffect, useState } from "react";
 import { TopBar } from "@/components/layout/top-bar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { Input, Label, Select, Textarea } from "@/components/ui/input";
+import { Checkbox, Input, Label, Select, Textarea } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Segmented } from "@/components/ui/segmented";
 import { formatRmb } from "@/lib/utils";
 import Link from "next/link";
 import {
@@ -384,7 +385,7 @@ export default function ProvidersPage() {
               </div>
 
               {isSub2 ? (
-                <div className="space-y-3 rounded-lg border border-cyan/20 bg-cyan/5 p-3">
+                <div className="space-y-3 rounded-[var(--r-lg)] border border-cyan/25 bg-cyan/10 p-3.5">
                   <p className="text-xs leading-5 text-secondary">
                     Sub2API 绑定<strong className="text-text">面板邮箱+密码</strong>
                     后，同步时会自动登录 / 刷新 JWT，无需再手动复制
@@ -523,15 +524,12 @@ export default function ProvidersPage() {
                 />
               </div>
               <label className="flex items-center gap-2 text-sm text-secondary">
-                <input
-                  type="checkbox"
-                  checked={form.enabled}
+                <Checkbox
+                                    checked={form.enabled}
                   disabled={editingRetired}
                   onChange={(e) =>
                     setForm({ ...form, enabled: e.target.checked })
-                  }
-                  className="rounded border-border"
-                />
+                  }/>
                 {editingRetired ? "已弃用（需从站点列表恢复）" : "启用同步"}
               </label>
               {error && <p className="text-xs text-coral" role="alert">{error}</p>}
@@ -564,7 +562,7 @@ export default function ProvidersPage() {
             </Card>
           ) : (
             list.map((p) => (
-              <Card key={p.id} className="transition-[border-color,box-shadow] hover:border-border hover:shadow-sm">
+              <Card key={p.id} className="transition-all duration-200 hover:shadow-lg">
                 <CardContent className="flex flex-wrap items-start justify-between gap-4 p-5">
                   <div className="min-w-0 space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
@@ -730,7 +728,7 @@ export default function ProvidersPage() {
 
       {retirement && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4 backdrop-blur-md"
           role="presentation"
           onMouseDown={(event) => {
             if (event.currentTarget === event.target && !saving) {
@@ -742,7 +740,7 @@ export default function ProvidersPage() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="retirement-title"
-            className="w-full max-w-lg overflow-hidden rounded-md border border-border bg-surface shadow-2xl"
+            className="glass-strong w-full max-w-lg overflow-hidden rounded-[var(--r-xl)]"
           >
             <div className="flex items-start justify-between gap-4 border-b border-border-subtle px-5 py-4">
               <div>
@@ -767,35 +765,25 @@ export default function ProvidersPage() {
             </div>
 
             <div className="space-y-4 px-5 py-4">
-              <div className="grid grid-cols-2 overflow-hidden rounded-md border border-border">
-                <button
-                  type="button"
-                  className={`h-10 text-sm font-medium transition-colors ${
-                    retirement.type === "NORMAL"
-                      ? "bg-cyan text-white"
-                      : "bg-surface text-secondary hover:bg-surface-2"
-                  }`}
-                  onClick={() =>
-                    setRetirement({ ...retirement, type: "NORMAL" })
-                  }
-                >
-                  正常弃用
-                </button>
-                <button
-                  type="button"
-                  className={`flex h-10 items-center justify-center gap-2 border-l border-border text-sm font-medium transition-colors ${
-                    retirement.type === "BALANCE_LOSS"
-                      ? "bg-coral text-white"
-                      : "bg-surface text-secondary hover:bg-surface-2"
-                  }`}
-                  onClick={() =>
-                    setRetirement({ ...retirement, type: "BALANCE_LOSS" })
-                  }
-                >
-                  <TriangleAlert className="h-4 w-4" />
-                  跑路核销
-                </button>
-              </div>
+              <Segmented
+                ariaLabel="弃用方式"
+                className="w-full"
+                value={retirement.type}
+                onChange={(type) => setRetirement({ ...retirement, type })}
+                options={[
+                  { value: "NORMAL", label: "正常弃用" },
+                  {
+                    value: "BALANCE_LOSS",
+                    tone: "coral",
+                    label: (
+                      <>
+                        <TriangleAlert className="h-3.5 w-3.5" />
+                        跑路核销
+                      </>
+                    ),
+                  },
+                ]}
+              />
 
               {retirement.type === "BALANCE_LOSS" && (
                 <div className="grid gap-3 sm:grid-cols-2">
@@ -844,7 +832,7 @@ export default function ProvidersPage() {
                   </div>
                   <div className="space-y-1.5">
                     <Label>本次核销成本</Label>
-                    <div className="flex h-10 items-center rounded-md border border-coral/30 bg-coral/5 px-3 font-data font-semibold text-coral">
+                    <div className="flex h-10 items-center rounded-[var(--r-md)] border border-coral/30 bg-coral/10 px-3.5 font-data font-semibold text-coral">
                       {formatRmb(writeOffEstimate)}
                     </div>
                   </div>

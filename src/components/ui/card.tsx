@@ -1,14 +1,22 @@
 import { cn } from "@/lib/utils";
 import { HTMLAttributes } from "react";
 
+/**
+ * 玻璃卡片。`solid` 用于需要压住背景色晕的场合（如浮层内的嵌套卡片），
+ * 避免玻璃叠玻璃导致对比度连续衰减。
+ */
 export function Card({
   className,
+  solid = false,
   ...props
-}: HTMLAttributes<HTMLDivElement>) {
+}: HTMLAttributes<HTMLDivElement> & { solid?: boolean }) {
   return (
     <div
       className={cn(
-        "rounded-lg border border-border-subtle bg-surface shadow-[0_1px_2px_rgba(17,24,28,0.04)]",
+        "rounded-[var(--r-lg)]",
+        solid
+          ? "border border-border-subtle bg-surface-solid shadow-sm"
+          : "glass",
         className,
       )}
       {...props}
@@ -31,7 +39,10 @@ export function CardTitle({
 }: HTMLAttributes<HTMLHeadingElement>) {
   return (
     <h3
-      className={cn("text-sm font-semibold text-text", className)}
+      className={cn(
+        "text-sm font-semibold tracking-[-0.01em] text-text",
+        className,
+      )}
       {...props}
     />
   );

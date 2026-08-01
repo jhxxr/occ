@@ -63,7 +63,7 @@ export function SelfHostedGrid({
         <Card
           key={s.id}
           className={cn(
-            "border-violet/20 transition-[border-color,box-shadow] hover:border-violet/35 hover:shadow-sm",
+            "border-violet/25 transition-all duration-200 hover:shadow-lg",
             !s.enabled && "border-dashed bg-surface-2",
           )}
         >
@@ -132,13 +132,13 @@ export function SelfHostedGrid({
             </div>
 
             {s.lastError && (
-              <p className="rounded-md border border-coral/20 bg-coral/5 px-2 py-1.5 text-xs text-coral">
+              <p className="rounded-[var(--r-md)] border border-coral/25 bg-coral/10 px-2.5 py-1.5 text-xs text-coral">
                 {s.lastError}
               </p>
             )}
 
             {s.groupCount === 0 && !s.lastError && (
-              <p className="rounded-md border border-border bg-surface-2 px-2 py-1.5 text-xs text-muted">
+              <p className="rounded-[var(--r-md)] border border-border-subtle bg-surface-2 px-2.5 py-1.5 text-xs text-muted">
                 还没同步到分组，点「同步」拉取管理端数据
               </p>
             )}

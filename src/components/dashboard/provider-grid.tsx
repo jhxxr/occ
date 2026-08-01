@@ -69,11 +69,14 @@ function BalanceMeter({
         aria-valuenow={Math.max(0, balanceRmb ?? 0)}
       >
         <div
-          className={cn("h-full rounded-full transition-[width] duration-500", isLow ? "bg-coral" : "bg-cyan")}
+          className={cn(
+            "h-full rounded-full transition-[width] duration-500 ease-[var(--ease-spring)]",
+            isLow ? "bg-coral" : "bg-accent",
+          )}
           style={{ width: `${balancePct}%` }}
         />
         <span
-          className="absolute inset-y-0 w-px bg-amber"
+          className="absolute inset-y-0 w-px bg-warn"
           style={{ left: `${thresholdPct}%` }}
           title="余额预警线"
         />
@@ -127,8 +130,8 @@ export function ProviderGrid({
           <Card
             key={p.id}
             className={cn(
-              "transition-[border-color,box-shadow] hover:border-border hover:shadow-sm",
-              p.isLow && "border-coral/40 bg-coral/[0.03]",
+              "transition-all duration-200 hover:shadow-lg",
+              p.isLow && "border-coral/40",
               !p.enabled && "opacity-60",
             )}
           >
@@ -178,7 +181,7 @@ export function ProviderGrid({
               </div>
 
               {p.lastError && (
-                <p className="rounded-md border border-coral/20 bg-coral/5 px-2 py-1.5 text-xs text-coral">
+                <p className="rounded-[var(--r-md)] border border-coral/25 bg-coral/10 px-2.5 py-1.5 text-xs text-coral">
                   {p.lastError}
                 </p>
               )}

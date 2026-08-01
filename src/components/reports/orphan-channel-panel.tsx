@@ -4,7 +4,16 @@ import { useCallback, useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
+import { Input, Select } from "@/components/ui/input";
+import {
+  Table,
+  THead,
+  TBody,
+  HeadRow,
+  TH,
+  TR,
+  TD,
+} from "@/components/ui/table";
 import { formatRmb, cn } from "@/lib/utils";
 import { Search, Trash2, EyeOff, Archive } from "lucide-react";
 
@@ -302,35 +311,32 @@ export function OrphanChannelPanel({
           </p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border-subtle text-left text-[11px] uppercase tracking-wider text-muted">
-                  <th className="px-2 py-2">渠道</th>
-                  <th className="px-2 py-2">区间 / 模型</th>
-                  <th className="px-2 py-2 text-right">卖出</th>
-                  <th className="px-2 py-2">成本填法</th>
-                  <th className="px-2 py-2 text-right">成本</th>
-                  <th className="px-2 py-2 text-right">毛利</th>
-                  <th className="px-2 py-2" />
-                </tr>
-              </thead>
-              <tbody>
+            <Table>
+              <THead>
+                <HeadRow>
+                  <TH className="px-2">渠道</TH>
+                  <TH className="px-2">区间 / 模型</TH>
+                  <TH className="px-2 text-right">卖出</TH>
+                  <TH className="px-2">成本填法</TH>
+                  <TH className="px-2 text-right">成本</TH>
+                  <TH className="px-2 text-right">毛利</TH>
+                  <TH className="px-2" />
+                </HeadRow>
+              </THead>
+              <TBody>
                 {entries.map((e) => (
-                  <tr
+                  <TR
                     key={e.id}
-                    className={cn(
-                      "border-b border-border-subtle/60",
-                      !e.resolved && !e.ignored && "bg-amber/[0.04]",
-                      e.ignored && "opacity-50",
-                    )}
+                    tone={!e.resolved && !e.ignored ? "warn" : undefined}
+                    className={cn(e.ignored && "opacity-50")}
                   >
-                    <td className="px-2 py-2">
+                    <TD className="px-2">
                       <div className="font-data">#{e.channelId}</div>
                       <div className="text-[11px] text-muted max-w-[130px] truncate">
                         {e.channelName || "已删除"} · {e.downstreamName}
                       </div>
-                    </td>
-                    <td className="px-2 py-2">
+                    </TD>
+                    <TD className="px-2">
                       <div className="font-data text-[11px] text-secondary">
                         {e.firstDay === e.lastDay
                           ? e.firstDay
@@ -340,14 +346,14 @@ export function OrphanChannelPanel({
                         {e.models.length ? e.models.join(", ") : "—"} ·{" "}
                         {e.requests} 次
                       </div>
-                    </td>
-                    <td className="px-2 py-2 text-right font-data text-xs text-violet">
+                    </TD>
+                    <TD className="px-2 text-right font-data text-xs text-violet">
                       {formatRmb(e.revenueRmb)}
-                    </td>
-                    <td className="px-2 py-2">
+                    </TD>
+                    <TD className="px-2">
                       <div className="flex items-center gap-1">
-                        <select
-                          className="h-7 rounded-md border border-border bg-surface px-1 text-xs"
+                        <Select
+                          className="h-7 w-auto px-1.5 text-xs"
                           value={e.costMode}
                           disabled={busy || e.ignored}
                           onChange={(ev) =>
@@ -356,7 +362,7 @@ export function OrphanChannelPanel({
                         >
                           <option value={RATE}>倍率</option>
                           <option value={AMOUNT}>总额</option>
-                        </select>
+                        </Select>
                         <Input
                           className="h-7 w-20 text-right font-data text-xs"
                           type="number"
@@ -375,13 +381,13 @@ export function OrphanChannelPanel({
                           ? "整笔总成本 ¥"
                           : "每 1 面值成本 ¥"}
                       </div>
-                    </td>
-                    <td className="px-2 py-2 text-right font-data text-xs text-amber">
+                    </TD>
+                    <TD className="px-2 text-right font-data text-xs text-cost">
                       {e.resolved ? formatRmb(e.costRmb) : "—"}
-                    </td>
-                    <td
+                    </TD>
+                    <TD
                       className={cn(
-                        "px-2 py-2 text-right font-data text-xs",
+                        "px-2 text-right font-data text-xs",
                         e.resolved
                           ? e.marginRmb >= 0
                             ? "text-mint"
@@ -396,8 +402,8 @@ export function OrphanChannelPanel({
                       ) : (
                         <Badge variant="amber">待补录</Badge>
                       )}
-                    </td>
-                    <td className="px-2 py-2">
+                    </TD>
+                    <TD className="px-2">
                       <div className="flex items-center justify-end gap-1">
                         {!e.ignored && (
                           <Button
@@ -440,11 +446,11 @@ export function OrphanChannelPanel({
                           <Trash2 className="h-3.5 w-3.5 text-coral" />
                         </Button>
                       </div>
-                    </td>
-                  </tr>
+                    </TD>
+                  </TR>
                 ))}
-              </tbody>
-            </table>
+              </TBody>
+            </Table>
           </div>
         )}
       </CardContent>

@@ -293,6 +293,10 @@ model DownstreamSite {
   quotaPerDollar  Float     @default(500000)
   revenueCurrency String    @default("CNY") @db.VarChar(10)
   excludeUserIds  String    @default("[]") @db.VarChar(2000)
+  /// 私域用户 id（自己推广来的）。空数组 = 全站都算公共池。
+  /// 与 excludeUserIds 的关系：先剔测试号，剩下的付费账号再分私域 / 公共。
+  /// 同时出现在两个名单里时，排除优先 —— 测试号永远不算收入。
+  privateUserIds  String    @default("[]") @db.VarChar(2000)
   enabled         Boolean   @default(true)
   notes           String?   @db.Text
   lastConsumed    Float?
@@ -317,6 +321,10 @@ model DownstreamSite {
 /// - revenueRmb：**只算付费账号**，这才是收入。测试号没人付钱，
 ///   把它算进收入等于虚增利润。
 ///
+/// 收入再按推广归属拆两层（都已剔掉测试号）：
+/// - privateRevenueRmb：私域（自己推广的用户）
+/// - 公共池 = revenueRmb − privateRevenueRmb，不单独存，避免两个数打架
+///
 /// scope=TOTAL 是全站权威口径（报表求和只认它）；
 /// scope=GROUP 仅作分组归因与倍率法对账，避免与 TOTAL 重复相加。
 model DownstreamUsageDaily {
@@ -329,8 +337,12 @@ model DownstreamUsageDaily {
   quota           Float    @default(0)
   /// 被排除账号（测试号）消耗的额度面值
   excludedQuota   Float    @default(0)
+  /// 私域用户（自己推广的）消耗的额度面值
+  privateQuota    Float    @default(0)
   /// 付费账号消费折算的人民币 —— 收入口径
   revenueRmb      Float    @default(0)
+  /// 私域用户消费折算的人民币
+  privateRevenueRmb Float  @default(0)
   /// 全部账号消费折算的人民币 —— 对账口径，不是收入
   grossRevenueRmb Float    @default(0)
   /// 折算时采用的额度单位快照
@@ -338,6 +350,8 @@ model DownstreamUsageDaily {
   requests        Int      @default(0)
   /// 排除口径是否可信：拿不到逐账号数据时为 false，此时 revenue 等于 gross
   excludeResolved Boolean  @default(false)
+  /// 私域拆分是否可信：拿不到逐账号数据时为 false
+  privateResolved Boolean  @default(false)
   /// data-export | log-stat
   source          String   @default("log-stat") @db.VarChar(30)
   /// 该日数据是否完整（分页/接口截断时为 false）

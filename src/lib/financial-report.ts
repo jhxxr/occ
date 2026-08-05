@@ -73,6 +73,10 @@ export interface SiteRow {
   enabled: boolean;
   /** 付费账号消费 —— 收入 */
   revenueRmb: number;
+  /** 其中私域（自己推广的用户） */
+  privateRmb: number;
+  /** 其中公共池（其余渠道，含朋友推广的） */
+  publicRmb: number;
   /** 全部账号消费（含测试号）—— 对账用 */
   grossRmb: number;
   /** 测试号烧掉的部分 */
@@ -84,6 +88,8 @@ export interface SiteRow {
   incompleteDays: number;
   /** 测试号是否真的从收入里剔掉了 */
   excludeResolved: boolean;
+  /** 私域是否真的拆出来了 */
+  privateResolved: boolean;
   lastSyncAt: Date | null;
 }
 
@@ -121,6 +127,10 @@ export interface FinancialReport {
   usdCny: number;
   revenue: {
     measuredRmb: number;
+    /** 其中私域（自己推广的用户） */
+    privateRmb: number;
+    /** 其中公共池（其余渠道，含朋友推广的） */
+    publicRmb: number;
     /** 全部账号消费（含测试号），跟上游成本对差值用，**不是收入** */
     grossConsumptionRmb: number;
     /** 测试号烧掉的额度，已从收入里剔除 */
@@ -137,6 +147,19 @@ export interface FinancialReport {
   profit: {
     measuredRmb: number;
     measuredMarginPct: number | null;
+    /**
+     * 私域 / 公共各自的毛利。
+     *
+     * 成本按收入占比分摊 —— 上游成本记在 Key 上，拿不到「这笔消费是谁烧的」，
+     * 只能按比例摊。所以这两个数是**估算口径**，别拿去做精确结算；
+     * 总毛利（measuredRmb）仍是实测事实。
+     */
+    privateRmb: number;
+    publicRmb: number;
+    privateMarginPct: number | null;
+    publicMarginPct: number | null;
+    /** 分摊依据：私域收入占总收入的比例 */
+    privateShare: number;
   };
   daily: DailyPoint[];
   bySite: SiteRow[];
@@ -170,6 +193,8 @@ export interface FinancialReport {
     sitesMissingDays: number;
     /** 拿不到逐账号消费、测试号还混在收入里的站点数 */
     sitesUnresolvedExclude: number;
+    /** 拿不到逐账号消费、私域未拆分的站点数 */
+    sitesUnresolvedPrivate: number;
     snapshotEstimatedProviderDays: number;
     earlyEndedCostEntries: number;
     openEndedCostEntries: number;
@@ -316,10 +341,12 @@ export async function buildFinancialReport(
   const totalRows = downstreamDaily.filter((r) => r.scope === "TOTAL");
   const revenueByDay = new Map<string, number>();
   const grossByDay = new Map<string, number>();
+  const privateByDay = new Map<string, number>();
   const siteAgg = new Map<
     string,
     {
       revenueRmb: number;
+      privateRmb: number;
       grossRmb: number;
       excludedRmb: number;
       quota: number;
@@ -327,6 +354,7 @@ export async function buildFinancialReport(
       days: Set<string>;
       incomplete: number;
       unresolved: number;
+      unresolvedPrivate: number;
     }
   >();
 
@@ -336,10 +364,15 @@ export async function buildFinancialReport(
       row.day,
       (grossByDay.get(row.day) || 0) + (row.grossRevenueRmb || row.revenueRmb || 0),
     );
+    privateByDay.set(
+      row.day,
+      (privateByDay.get(row.day) || 0) + (row.privateRevenueRmb || 0),
+    );
     const cur =
       siteAgg.get(row.downstreamId) ||
       {
         revenueRmb: 0,
+        privateRmb: 0,
         grossRmb: 0,
         excludedRmb: 0,
         quota: 0,
@@ -347,9 +380,11 @@ export async function buildFinancialReport(
         days: new Set<string>(),
         incomplete: 0,
         unresolved: 0,
+        unresolvedPrivate: 0,
       };
     const gross = row.grossRevenueRmb || row.revenueRmb || 0;
     cur.revenueRmb += row.revenueRmb || 0;
+    cur.privateRmb += row.privateRevenueRmb || 0;
     cur.grossRmb += gross;
     cur.excludedRmb += gross - (row.revenueRmb || 0);
     cur.quota += row.quota || 0;
@@ -357,6 +392,7 @@ export async function buildFinancialReport(
     cur.days.add(row.day);
     if (!row.complete) cur.incomplete++;
     if (!row.excludeResolved) cur.unresolved++;
+    if (!row.privateResolved) cur.unresolvedPrivate++;
     siteAgg.set(row.downstreamId, cur);
   }
 
@@ -368,22 +404,33 @@ export async function buildFinancialReport(
     [...grossByDay.values()].reduce((s, v) => s + v, 0),
   );
   const excludedRevenueRmb = round2(grossConsumptionRmb - measuredRevenueRmb);
+  /** 私域收入；公共池用减法现算，避免两个数各自漂移 */
+  const privateRevenueRmb = round2(
+    [...privateByDay.values()].reduce((s, v) => s + v, 0),
+  );
+  const publicRevenueRmb = round2(measuredRevenueRmb - privateRevenueRmb);
 
   const expectedDays = elapsedDays(period, today);
   const enabledSites = sites.filter((s) => s.enabled);
   let sitesMissingDays = 0;
   let sitesUnresolvedExclude = 0;
+  let sitesUnresolvedPrivate = 0;
   const bySite: SiteRow[] = sites.map((s) => {
     const agg = siteAgg.get(s.id);
     const covered = agg?.days.size ?? 0;
     const missing = s.enabled ? Math.max(0, expectedDays - covered) : 0;
     if (missing > 0) sitesMissingDays += missing;
     if ((agg?.unresolved ?? 0) > 0) sitesUnresolvedExclude++;
+    if ((agg?.unresolvedPrivate ?? 0) > 0) sitesUnresolvedPrivate++;
+    const siteRevenue = round2(agg?.revenueRmb ?? 0);
+    const sitePrivate = round2(agg?.privateRmb ?? 0);
     return {
       id: s.id,
       name: s.name,
       enabled: s.enabled,
-      revenueRmb: round2(agg?.revenueRmb ?? 0),
+      revenueRmb: siteRevenue,
+      privateRmb: sitePrivate,
+      publicRmb: round2(siteRevenue - sitePrivate),
       grossRmb: round2(agg?.grossRmb ?? 0),
       excludedRmb: round2(agg?.excludedRmb ?? 0),
       quota: Math.round(agg?.quota ?? 0),
@@ -391,6 +438,7 @@ export async function buildFinancialReport(
       missingDays: missing,
       incompleteDays: agg?.incomplete ?? 0,
       excludeResolved: (agg?.unresolved ?? 0) === 0,
+      privateResolved: (agg?.unresolvedPrivate ?? 0) === 0,
       lastSyncAt: s.lastSyncAt,
     };
   });
@@ -409,6 +457,11 @@ export async function buildFinancialReport(
   if (sitesUnresolvedExclude > 0) {
     warnings.push(
       `有 ${sitesUnresolvedExclude} 个站点拿不到逐账号消费，测试号还留在收入里（收入偏高）`,
+    );
+  }
+  if (sitesUnresolvedPrivate > 0) {
+    warnings.push(
+      `有 ${sitesUnresolvedPrivate} 个站点拿不到逐账号消费，私域收入未拆分（全部计入公共池）`,
     );
   }
 
@@ -554,12 +607,24 @@ export async function buildFinancialReport(
     }, 0),
   );
 
+  // 私域 / 公共各自的毛利：成本按收入占比分摊。
+  // 上游成本记在 Key 上，追不到「这笔消费是谁烧的」，只能按比例摊 ——
+  // 所以这是估算，总毛利仍以 measuredProfit 为准。
+  const privateShare =
+    measuredRevenueRmb > 0 ? privateRevenueRmb / measuredRevenueRmb : 0;
+  const privateProfit = round2(
+    privateRevenueRmb - totalCostRmb * privateShare,
+  );
+  const publicProfit = round2(measuredProfit - privateProfit);
+
   return {
     period,
     generatedAt: new Date().toISOString(),
     usdCny,
     revenue: {
       measuredRmb: measuredRevenueRmb,
+      privateRmb: privateRevenueRmb,
+      publicRmb: publicRevenueRmb,
       grossConsumptionRmb,
       excludedRmb: excludedRevenueRmb,
     },
@@ -574,6 +639,13 @@ export async function buildFinancialReport(
       measuredRmb: measuredProfit,
       measuredMarginPct:
         measuredRevenueRmb > 0 ? pct(measuredProfit, measuredRevenueRmb) : null,
+      privateRmb: privateProfit,
+      publicRmb: publicProfit,
+      privateMarginPct:
+        privateRevenueRmb > 0 ? pct(privateProfit, privateRevenueRmb) : null,
+      publicMarginPct:
+        publicRevenueRmb > 0 ? pct(publicProfit, publicRevenueRmb) : null,
+      privateShare: round2(privateShare * 100) / 100,
     },
     daily,
     bySite,
@@ -594,6 +666,7 @@ export async function buildFinancialReport(
       billableKeys,
       sitesMissingDays,
       sitesUnresolvedExclude,
+      sitesUnresolvedPrivate,
       snapshotEstimatedProviderDays,
       earlyEndedCostEntries: costSummary.earlyEndedCount,
       openEndedCostEntries: costSummary.openEndedCount,

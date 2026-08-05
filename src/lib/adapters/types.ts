@@ -57,6 +57,8 @@ export interface DownstreamAdapterInput {
   quotaPerDollar?: number;
   /** User ids excluded from revenue (test accounts) */
   excludeUserIds?: number[];
+  /** User ids marked as private domain (your own promoted users) */
+  privateUserIds?: number[];
   /**
    * CNY: 充值 1:1 人民币，issued 面值数字直接当元（不再 × 汇率）
    * USD: 按美元额度，仪表盘再 × USD/CNY
@@ -79,6 +81,8 @@ export interface DownstreamUserRow {
   request_count?: number;
   /** true if currently excluded from revenue */
   excluded?: boolean;
+  /** true if marked as private-domain (your own promoted user) */
+  isPrivate?: boolean;
 }
 
 /**
@@ -89,6 +93,9 @@ export interface DownstreamUserRow {
  * - excludedQuota：其中被排除账号（测试号）烧掉的部分
  *
  * 收入 = quota − excludedQuota。测试号没人付钱，算进收入就是虚增利润。
+ *
+ * privateQuota 是收入里属于私域（自己推广的用户）的部分，已剔掉测试号；
+ * 公共池 = (quota − excludedQuota) − privateQuota。
  */
 export interface DownstreamDailyRow {
   /** Asia/Shanghai 日历日 */
@@ -97,10 +104,14 @@ export interface DownstreamDailyRow {
   quota: number;
   /** 其中被排除账号消耗的额度面值 */
   excludedQuota: number;
+  /** 其中私域用户消耗的额度面值（不含测试号） */
+  privateQuota: number;
   /** 请求数，来源不支持时为 0 */
   requests: number;
   /** 是否真的按账号拆出了排除项；false 表示拿不到逐账号数据 */
   excludeResolved: boolean;
+  /** 是否真的按账号拆出了私域；false 表示拿不到逐账号数据 */
+  privateResolved: boolean;
 }
 
 export interface DownstreamGroupDailyRow {
@@ -124,6 +135,8 @@ export interface DownstreamDailyUsageResult {
   failedDays: string[];
   /** 测试号是否真的被拆出来了；false 说明收入里还混着测试号消费 */
   excludeResolved: boolean;
+  /** 私域是否真的被拆出来了；false 说明拿不到逐账号数据 */
+  privateResolved: boolean;
   error?: string;
 }
 

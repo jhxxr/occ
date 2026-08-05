@@ -6,6 +6,10 @@
  *
  * 收入只算付费账号：测试号（站点里排除掉的那些）的消费另存一列，
  * 用来跟上游成本对差值 —— 它烧了上游额度，但没人付钱。
+ *
+ * 付费账号再按推广归属拆两层：私域（自己推广的，站点里标记的那些）
+ * 与公共池（其余，含朋友推广的）。公共池不单独存，用
+ * revenueRmb − privateRevenueRmb 现算，避免两个数各自漂移。
  */
 
 import { prisma } from "@/lib/db";
@@ -27,12 +31,18 @@ export interface DownstreamUsageSyncResult {
   groupRows: number;
   /** 付费账号消费（收入） */
   revenueRmb: number;
+  /** 其中私域用户的部分 */
+  privateRevenueRmb: number;
+  /** 其中公共池的部分（含朋友推广的） */
+  publicRevenueRmb: number;
   /** 全部账号消费（含测试号），对账用 */
   grossRevenueRmb: number;
   /** 测试号烧掉的部分 */
   excludedRmb: number;
   /** 测试号是否真的拆出来了 */
   excludeResolved: boolean;
+  /** 私域是否真的拆出来了 */
+  privateResolved: boolean;
   source: string;
   complete: boolean;
   failedDays: string[];
@@ -65,9 +75,12 @@ export async function syncDownstreamUsage(
       days: 0,
       groupRows: 0,
       revenueRmb: 0,
+      privateRevenueRmb: 0,
+      publicRevenueRmb: 0,
       grossRevenueRmb: 0,
       excludedRmb: 0,
       excludeResolved: false,
+      privateResolved: false,
       source: "none",
       complete: false,
       failedDays: [],
@@ -88,9 +101,12 @@ export async function syncDownstreamUsage(
       days: 0,
       groupRows: 0,
       revenueRmb: 0,
+      privateRevenueRmb: 0,
+      publicRevenueRmb: 0,
       grossRevenueRmb: 0,
       excludedRmb: 0,
       excludeResolved: false,
+      privateResolved: false,
       source: "none",
       complete: false,
       failedDays: [],
@@ -120,17 +136,46 @@ export async function syncDownstreamUsage(
     excludeUserIds = [];
   }
 
+  // 私域名单同理
+  let privateUserIds: number[] = [];
+  try {
+    const parsed = JSON.parse(site.privateUserIds || "[]");
+    if (Array.isArray(parsed)) {
+      privateUserIds = parsed.map(Number).filter((n) => Number.isFinite(n));
+    }
+  } catch {
+    privateUserIds = [];
+  }
+
   let excludeUsernames: string[] = [];
+  let privateUsernames: string[] = [];
   let excludeNamesResolved = excludeUserIds.length === 0;
-  if (excludeUserIds.length) {
+  let privateNamesResolved = privateUserIds.length === 0;
+  if (excludeUserIds.length || privateUserIds.length) {
     const users = await listDownstreamUsers({ ...input, excludeUserIds });
     if (users.success) {
-      const wanted = new Set(excludeUserIds);
+      const wantedExclude = new Set(excludeUserIds);
+      // 超管永远算测试号，不进私域
+      const excludeIdSet = new Set(
+        users.users
+          .filter((u) => wantedExclude.has(u.id) || u.role >= 100)
+          .map((u) => u.id),
+      );
       excludeUsernames = users.users
-        .filter((u) => wanted.has(u.id) || u.role >= 100)
+        .filter((u) => excludeIdSet.has(u.id))
         .map((u) => u.username)
         .filter(Boolean);
-      excludeNamesResolved = excludeUsernames.length > 0;
+      excludeNamesResolved =
+        excludeUserIds.length === 0 || excludeUsernames.length > 0;
+
+      // 排除优先：同时在两个名单里的算测试号
+      const wantedPrivate = new Set(privateUserIds);
+      privateUsernames = users.users
+        .filter((u) => wantedPrivate.has(u.id) && !excludeIdSet.has(u.id))
+        .map((u) => u.username)
+        .filter(Boolean);
+      privateNamesResolved =
+        privateUserIds.length === 0 || privateUsernames.length > 0;
     }
   }
 
@@ -139,6 +184,7 @@ export async function syncDownstreamUsage(
     startDay,
     endDay,
     excludeUsernames,
+    privateUsernames,
   });
 
   if (!usage.success) {
@@ -155,9 +201,12 @@ export async function syncDownstreamUsage(
       days: 0,
       groupRows: 0,
       revenueRmb: 0,
+      privateRevenueRmb: 0,
+      publicRevenueRmb: 0,
       grossRevenueRmb: 0,
       excludedRmb: 0,
       excludeResolved: false,
+      privateResolved: false,
       source: usage.totalSource,
       complete: false,
       failedDays: usage.failedDays,
@@ -166,27 +215,35 @@ export async function syncDownstreamUsage(
   }
 
   const excludeResolved = usage.excludeResolved && excludeNamesResolved;
+  const privateResolved = usage.privateResolved && privateNamesResolved;
 
   let revenueRmb = 0;
   let grossRevenueRmb = 0;
   let excludedRmb = 0;
+  let privateRevenueRmb = 0;
   for (const row of usage.totals) {
     const grossRmb = quotaToRmb(row.quota, quotaPerUnit);
     const excludedPart = quotaToRmb(row.excludedQuota, quotaPerUnit);
     // 收入只认付费账号；拆不出测试号时保持等于全站，并靠 excludeResolved 提示
     const payingRmb = grossRmb - excludedPart;
+    // 私域是付费部分的子集；拆不出来时记 0（而不是当成没有私域）
+    const privatePart = quotaToRmb(row.privateQuota, quotaPerUnit);
     grossRevenueRmb += grossRmb;
     excludedRmb += excludedPart;
     revenueRmb += payingRmb;
+    privateRevenueRmb += privatePart;
 
     const data = {
       quota: row.quota,
       excludedQuota: row.excludedQuota,
+      privateQuota: row.privateQuota,
       revenueRmb: payingRmb,
+      privateRevenueRmb: privatePart,
       grossRevenueRmb: grossRmb,
       quotaPerUnit,
       requests: row.requests,
       excludeResolved,
+      privateResolved: privateResolved && row.privateResolved,
       source: usage.totalSource,
       complete: !usage.failedDays.includes(row.day),
       syncedAt: new Date(),
@@ -212,17 +269,21 @@ export async function syncDownstreamUsage(
   }
 
   // 分组归因：只做拆解展示与倍率法对账，报表求和不读它。
-  // 分组维度拿不到账号，所以这里的 revenueRmb 是含测试号的毛值。
+  // 分组维度拿不到账号，所以这里的 revenueRmb 是含测试号的毛值，
+  // 私域也无从拆分，一律记 0 + privateResolved=false。
   for (const row of usage.groups) {
     const grossRmb = quotaToRmb(row.quota, quotaPerUnit);
     const data = {
       quota: row.quota,
       excludedQuota: 0,
+      privateQuota: 0,
       revenueRmb: grossRmb,
+      privateRevenueRmb: 0,
       grossRevenueRmb: grossRmb,
       quotaPerUnit,
       requests: row.requests,
       excludeResolved: false,
+      privateResolved: false,
       source: "data-export" as const,
       complete: true,
       syncedAt: new Date(),
@@ -254,6 +315,9 @@ export async function syncDownstreamUsage(
   if (!excludeResolved) {
     notes.push("拿不到逐账号消费，测试号未从收入中剔除（需开启数据看板导出）");
   }
+  if (!privateResolved) {
+    notes.push("拿不到逐账号消费，私域收入未拆分（需开启数据看板导出）");
+  }
 
   await prisma.downstreamSite.update({
     where: { id: siteId },
@@ -270,9 +334,12 @@ export async function syncDownstreamUsage(
     days: usage.totals.length,
     groupRows: usage.groups.length,
     revenueRmb: Math.round(revenueRmb * 100) / 100,
+    privateRevenueRmb: Math.round(privateRevenueRmb * 100) / 100,
+    publicRevenueRmb: Math.round((revenueRmb - privateRevenueRmb) * 100) / 100,
     grossRevenueRmb: Math.round(grossRevenueRmb * 100) / 100,
     excludedRmb: Math.round(excludedRmb * 100) / 100,
     excludeResolved,
+    privateResolved,
     source: usage.totalSource,
     complete: usage.complete,
     failedDays: usage.failedDays,

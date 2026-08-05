@@ -27,6 +27,8 @@ interface ReportPayload {
   usdCny: number;
   revenue: {
     measuredRmb: number;
+    privateRmb: number;
+    publicRmb: number;
     grossConsumptionRmb: number;
     excludedRmb: number;
   };
@@ -40,6 +42,11 @@ interface ReportPayload {
   profit: {
     measuredRmb: number;
     measuredMarginPct: number | null;
+    privateRmb: number;
+    publicRmb: number;
+    privateMarginPct: number | null;
+    publicMarginPct: number | null;
+    privateShare: number;
   };
   daily: DailyPoint[];
   bySite: {
@@ -47,12 +54,15 @@ interface ReportPayload {
     name: string;
     enabled: boolean;
     revenueRmb: number;
+    privateRmb: number;
+    publicRmb: number;
     grossRmb: number;
     excludedRmb: number;
     requests: number;
     missingDays: number;
     incompleteDays: number;
     excludeResolved: boolean;
+    privateResolved: boolean;
   }[];
   byProvider: {
     id: string;
@@ -98,6 +108,7 @@ interface ReportPayload {
     billableKeys: number;
     sitesMissingDays: number;
     sitesUnresolvedExclude: number;
+    sitesUnresolvedPrivate: number;
     snapshotEstimatedProviderDays: number;
     earlyEndedCostEntries: number;
     openEndedCostEntries: number;
@@ -335,6 +346,32 @@ export function ReportView() {
             />
           </div>
 
+          {/* 私域 / 公共拆分：成本按收入占比分摊，是估算口径 */}
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Metric
+              label="私域 · 收入 / 毛利"
+              value={`${formatRmb(data.revenue.privateRmb)} / ${formatRmb(data.profit.privateRmb)}`}
+              hint={
+                data.coverage.sitesUnresolvedPrivate > 0
+                  ? "有站点拿不到逐账号数据，私域未拆分（全算公共池）"
+                  : data.profit.privateMarginPct != null
+                    ? `自己推广 · 毛利率 ${data.profit.privateMarginPct.toFixed(1)}% · 成本按收入占比分摊`
+                    : "自己推广的用户 · 本期无私域收入"
+              }
+              tone="cyan"
+            />
+            <Metric
+              label="公共池 · 收入 / 毛利"
+              value={`${formatRmb(data.revenue.publicRmb)} / ${formatRmb(data.profit.publicRmb)}`}
+              hint={
+                data.profit.publicMarginPct != null
+                  ? `其他渠道 · 毛利率 ${data.profit.publicMarginPct.toFixed(1)}% · 成本按收入占比分摊`
+                  : "其他渠道（含朋友推广）· 本期无公共收入"
+              }
+              tone="violet"
+            />
+          </div>
+
           <ReportTrendChart data={data.daily} />
 
           <OrphanChannelPanel
@@ -417,6 +454,8 @@ export function ReportView() {
                       <HeadRow>
                         <TH>站点</TH>
                         <TH className="text-right">收入</TH>
+                        <TH className="text-right">私域</TH>
+                        <TH className="text-right">公共</TH>
                         <TH className="text-right">测试号</TH>
                         <TH className="text-right">全站消费</TH>
                         <TH className="text-right">缺失</TH>
@@ -430,10 +469,17 @@ export function ReportView() {
                             <div className="text-[11px] text-muted">
                               {s.enabled ? `${s.requests} 次请求` : "已停用"}
                               {!s.excludeResolved && " · 未拆测试号"}
+                              {!s.privateResolved && " · 未拆私域"}
                             </div>
                           </TD>
                           <TD className="text-right font-data text-xs text-mint">
                             {formatRmb(s.revenueRmb)}
+                          </TD>
+                          <TD className="text-right font-data text-xs text-cyan">
+                            {s.privateRmb > 0 ? formatRmb(s.privateRmb) : "—"}
+                          </TD>
+                          <TD className="text-right font-data text-xs text-violet">
+                            {s.publicRmb > 0 ? formatRmb(s.publicRmb) : "—"}
                           </TD>
                           <TD className="text-right font-data text-xs text-muted">
                             {s.excludedRmb > 0 ? `−${formatRmb(s.excludedRmb)}` : "—"}

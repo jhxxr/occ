@@ -18,7 +18,17 @@ function parseExclude(raw: string | null | undefined): number[] {
   return [];
 }
 
-/** GET — list NewAPI users with exclusion flags for this downstream site */
+/** 请求体里的 id 数组 → 去重的正整数数组 */
+function sanitizeIds(input: unknown): number[] {
+  if (!Array.isArray(input)) return [];
+  return [
+    ...new Set(
+      input.map(Number).filter((n: number) => Number.isInteger(n) && n > 0),
+    ),
+  ];
+}
+
+/** GET — list NewAPI users with exclusion + private-domain flags */
 export async function GET(_req: NextRequest, ctx: Ctx) {
   try {
     const { id } = await ctx.params;
@@ -27,12 +37,14 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
       return NextResponse.json({ error: "站点不存在" }, { status: 404 });
     }
     const excludeUserIds = parseExclude(site.excludeUserIds);
+    const privateUserIds = parseExclude(site.privateUserIds);
     const result = await listDownstreamUsers({
       baseUrl: site.baseUrl,
       adminKey: decryptSecret(site.adminKey),
       adminUserId: site.adminUserId ?? 1,
       quotaPerDollar: site.quotaPerDollar ?? 500000,
       excludeUserIds,
+      privateUserIds,
     });
     if (!result.success) {
       return NextResponse.json({ error: result.error }, { status: 400 });
@@ -41,6 +53,9 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
     const excluded = result.users.filter((u) => u.excluded || u.role >= 100);
     const revenueUsd = included.reduce((s, u) => s + u.issuedUsd, 0);
     const excludedUsd = excluded.reduce((s, u) => s + u.issuedUsd, 0);
+    // 私域是付费账号的子集；公共池 = 付费 − 私域
+    const privateUsers = included.filter((u) => u.isPrivate);
+    const privateUsd = privateUsers.reduce((s, u) => s + u.issuedUsd, 0);
 
     return NextResponse.json({
       data: {
@@ -49,6 +64,7 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
           name: site.name,
           baseUrl: site.baseUrl,
           excludeUserIds,
+          privateUserIds,
           lastRevenue: site.lastRevenue,
           lastConsumed: site.lastConsumed,
         },
@@ -56,8 +72,11 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
         summary: {
           revenueUsd,
           excludedUsd,
+          privateUsd,
+          publicUsd: revenueUsd - privateUsd,
           includedCount: included.length,
           excludedCount: excluded.length,
+          privateCount: privateUsers.length,
         },
       },
     });
@@ -70,8 +89,8 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
 }
 
 /**
- * PUT body: { excludeUserIds: number[], resync?: boolean }
- * Save exclusion list; optionally re-sync revenue immediately.
+ * PUT body: { excludeUserIds: number[], privateUserIds?: number[], resync?: boolean }
+ * Save exclusion / private-domain lists; optionally re-sync revenue immediately.
  */
 export async function PUT(req: NextRequest, ctx: Ctx) {
   try {
@@ -90,17 +109,31 @@ export async function PUT(req: NextRequest, ctx: Ctx) {
         { status: 400 },
       );
     }
-    const ids = [
-      ...new Set(
-        body.excludeUserIds
-          .map(Number)
-          .filter((n: number) => Number.isInteger(n) && n > 0),
-      ),
-    ];
+    // 私域名单同理：缺失 = 不改动（老调用方只发排除名单，别把私域清空）；
+    // 要清空必须显式传 []。
+    if (
+      body.privateUserIds !== undefined &&
+      !Array.isArray(body.privateUserIds)
+    ) {
+      return NextResponse.json(
+        { error: "privateUserIds 必须是数组（清空请显式传 []）" },
+        { status: 400 },
+      );
+    }
+    const ids = sanitizeIds(body.excludeUserIds);
+    const excludeSet = new Set(ids);
+    // 排除优先：同时勾了两个的算测试号，不进私域，免得两份口径打架
+    const privateIds =
+      body.privateUserIds === undefined
+        ? null
+        : sanitizeIds(body.privateUserIds).filter((n) => !excludeSet.has(n));
 
     await prisma.downstreamSite.update({
       where: { id },
-      data: { excludeUserIds: JSON.stringify(ids) },
+      data: {
+        excludeUserIds: JSON.stringify(ids),
+        ...(privateIds ? { privateUserIds: JSON.stringify(privateIds) } : {}),
+      },
     });
 
     let syncResult = null;
@@ -111,6 +144,7 @@ export async function PUT(req: NextRequest, ctx: Ctx) {
     return NextResponse.json({
       data: {
         excludeUserIds: ids,
+        privateUserIds: privateIds ?? parseExclude(site.privateUserIds),
         sync: syncResult,
       },
     });

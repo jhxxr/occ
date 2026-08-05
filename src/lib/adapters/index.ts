@@ -810,6 +810,9 @@ export async function listDownstreamUsers(
   const excludeSet = new Set(
     (input.excludeUserIds || []).map((x) => Number(x)).filter((n) => Number.isFinite(n)),
   );
+  const privateSet = new Set(
+    (input.privateUserIds || []).map((x) => Number(x)).filter((n) => Number.isFinite(n)),
+  );
 
   try {
     const usersRes = await fetchJson(`${base}/api/user/?p=0&page_size=1000`, {
@@ -855,6 +858,8 @@ export async function listDownstreamUsers(
         usedUsd: quotaToUsd(used, quotaPerDollar),
         request_count: num(u.request_count) ?? undefined,
         excluded: autoExcluded || excludeSet.has(id),
+        // 排除优先：测试号不算收入，也就谈不上私域
+        isPrivate: !autoExcluded && !excludeSet.has(id) && privateSet.has(id),
       });
     }
     users.sort((a, b) => b.issuedUsd - a.issuedUsd);
@@ -886,6 +891,9 @@ function shanghaiDayBounds(day: string): { start: number; end: number } {
  * 逐账号拆分只能靠 `/api/data/users`（按 username × 小时聚合）。
  * 拿不到时退回全站口径，并把 excludeResolved 标成 false —— 让上层知道
  * 这个数里还混着测试号，而不是假装已经扣干净了。
+ *
+ * 私域拆分同理：privateQuota 靠同一份逐账号数据，拿不到就是 0 +
+ * privateResolved=false，别把「拆不出来」当成「没有私域」。
  */
 export async function fetchDownstreamDailyUsage(
   input: DownstreamAdapterInput & {
@@ -893,6 +901,8 @@ export async function fetchDownstreamDailyUsage(
     endDay: string;
     /** 被排除账号的用户名（测试号）；逐账号拆分要用名字而不是 id */
     excludeUsernames?: string[];
+    /** 私域账号的用户名（自己推广的） */
+    privateUsernames?: string[];
   },
 ): Promise<DownstreamDailyUsageResult> {
   const base = normalizeBaseUrl(input.baseUrl);
@@ -910,6 +920,7 @@ export async function fetchDownstreamDailyUsage(
       complete: false,
       failedDays: [],
       excludeResolved: false,
+      privateResolved: false,
       error: "日期区间为空",
     };
   }
@@ -917,13 +928,19 @@ export async function fetchDownstreamDailyUsage(
   const excludeSet = new Set(
     (input.excludeUsernames || []).map((n) => n.trim()).filter(Boolean),
   );
+  const privateSet = new Set(
+    (input.privateUsernames || []).map((n) => n.trim()).filter(Boolean),
+  );
 
   try {
     const rangeStart = shanghaiDayBounds(input.startDay).start;
     const rangeEnd = shanghaiDayBounds(input.endDay).end;
 
-    // 1) 逐账号日消费：唯一能把测试号拆出来的来源
-    const perUser = new Map<string, { quota: number; excluded: number; requests: number }>();
+    // 1) 逐账号日消费：唯一能把测试号和私域拆出来的来源
+    const perUser = new Map<
+      string,
+      { quota: number; excluded: number; private: number; requests: number }
+    >();
     let excludeResolved = false;
     const usersRes = await fetchJson(
       `${base}/api/data/users?start_timestamp=${rangeStart}&end_timestamp=${rangeEnd}`,
@@ -946,10 +963,12 @@ export async function fetchDownstreamDailyUsage(
           const count = num(r.count) ?? 0;
           const username = typeof r.username === "string" ? r.username : "";
           const bucket =
-            perUser.get(day) || { quota: 0, excluded: 0, requests: 0 };
+            perUser.get(day) || { quota: 0, excluded: 0, private: 0, requests: 0 };
           bucket.quota += quota;
           bucket.requests += count;
+          // 排除优先：同时在两个名单里时算测试号，不进私域
           if (excludeSet.has(username)) bucket.excluded += quota;
+          else if (privateSet.has(username)) bucket.private += quota;
           perUser.set(day, bucket);
         }
       }
@@ -1016,24 +1035,38 @@ export async function fetchDownstreamDailyUsage(
 
       // 排除额按逐账号数据算。若 log/stat 的全站口径与逐账号总量有偏差，
       // 按比例缩放排除额，避免「排除额 > 全站消费」这种荒唐结果。
+      // 私域额同理缩放，并且封顶在「付费部分」而不是全站 ——
+      // 私域是收入的子集，超过付费额就会把公共池算成负数。
+      const scale =
+        fromUsers && fromUsers.quota > 0 && quota !== fromUsers.quota
+          ? quota / fromUsers.quota
+          : 1;
+
       let excludedQuota = 0;
       if (fromUsers && fromUsers.excluded > 0) {
-        excludedQuota =
-          fromUsers.quota > 0 && quota !== fromUsers.quota
-            ? (fromUsers.excluded / fromUsers.quota) * quota
-            : fromUsers.excluded;
+        excludedQuota = fromUsers.excluded * scale;
         if (excludedQuota > quota) excludedQuota = quota;
+      }
+
+      let privateQuota = 0;
+      if (fromUsers && fromUsers.private > 0) {
+        privateQuota = fromUsers.private * scale;
+        const payable = quota - excludedQuota;
+        if (privateQuota > payable) privateQuota = payable;
       }
 
       totals.push({
         day,
         quota,
         excludedQuota,
+        privateQuota,
         requests: fromUsers?.requests ?? fromData?.requests ?? 0,
         // 逐日口径：这一天真的有逐账号数据才算拆得出来。
         // 整体 resolved 但某天缺账号明细时，那天的排除额其实是 0。
         excludeResolved:
           excludeSet.size === 0 || (excludeResolved && fromUsers != null),
+        privateResolved:
+          privateSet.size === 0 || (excludeResolved && fromUsers != null),
       });
     }
 
@@ -1046,6 +1079,7 @@ export async function fetchDownstreamDailyUsage(
         complete: false,
         failedDays,
         excludeResolved: false,
+        privateResolved: false,
         error: "无法读取消费统计，请检查管理员令牌与 New-API-User",
       };
     }
@@ -1058,6 +1092,7 @@ export async function fetchDownstreamDailyUsage(
       complete: failedDays.length === 0,
       failedDays,
       excludeResolved: excludeResolved || excludeSet.size === 0,
+      privateResolved: excludeResolved || privateSet.size === 0,
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -1069,6 +1104,7 @@ export async function fetchDownstreamDailyUsage(
       complete: false,
       failedDays,
       excludeResolved: false,
+      privateResolved: false,
       error: msg.includes("abort") ? "Request timeout" : msg,
     };
   }

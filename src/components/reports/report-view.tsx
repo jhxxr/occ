@@ -47,6 +47,10 @@ interface ReportPayload {
     privateMarginPct: number | null;
     publicMarginPct: number | null;
     privateShare: number;
+    allocationSource: "model" | "revenue-share";
+    modelAllocatedCostRmb: number;
+    fallbackCostRmb: number;
+    modelCoveragePct: number;
   };
   daily: DailyPoint[];
   bySite: {
@@ -346,7 +350,7 @@ export function ReportView() {
             />
           </div>
 
-          {/* 私域 / 公共拆分：成本按收入占比分摊，是估算口径 */}
+          {/* 私域 / 公共拆分：优先按模型对齐成本，其余退化为收入占比分摊 */}
           <div className="grid gap-4 sm:grid-cols-2">
             <Metric
               label="私域 · 收入 / 毛利"
@@ -355,7 +359,7 @@ export function ReportView() {
                 data.coverage.sitesUnresolvedPrivate > 0
                   ? "有站点拿不到逐账号数据，私域未拆分（全算公共池）"
                   : data.profit.privateMarginPct != null
-                    ? `自己推广 · 毛利率 ${data.profit.privateMarginPct.toFixed(1)}% · 成本按收入占比分摊`
+                    ? `自己推广 · 毛利率 ${data.profit.privateMarginPct.toFixed(1)}% · ${data.profit.allocationSource === "model" ? `成本按模型对齐 ${data.profit.modelCoveragePct.toFixed(1)}%` : "成本按收入占比分摊"}`
                     : "自己推广的用户 · 本期无私域收入"
               }
               tone="cyan"
@@ -365,7 +369,7 @@ export function ReportView() {
               value={`${formatRmb(data.revenue.publicRmb)} / ${formatRmb(data.profit.publicRmb)}`}
               hint={
                 data.profit.publicMarginPct != null
-                  ? `其他渠道 · 毛利率 ${data.profit.publicMarginPct.toFixed(1)}% · 成本按收入占比分摊`
+                  ? `其他渠道 · 毛利率 ${data.profit.publicMarginPct.toFixed(1)}% · ${data.profit.allocationSource === "model" ? `成本按模型对齐 ${data.profit.modelCoveragePct.toFixed(1)}%` : "成本按收入占比分摊"}`
                   : "其他渠道（含朋友推广）· 本期无公共收入"
               }
               tone="violet"

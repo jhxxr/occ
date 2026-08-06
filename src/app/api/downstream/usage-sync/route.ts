@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { syncAllDownstreamUsage, syncDownstreamUsage } from "@/lib/downstream-usage";
+import {
+  syncAllDownstreamModelUsage,
+  syncAllDownstreamUsage,
+  syncDownstreamModelUsage,
+  syncDownstreamUsage,
+} from "@/lib/downstream-usage";
 
 export const dynamic = "force-dynamic";
 
@@ -38,10 +43,16 @@ export async function POST(req: NextRequest) {
     const results = id
       ? [await syncDownstreamUsage(id, range)]
       : await syncAllDownstreamUsage(range);
+    // 同一个区间顺带同步按模型×归属用量，供报表精准拆私域/公共成本。
+    // 这部分失败不影响收入事实入账，错误单独返回给界面。
+    const modelResults = id
+      ? [await syncDownstreamModelUsage(id, range)]
+      : await syncAllDownstreamModelUsage(range);
 
     return NextResponse.json({
       data: {
         results,
+        modelResults,
         summary: {
           ok: results.filter((r) => r.success).length,
           fail: results.filter((r) => !r.success).length,

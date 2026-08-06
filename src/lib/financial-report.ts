@@ -150,16 +150,23 @@ export interface FinancialReport {
     /**
      * 私域 / 公共各自的毛利。
      *
-     * 成本按收入占比分摊 —— 上游成本记在 Key 上，拿不到「这笔消费是谁烧的」，
-     * 只能按比例摊。所以这两个数是**估算口径**，别拿去做精确结算；
-     * 总毛利（measuredRmb）仍是实测事实。
+     * 已有模型级上下游数据时，上游成本按模型精确对齐；没有匹配模型的
+     * 成本以及额外成本，仍按收入占比分摊。总毛利始终是实测事实。
      */
     privateRmb: number;
     publicRmb: number;
     privateMarginPct: number | null;
     publicMarginPct: number | null;
-    /** 分摊依据：私域收入占总收入的比例 */
+    /** 私域收入占总收入比例（仅用于分摊无法模型对齐的成本） */
     privateShare: number;
+    /** model = 按模型对齐；revenue-share = 没有模型数据，退化成收入占比 */
+    allocationSource: "model" | "revenue-share";
+    /** 成功按模型分配的上游成本 */
+    modelAllocatedCostRmb: number;
+    /** 找不到同模型下游用量、只能回退按收入占比的上游成本 */
+    fallbackCostRmb: number;
+    /** 模型对齐覆盖上游成本的百分比 */
+    modelCoveragePct: number;
   };
   daily: DailyPoint[];
   bySite: SiteRow[];
@@ -215,10 +222,12 @@ export async function buildFinancialReport(
     selfHostedProviders,
     sites,
     usageDailies,
+    upstreamUsageLogs,
     snapshots,
     keys,
     costEntries,
     downstreamDaily,
+    downstreamModelDaily,
     selfHostedDaily,
     recharges,
   ] = await Promise.all([
@@ -230,6 +239,19 @@ export async function buildFinancialReport(
       where: { day: { gte: period.startDay, lte: period.endDay } },
       orderBy: { day: "asc" },
     }),
+    prisma.upstreamUsageLog.findMany({
+      where: {
+        day: { gte: period.startDay, lte: period.endDay },
+        model: { not: null },
+      },
+      select: {
+        providerId: true,
+        remoteKeyId: true,
+        model: true,
+        day: true,
+        actualCost: true,
+      },
+    }),
     prisma.snapshotLog.findMany({
       where: { timestamp: { gte: periodStart, lt: periodEnd } },
       orderBy: { timestamp: "asc" },
@@ -237,6 +259,10 @@ export async function buildFinancialReport(
     prisma.upstreamApiKey.findMany({}),
     prisma.operatingCostEntry.findMany({ where: { status: { not: "void" } } }),
     prisma.downstreamUsageDaily.findMany({
+      where: { day: { gte: period.startDay, lte: period.endDay } },
+      orderBy: { day: "asc" },
+    }),
+    prisma.downstreamModelDaily.findMany({
       where: { day: { gte: period.startDay, lte: period.endDay } },
       orderBy: { day: "asc" },
     }),
@@ -562,6 +588,73 @@ export async function buildFinancialReport(
 
   const measuredProfit = round2(measuredRevenueRmb - totalCostRmb);
 
+  // ——— 私域 / 公共成本：按 天×模型 精确对齐 ———
+  // 上游明细给 actualCost（面值），其当天冻结成本率在 UpstreamUsageDaily；
+  // 下游逐条日志给同一天同模型的私域/公共消费占比。
+  // 对不上的模型、快照估算成本和额外成本，仍按收入占比回退分摊。
+  const privateShare =
+    measuredRevenueRmb > 0 ? privateRevenueRmb / measuredRevenueRmb : 0;
+  const billableKeySet = new Set(
+    keys
+      .filter((k) => k.countAsCost)
+      .map((k) => `${k.providerId}|${k.remoteKeyId}`),
+  );
+  const rateByProviderKeyDay = new Map<string, number>();
+  for (const d of usageDailies) {
+    if (!d.countAsCost || !(d.actualCost > 0)) continue;
+    rateByProviderKeyDay.set(
+      `${d.providerId}|${d.remoteKeyId}|${d.day}`,
+      d.costRmb / d.actualCost,
+    );
+  }
+
+  // 下游模型用量：按 天|模型 聚合所有站点，再拿 PRIVATE/TOTAL 比例
+  const modelQuota = new Map<string, { total: number; private: number }>();
+  for (const row of downstreamModelDaily) {
+    const key = `${row.day}|${row.model}`;
+    const cur = modelQuota.get(key) || { total: 0, private: 0 };
+    if (row.scope === "TOTAL") cur.total += row.quota || 0;
+    else if (row.scope === "PRIVATE") cur.private += row.quota || 0;
+    modelQuota.set(key, cur);
+  }
+
+  let privateModelCost = 0;
+  let modelAllocatedCostRmb = 0;
+  for (const log of upstreamUsageLogs) {
+    if (!log.model) continue;
+    if (!billableKeySet.has(`${log.providerId}|${log.remoteKeyId || ""}`)) continue;
+    const rate = rateByProviderKeyDay.get(
+      `${log.providerId}|${log.remoteKeyId || ""}|${log.day}`,
+    );
+    if (rate == null) continue;
+    const down = modelQuota.get(`${log.day}|${log.model}`);
+    if (!down || !(down.total > 0)) continue;
+
+    const costRmb = (log.actualCost || 0) * rate;
+    const modelPrivateShare = Math.min(1, Math.max(0, down.private / down.total));
+    modelAllocatedCostRmb += costRmb;
+    privateModelCost += costRmb * modelPrivateShare;
+  }
+
+  // 还没按模型对齐的上游成本 + 全部额外成本，按收入占比回退分摊
+  const fallbackUpstreamCost = Math.max(0, upstreamCostRmb - modelAllocatedCostRmb);
+  const fallbackCostRmb = round2(fallbackUpstreamCost + operatingRmb + orphan.totalRmb);
+  const privateCostRmb = round2(privateModelCost + fallbackCostRmb * privateShare);
+  const privateProfit = round2(privateRevenueRmb - privateCostRmb);
+  const publicProfit = round2(measuredProfit - privateProfit);
+  const modelCoveragePct =
+    upstreamCostRmb > 0
+      ? Math.min(100, round2((modelAllocatedCostRmb / upstreamCostRmb) * 100))
+      : 0;
+  const allocationSource: FinancialReport["profit"]["allocationSource"] =
+    modelAllocatedCostRmb > 0 ? "model" : "revenue-share";
+
+  if (upstreamCostRmb > 0 && modelCoveragePct < 100) {
+    warnings.push(
+      `私域/公共成本已有 ${modelCoveragePct.toFixed(1)}% 按模型精确对齐，其余成本仍按收入占比分摊`,
+    );
+  }
+
   const byProvider: ProviderRow[] = relayProviders
     .map((p): ProviderRow => {
       const agg = costByProvider.get(p.id);
@@ -607,16 +700,6 @@ export async function buildFinancialReport(
     }, 0),
   );
 
-  // 私域 / 公共各自的毛利：成本按收入占比分摊。
-  // 上游成本记在 Key 上，追不到「这笔消费是谁烧的」，只能按比例摊 ——
-  // 所以这是估算，总毛利仍以 measuredProfit 为准。
-  const privateShare =
-    measuredRevenueRmb > 0 ? privateRevenueRmb / measuredRevenueRmb : 0;
-  const privateProfit = round2(
-    privateRevenueRmb - totalCostRmb * privateShare,
-  );
-  const publicProfit = round2(measuredProfit - privateProfit);
-
   return {
     period,
     generatedAt: new Date().toISOString(),
@@ -646,6 +729,10 @@ export async function buildFinancialReport(
       publicMarginPct:
         publicRevenueRmb > 0 ? pct(publicProfit, publicRevenueRmb) : null,
       privateShare: round2(privateShare * 100) / 100,
+      allocationSource,
+      modelAllocatedCostRmb: round2(modelAllocatedCostRmb),
+      fallbackCostRmb,
+      modelCoveragePct,
     },
     daily,
     bySite,

@@ -8,6 +8,7 @@ import type {
   DownstreamDailyUsageResult,
   DownstreamFetchResult,
   DownstreamGroupDailyRow,
+  DownstreamModelDailyResult,
   DownstreamUserRow,
   UpstreamAdapterInput,
   UpstreamFetchResult,
@@ -1105,6 +1106,166 @@ export async function fetchDownstreamDailyUsage(
       failedDays,
       excludeResolved: false,
       privateResolved: false,
+      error: msg.includes("abort") ? "Request timeout" : msg,
+    };
+  }
+}
+
+/** NewAPI /api/log 服务端封顶 100 条/页，请求更大也不会生效 */
+const MODEL_DAILY_PAGE_SIZE = 100;
+/** 单天翻页上限，防止 total 异常时死循环（100 × 500 = 5 万条/天） */
+const MODEL_DAILY_MAX_PAGES = 500;
+
+/**
+ * 按天扫描 /api/log 逐条日志，按 (天 × 模型 × 归属) 聚合。
+ *
+ * 这是 NewAPI 唯二同时返回 username 和 model_name 的入口 ——
+ * 拿不到逐账号模型消费，上下游成本就只能按收入占比摊。
+ * 拿到之后，报表可以用模型级成本率算私域 / 公共各自的真实成本。
+ *
+ * 返回三组数据，同一 (天, 模型) 下三行同时落库：
+ * - totals  ：全站所有付费用户在该模型上的消费
+ * - private ：私域用户在该模型上的消费
+ * - public  ：公共池用户在该模型上的消费
+ */
+export async function fetchDownstreamModelDaily(
+  input: DownstreamAdapterInput & {
+    startDay: string;
+    endDay: string;
+    excludeUsernames?: string[];
+    privateUsernames?: string[];
+  },
+): Promise<DownstreamModelDailyResult> {
+  const base = normalizeBaseUrl(input.baseUrl);
+  const userId = input.adminUserId && input.adminUserId > 0 ? input.adminUserId : 1;
+  const headers = newApiAdminHeaders(input.adminKey, userId);
+  const days = enumerateDays(input.startDay, input.endDay);
+  const failedDays: string[] = [];
+
+  if (!days.length) {
+    return { success: false, rows: [], scanned: 0, complete: false, resolved: false, failedDays: [], error: "日期区间为空" };
+  }
+
+  const excludeSet = new Set(
+    (input.excludeUsernames || []).map((n) => n.trim()).filter(Boolean),
+  );
+  const privateSet = new Set(
+    (input.privateUsernames || []).map((n) => n.trim()).filter(Boolean),
+  );
+
+  // (天, 模型).TOTAL / PRIVATE / PUBLIC
+  const buckets = new Map<
+    string,
+    { privateQuota: number; publicQuota: number; privateReq: number; publicReq: number }
+  >();
+  let scanned = 0;
+  let resolved = false;
+
+  try {
+    for (const day of days) {
+      const { start, end } = shanghaiDayBounds(day);
+      let page = 1;
+      let dayComplete = false;
+      let dayScanned = 0;
+      let dayTotal: number | null = null;
+      let dayFetched = 0;
+
+      // 这个 NewAPI 把 page_size 硬封在 100，请求 2000 也只回 100 条 ——
+      // 所以翻页必须靠响应里的 total + 实际返回条数推进，不能拿请求的 page_size 判断结束。
+      while (!dayComplete) {
+        if (page > MODEL_DAILY_MAX_PAGES) {
+          failedDays.push(day);
+          break;
+        }
+        const url = `${base}/api/log/?p=${page}&page_size=${MODEL_DAILY_PAGE_SIZE}&start_timestamp=${start}&end_timestamp=${end}`;
+        const res = await fetchJson(url, { method: "GET", headers, timeoutMs: 25_000 });
+        if (!res.ok) {
+          failedDays.push(day);
+          break;
+        }
+        const payload = asRecord(res.data);
+        const data = asRecord(payload?.data);
+        const items: unknown[] = Array.isArray(data?.items)
+          ? (data.items as unknown[])
+          : Array.isArray(payload?.data)
+            ? (payload.data as unknown[])
+            : [];
+        if (dayTotal === null) dayTotal = num(data?.total) ?? null;
+        if (!Array.isArray(items) || items.length === 0) {
+          if (page === 1 && dayFetched === 0) failedDays.push(day);
+          break;
+        }
+        dayFetched += items.length;
+        if (page === 1 && items.length > 0) resolved = true;
+
+        for (const item of items) {
+          const r = asRecord(item);
+          if (!r) continue;
+          const username = typeof r.username === "string" ? r.username : "";
+          // 跳过超管和测试号
+          if (!username || excludeSet.has(username)) continue;
+          const model = typeof r.model_name === "string" ? r.model_name : "";
+          if (!model) continue;
+          const quota = num(r.quota) ?? 0;
+          if (quota <= 0) continue;
+
+          const bk = `${day}|${model}`;
+          const cur = buckets.get(bk) || {
+            privateQuota: 0,
+            publicQuota: 0,
+            privateReq: 0,
+            publicReq: 0,
+          };
+          const isPrivate = privateSet.has(username);
+          if (isPrivate) {
+            cur.privateQuota += quota;
+            cur.privateReq++;
+          } else {
+            cur.publicQuota += quota;
+            cur.publicReq++;
+          }
+          buckets.set(bk, cur);
+          dayScanned++;
+        }
+
+        // total 优先：拉满就停；没有 total 时退化成"返回不足一页即结束"
+        if (dayTotal !== null && dayTotal > 0) {
+          dayComplete = dayFetched >= dayTotal;
+        } else {
+          dayComplete = items.length < MODEL_DAILY_PAGE_SIZE;
+        }
+        if (!dayComplete) page++;
+      }
+      scanned += dayScanned;
+    }
+
+    return {
+      success: true,
+      rows: [...buckets.entries()].map(([key, v]) => {
+        const [day, model] = key.split("|");
+        return {
+          day,
+          model,
+          privateQuota: v.privateQuota,
+          publicQuota: v.publicQuota,
+          privateRequests: v.privateReq,
+          publicRequests: v.publicReq,
+        };
+      }),
+      scanned,
+      complete: failedDays.length === 0,
+      resolved,
+      failedDays,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      success: false,
+      rows: [],
+      scanned,
+      complete: false,
+      resolved,
+      failedDays,
       error: msg.includes("abort") ? "Request timeout" : msg,
     };
   }

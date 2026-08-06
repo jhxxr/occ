@@ -4,7 +4,10 @@ import { fetchDownstreamStats, fetchUpstreamBalance } from "@/lib/adapters";
 import { syncSub2ApiKeys } from "@/lib/sub2/sync-keys";
 import { detectRechargeOnSync } from "@/lib/recharge";
 import { isSelfHosted, relayOnly, selfHostedOnly } from "@/lib/provider-kinds";
-import { syncDownstreamUsage } from "@/lib/downstream-usage";
+import {
+  syncDownstreamModelUsage,
+  syncDownstreamUsage,
+} from "@/lib/downstream-usage";
 import { summarizeCosts } from "@/lib/operating-cost";
 import { monthPeriod, addDays, shanghaiDay, startOfMonthDay } from "@/lib/reporting-period";
 import {
@@ -360,6 +363,11 @@ export async function syncDownstreamSite(id: string): Promise<SyncResultItem> {
     if (usage.success) {
       usageDays = usage.days;
       usageRevenueRmb = usage.revenueRmb;
+      // 收入同步成功后，顺带补同区间的模型×归属用量，供毛利按模型对齐。
+      const modelUsage = await syncDownstreamModelUsage(id, { days: 7 });
+      if (!modelUsage.success) {
+        usageError = `模型用量同步失败：${modelUsage.error || "未知错误"}`;
+      }
     } else {
       usageError = usage.error;
     }

@@ -168,3 +168,22 @@ export interface DownstreamChannelUsageResult {
   error?: string;
 }
 
+export interface ModelDailyRow {
+  day: string;
+  model: string;
+  privateQuota: number;
+  publicQuota: number;
+  privateRequests: number;
+  publicRequests: number;
+}
+
+export interface DownstreamModelDailyResult {
+  success: boolean;
+  rows: ModelDailyRow[];
+  scanned: number;
+  complete: boolean;
+  resolved: boolean;
+  failedDays: string[];
+  error?: string;
+}
+

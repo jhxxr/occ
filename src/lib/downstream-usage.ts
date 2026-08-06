@@ -16,6 +16,7 @@ import { prisma } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
 import {
   fetchDownstreamDailyUsage,
+  fetchDownstreamModelDaily,
   listDownstreamUsers,
 } from "@/lib/adapters";
 import { addDays, assertDay, shanghaiDay } from "@/lib/reporting-period";
@@ -352,8 +353,175 @@ export async function syncAllDownstreamUsage(
 ): Promise<DownstreamUsageSyncResult[]> {
   const sites = await prisma.downstreamSite.findMany({ where: { enabled: true } });
   const out: DownstreamUsageSyncResult[] = [];
-  for (const s of sites) {
-    out.push(await syncDownstreamUsage(s.id, opts));
+  for (const site of sites) {
+    const res = await syncDownstreamUsage(site.id, opts);
+    out.push(res);
+  }
+  return out;
+}
+
+/**
+ * 同步单站点按模型×归属的日用量。
+ *
+ * 写入 DownstreamModelDaily：每天每个模型三行（TOTAL/PRIVATE/PUBLIC）。
+ * 用于报表按模型成本率算私域/公共各自的真实成本，比收入占比摊法精准。
+ */
+export async function syncDownstreamModelUsage(
+  downstreamId: string,
+  opts: { startDay?: string; endDay?: string; days?: number } = {},
+): Promise<{ success: boolean; synced: number; error?: string }> {
+  const site = await prisma.downstreamSite.findUnique({ where: { id: downstreamId } });
+  if (!site) return { success: false, synced: 0, error: "站点不存在" };
+
+  const fallback = recentDayRange(opts.days ?? 7);
+  const startDay = assertDay(opts.startDay || fallback.startDay, "startDay");
+  const endDay = assertDay(opts.endDay || fallback.endDay, "endDay");
+  if (endDay < startDay) {
+    return { success: false, synced: 0, error: "结束日期不能早于开始日期" };
+  }
+
+  let excludeUserIds: number[] = [];
+  let privateUserIds: number[] = [];
+  try {
+    const parsed = JSON.parse(site.excludeUserIds || "[]");
+    if (Array.isArray(parsed)) {
+      excludeUserIds = parsed.map(Number).filter((n) => Number.isFinite(n));
+    }
+  } catch {
+    excludeUserIds = [];
+  }
+  try {
+    const parsed = JSON.parse(site.privateUserIds || "[]");
+    if (Array.isArray(parsed)) {
+      privateUserIds = parsed.map(Number).filter((n) => Number.isFinite(n));
+    }
+  } catch {
+    privateUserIds = [];
+  }
+
+  // id → username：逐条日志按用户名聚合，得先换成名字
+  const usersRes = await listDownstreamUsers({
+    baseUrl: site.baseUrl,
+    adminKey: decryptSecret(site.adminKey),
+    adminUserId: site.adminUserId ?? 1,
+    quotaPerDollar: site.quotaPerDollar ?? 500_000,
+  });
+  if (!usersRes.success) {
+    return { success: false, synced: 0, error: usersRes.error || "拿不到用户列表" };
+  }
+
+  // 超管跟测试号一样不算收入，也就不进模型口径
+  const excludeIdSet = new Set(
+    usersRes.users
+      .filter((u) => excludeUserIds.includes(u.id) || u.role >= 100)
+      .map((u) => u.id),
+  );
+  const excludeUsernames = usersRes.users
+    .filter((u) => excludeIdSet.has(u.id))
+    .map((u) => u.username)
+    .filter(Boolean);
+  // 排除优先：同时在两个名单里的算测试号
+  const privateUsernames = usersRes.users
+    .filter((u) => privateUserIds.includes(u.id) && !excludeIdSet.has(u.id))
+    .map((u) => u.username)
+    .filter(Boolean);
+
+  // 拉模型日用量
+  const result = await fetchDownstreamModelDaily({
+    baseUrl: site.baseUrl,
+    adminKey: decryptSecret(site.adminKey),
+    adminUserId: site.adminUserId ?? 1,
+    startDay,
+    endDay,
+    excludeUsernames,
+    privateUsernames,
+  });
+
+  if (!result.success) {
+    return { success: false, synced: 0, error: result.error };
+  }
+
+  // 写库：每个 (天, 模型) 写三行
+  let synced = 0;
+  for (const row of result.rows) {
+    const total = row.privateQuota + row.publicQuota;
+    const totalReq = row.privateRequests + row.publicRequests;
+
+    await prisma.downstreamModelDaily.upsert({
+      where: {
+        downstreamId_day_model_scope: {
+          downstreamId,
+          day: row.day,
+          model: row.model,
+          scope: "TOTAL",
+        },
+      },
+      create: {
+        downstreamId,
+        day: row.day,
+        model: row.model,
+        scope: "TOTAL",
+        quota: total,
+        requests: totalReq,
+      },
+      update: { quota: total, requests: totalReq, updatedAt: new Date() },
+    });
+
+    await prisma.downstreamModelDaily.upsert({
+      where: {
+        downstreamId_day_model_scope: {
+          downstreamId,
+          day: row.day,
+          model: row.model,
+          scope: "PRIVATE",
+        },
+      },
+      create: {
+        downstreamId,
+        day: row.day,
+        model: row.model,
+        scope: "PRIVATE",
+        quota: row.privateQuota,
+        requests: row.privateRequests,
+      },
+      update: { quota: row.privateQuota, requests: row.privateRequests, updatedAt: new Date() },
+    });
+
+    await prisma.downstreamModelDaily.upsert({
+      where: {
+        downstreamId_day_model_scope: {
+          downstreamId,
+          day: row.day,
+          model: row.model,
+          scope: "PUBLIC",
+        },
+      },
+      create: {
+        downstreamId,
+        day: row.day,
+        model: row.model,
+        scope: "PUBLIC",
+        quota: row.publicQuota,
+        requests: row.publicRequests,
+      },
+      update: { quota: row.publicQuota, requests: row.publicRequests, updatedAt: new Date() },
+    });
+
+    synced += 3;
+  }
+
+  return { success: true, synced };
+}
+
+/** 给所有启用站点补模型级用量 */
+export async function syncAllDownstreamModelUsage(
+  opts: { startDay?: string; endDay?: string; days?: number } = {},
+): Promise<{ success: boolean; synced: number; error?: string }[]> {
+  const sites = await prisma.downstreamSite.findMany({ where: { enabled: true } });
+  const out: { success: boolean; synced: number; error?: string }[] = [];
+  for (const site of sites) {
+    const res = await syncDownstreamModelUsage(site.id, opts);
+    out.push(res);
   }
   return out;
 }

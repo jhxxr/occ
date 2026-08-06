@@ -311,6 +311,7 @@ model DownstreamSite {
 
   orphanChannels DownstreamOrphanChannel[]
   channelDays    DownstreamChannelDay[]
+  modelDaily     DownstreamModelDaily[]
 }
 
 /// 下游按日实际消费
@@ -405,6 +406,41 @@ model DownstreamChannelDay {
   @@unique([downstreamId, day])
   @@index([downstreamId, complete])
   @@index([downstreamId, granularity])
+}
+
+/// 下游按日×模型×归属 用量快照
+///
+/// 来源：逐条扫描 /api/log 端点（NewAPI 唯二同时返回 username 和 model_name 的入口）。
+/// 逐条日志不参与收入计算 —— 那是 TOTAL 行的职责 —— 这张表只服务于一件事：
+/// 按模型摊成本，提高私域 / 公共各自的毛利精度。
+///
+/// scope 三档：
+/// - TOTAL ：该模型全站所有付费用户的消费
+/// - PRIVATE：私域用户（自己推广的）在该模型上的消费
+/// - PUBLIC ：公共池用户在该模型上的消费
+///
+/// 同一 (站点, 天, 模型) 下三条 scope 同时落库，保证私域+公共不会因为
+/// 各自拉取时间差而产生总计不一致。
+model DownstreamModelDaily {
+  id           String   @id @default(cuid())
+  downstreamId String
+  day          String   @db.VarChar(10)
+  /// 原始日志里的 model_name，比如 gpt-5.6-sol、claude-opus-5
+  model        String   @db.VarChar(100)
+  /// TOTAL | PRIVATE | PUBLIC
+  scope        String   @default("TOTAL") @db.VarChar(10)
+  /// 该归属的模型消费面值
+  quota        Float    @default(0)
+  /// 请求数
+  requests     Int      @default(0)
+  syncedAt     DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  downstream DownstreamSite @relation(fields: [downstreamId], references: [id], onDelete: Cascade)
+
+  @@unique([downstreamId, day, model, scope])
+  @@index([downstreamId, day])
+  @@index([day])
 }
 
 /// 旧渠道（已从 NewAPI 删除）的成本补录设置

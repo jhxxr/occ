@@ -9,6 +9,8 @@ import type {
   DownstreamFetchResult,
   DownstreamGroupDailyRow,
   DownstreamModelDailyResult,
+  DownstreamTopupResult,
+  DownstreamTopupRow,
   DownstreamUserRow,
   UpstreamAdapterInput,
   UpstreamFetchResult,
@@ -793,6 +795,134 @@ export async function fetchDownstreamStats(
       revenue: 0,
       revenueCurrency: "USD",
       error: msg.includes("abort") ? "Request timeout" : msg,
+    };
+  }
+}
+
+function unixSecondsToDate(value: unknown): Date | null {
+  const seconds = num(value);
+  if (seconds == null || seconds <= 0) return null;
+  const date = new Date(seconds * 1000);
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+
+/**
+ * 拉取 NewAPI 管理员充值订单。
+ *
+ * `/api/user/topup` 是一基页码且单页最多 100 条。money 是用户真实支付额；
+ * amount 只是到账额度，二者遇到折扣或分组倍率时并不相等。
+ */
+export async function fetchDownstreamTopups(
+  input: DownstreamAdapterInput,
+  opts: { maxPages?: number } = {},
+): Promise<DownstreamTopupResult> {
+  const base = normalizeBaseUrl(input.baseUrl);
+  const userId = input.adminUserId && input.adminUserId > 0 ? input.adminUserId : 1;
+  const headers = newApiAdminHeaders(input.adminKey, userId);
+  const maxPages = Math.max(1, Math.min(opts.maxPages ?? 10_000, 10_000));
+  const rows: DownstreamTopupRow[] = [];
+  let total = 0;
+
+  try {
+    for (let page = 1; page <= maxPages; page++) {
+      const res = await fetchJson(
+        `${base}/api/user/topup?p=${page}&page_size=100`,
+        { method: "GET", headers, timeoutMs: 30_000 },
+      );
+      if (!res.ok) {
+        const root = asRecord(res.data);
+        return {
+          success: false,
+          rows,
+          scanned: rows.length,
+          total,
+          complete: false,
+          error:
+            (typeof root?.message === "string" && root.message) ||
+            `拉取充值订单失败 (HTTP ${res.status})`,
+        };
+      }
+
+      const root = asRecord(res.data);
+      if (root?.success === false) {
+        return {
+          success: false,
+          rows,
+          scanned: rows.length,
+          total,
+          complete: false,
+          error:
+            (typeof root.message === "string" && root.message) ||
+            "NewAPI 返回充值订单失败",
+        };
+      }
+      const payload = asRecord(root?.data) ?? root;
+      const items = payload?.items;
+      const remoteTotal = num(payload?.total);
+      if (remoteTotal != null && remoteTotal >= 0) total = remoteTotal;
+      if (!Array.isArray(items)) {
+        return {
+          success: false,
+          rows,
+          scanned: rows.length,
+          total,
+          complete: false,
+          error: "充值订单格式无法解析",
+        };
+      }
+
+      for (const item of items) {
+        const row = asRecord(item);
+        const remoteId = num(row?.id);
+        const topupUserId = num(row?.user_id);
+        if (remoteId == null || topupUserId == null) continue;
+        rows.push({
+          remoteId,
+          userId: topupUserId,
+          amount: num(row?.amount) ?? 0,
+          moneyRmb: num(row?.money) ?? 0,
+          tradeNo: typeof row?.trade_no === "string" ? row.trade_no : "",
+          paymentMethod:
+            typeof row?.payment_method === "string" ? row.payment_method : "",
+          paymentProvider:
+            typeof row?.payment_provider === "string" ? row.payment_provider : "",
+          status: typeof row?.status === "string" ? row.status : String(row?.status ?? ""),
+          createdAt: unixSecondsToDate(row?.create_time),
+          completedAt: unixSecondsToDate(row?.complete_time),
+        });
+      }
+
+      if (total > 0 && rows.length >= total) {
+        return { success: true, rows, scanned: rows.length, total, complete: true };
+      }
+      if (items.length === 0 || (items.length < 100 && total === 0)) {
+        const inferredTotal = total || rows.length;
+        return {
+          success: true,
+          rows,
+          scanned: rows.length,
+          total: inferredTotal,
+          complete: rows.length >= inferredTotal,
+        };
+      }
+    }
+
+    return {
+      success: true,
+      rows,
+      scanned: rows.length,
+      total,
+      complete: total > 0 && rows.length >= total,
+      error: "充值订单超过同步分页上限",
+    };
+  } catch (e) {
+    return {
+      success: false,
+      rows,
+      scanned: rows.length,
+      total,
+      complete: false,
+      error: e instanceof Error ? e.message : String(e),
     };
   }
 }

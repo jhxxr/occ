@@ -2,8 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
   syncAllDownstreamModelUsage,
+  syncAllDownstreamTopups,
   syncAllDownstreamUsage,
   syncDownstreamModelUsage,
+  syncDownstreamTopups,
   syncDownstreamUsage,
 } from "@/lib/downstream-usage";
 
@@ -48,11 +50,16 @@ export async function POST(req: NextRequest) {
     const modelResults = id
       ? [await syncDownstreamModelUsage(id, range)]
       : await syncAllDownstreamModelUsage(range);
+    // 预收款是独立现金流。失败不影响消费收入和毛利同步。
+    const topupResults = id
+      ? [await syncDownstreamTopups(id)]
+      : await syncAllDownstreamTopups();
 
     return NextResponse.json({
       data: {
         results,
         modelResults,
+        topupResults,
         summary: {
           ok: results.filter((r) => r.success).length,
           fail: results.filter((r) => !r.success).length,

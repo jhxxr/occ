@@ -39,6 +39,8 @@ import {
   DEFAULT_TOKEN_TTL_DAYS,
   MAX_TOKEN_TTL_DAYS,
 } from "../src/lib/extension-token.ts";
+import { allocateOwnershipCosts } from "../src/lib/cost-allocation.ts";
+import { summarizePrepaid } from "../src/lib/prepaid.ts";
 
 let passed = 0;
 function check(name: string, fn: () => void) {
@@ -297,6 +299,185 @@ check("计划里的固定样例：毛利 280、毛利率 28%", () => {
   const profit = revenue - upstreamCost - costs.totalRmb;
   assert.equal(profit, 280);
   assert.equal(Math.round((profit / revenue) * 1000) / 10, 28);
+});
+
+check("私域与公共池成本、毛利严格闭合", () => {
+  const result = allocateOwnershipCosts({
+    totalCostRmb: 56.66,
+    privateRevenueRmb: 60,
+    publicRevenueRmb: 40,
+    privateModelCostRmb: 9.2,
+    fallbackCostRmb: 36.66,
+  });
+
+  assert.equal(result.privateCostRmb + result.publicCostRmb, 56.66);
+  assert.equal(60 - result.privateCostRmb, result.privateProfitRmb);
+  assert.equal(40 - result.publicCostRmb, result.publicProfitRmb);
+  assert.equal(
+    result.privateProfitRmb + result.publicProfitRmb,
+    result.measuredProfitRmb,
+  );
+});
+
+check("没有公共池收入时不把成本错误分给公共池", () => {
+  const result = allocateOwnershipCosts({
+    totalCostRmb: 56.66,
+    privateRevenueRmb: 24.5,
+    publicRevenueRmb: 0,
+    privateModelCostRmb: 1.09,
+    fallbackCostRmb: 55.57,
+  });
+
+  assert.equal(result.privateCostRmb, 56.66);
+  assert.equal(result.publicCostRmb, 0);
+  assert.equal(result.publicProfitRmb, 0);
+});
+
+check("没有任何付费收入时不把全站成本误记为公共池应收", () => {
+  const result = allocateOwnershipCosts({
+    totalCostRmb: 30,
+    privateRevenueRmb: 0,
+    publicRevenueRmb: 0,
+    privateModelCostRmb: 0,
+    fallbackCostRmb: 30,
+  });
+
+  assert.equal(result.privateCostRmb, 30);
+  assert.equal(result.publicCostRmb, 0);
+  assert.equal(result.publicProfitRmb, 0);
+});
+
+check("全部公共池收入时成本就是需要收回的公共池成本", () => {
+  const result = allocateOwnershipCosts({
+    totalCostRmb: 30,
+    privateRevenueRmb: 0,
+    publicRevenueRmb: 50,
+    privateModelCostRmb: 0,
+    fallbackCostRmb: 30,
+  });
+
+  assert.equal(result.privateCostRmb, 0);
+  assert.equal(result.publicCostRmb, 30);
+  assert.equal(result.publicProfitRmb, 20);
+});
+
+console.log("\n预收款（按实际付款与到账时间）");
+
+check("成功订单按私域/公共拆分，排除账号优先", () => {
+  const ownership = new Map([
+    [
+      "site-a",
+      {
+        excludeUserIds: new Set([3, 4]),
+        privateUserIds: new Set([1, 4]),
+      },
+    ],
+  ]);
+  const summary = summarizePrepaid(
+    [
+      {
+        downstreamId: "site-a",
+        userId: 1,
+        moneyRmb: 80,
+        status: "success",
+        completedAt: new Date("2026-08-02T02:00:00Z"),
+      },
+      {
+        downstreamId: "site-a",
+        userId: 2,
+        moneyRmb: 120,
+        status: "success",
+        completedAt: new Date("2026-08-03T02:00:00Z"),
+      },
+      {
+        downstreamId: "site-a",
+        userId: 3,
+        moneyRmb: 999,
+        status: "success",
+        completedAt: new Date("2026-08-04T02:00:00Z"),
+      },
+      {
+        downstreamId: "site-a",
+        userId: 4,
+        moneyRmb: 999,
+        status: "success",
+        completedAt: new Date("2026-08-04T02:00:00Z"),
+      },
+    ],
+    ownership,
+    {
+      period: {
+        start: new Date("2026-08-01T00:00:00+08:00"),
+        end: new Date("2026-09-01T00:00:00+08:00"),
+      },
+      month: {
+        start: new Date("2026-08-01T00:00:00+08:00"),
+        end: new Date("2026-09-01T00:00:00+08:00"),
+      },
+    },
+  );
+
+  assert.deepEqual(summary.month, {
+    privateRmb: 80,
+    publicRmb: 120,
+    totalRmb: 200,
+    orders: 2,
+  });
+  assert.equal(summary.month.privateRmb + summary.month.publicRmb, summary.month.totalRmb);
+});
+
+check("只认成功订单的实际付款 money，并按完成时间入账", () => {
+  const ownership = new Map([
+    ["site-a", { excludeUserIds: new Set<number>(), privateUserIds: new Set([1]) }],
+  ]);
+  const summary = summarizePrepaid(
+    [
+      // 7 月下单、8 月到账，应计入 8 月；money=60 而充值额度可为 100
+      {
+        downstreamId: "site-a",
+        userId: 1,
+        moneyRmb: 60,
+        status: "success",
+        completedAt: new Date("2026-08-01T00:00:00+08:00"),
+      },
+      {
+        downstreamId: "site-a",
+        userId: 2,
+        moneyRmb: 50,
+        status: "pending",
+        completedAt: new Date("2026-08-02T00:00:00+08:00"),
+      },
+      {
+        downstreamId: "site-a",
+        userId: 2,
+        moneyRmb: 50,
+        status: "failed",
+        completedAt: new Date("2026-08-02T00:00:00+08:00"),
+      },
+      {
+        downstreamId: "site-a",
+        userId: 2,
+        moneyRmb: 50,
+        status: "success",
+        completedAt: null,
+      },
+    ],
+    ownership,
+    {
+      period: {
+        start: new Date("2026-08-01T00:00:00+08:00"),
+        end: new Date("2026-09-01T00:00:00+08:00"),
+      },
+      month: {
+        start: new Date("2026-08-01T00:00:00+08:00"),
+        end: new Date("2026-09-01T00:00:00+08:00"),
+      },
+    },
+  );
+
+  assert.equal(summary.month.totalRmb, 60);
+  assert.equal(summary.month.orders, 1);
+  assert.equal(summary.allTime.totalRmb, 60);
 });
 
 console.log("\n图表按日分桶（回归：时区错位会吞掉今天）");

@@ -25,6 +25,7 @@ import {
   addDays,
   elapsedDays,
   enumerateDays,
+  monthPeriod,
   shanghaiDay,
   type ReportingPeriod,
 } from "@/lib/reporting-period";
@@ -34,6 +35,8 @@ import {
   type CostEntryInput,
 } from "@/lib/operating-cost";
 import { orphanCostForPeriod } from "@/lib/orphan-channels";
+import { allocateOwnershipCosts } from "@/lib/cost-allocation";
+import { summarizePrepaid, type PrepaidTotals } from "@/lib/prepaid";
 
 function round2(n: number): number {
   return Math.round((Number.isFinite(n) ? n : 0) * 100) / 100;
@@ -47,6 +50,16 @@ function pct(part: number, whole: number): number | null {
 /** 警告文案里用的人民币格式 */
 function formatCny(n: number): string {
   return `¥${n.toFixed(2)}`;
+}
+
+function parseUserIds(value: string): Set<number> {
+  try {
+    const parsed = JSON.parse(value || "[]");
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.map(Number).filter((n) => Number.isFinite(n)));
+  } catch {
+    return new Set();
+  }
 }
 
 /** 闭区间日期 → 北京时间的真实时间戳区间 [start, end) */
@@ -155,6 +168,10 @@ export interface FinancialReport {
      */
     privateRmb: number;
     publicRmb: number;
+    /** 分摊给私域、由私域收入承担的成本 */
+    privateCostRmb: number;
+    /** 分摊给公共池、运营方需要优先收回的成本 */
+    publicCostRmb: number;
     privateMarginPct: number | null;
     publicMarginPct: number | null;
     /** 私域收入占总收入比例（仅用于分摊无法模型对齐的成本） */
@@ -167,6 +184,16 @@ export interface FinancialReport {
     fallbackCostRmb: number;
     /** 模型对齐覆盖上游成本的百分比 */
     modelCoveragePct: number;
+  };
+  prepaid: {
+    /** 当前报表所选周期内实际到账的预收款 */
+    period: PrepaidTotals;
+    /** 当前自然月实际到账的预收款 */
+    month: PrepaidTotals;
+    /** 已同步到本地的全部历史预收款 */
+    allTime: PrepaidTotals;
+    complete: boolean;
+    incompleteSites: number;
   };
   daily: DailyPoint[];
   bySite: SiteRow[];
@@ -214,6 +241,8 @@ export async function buildFinancialReport(
 ): Promise<FinancialReport> {
   const today = shanghaiDay();
   const { start: periodStart, end: periodEnd } = periodToInstants(period);
+  const currentMonthPeriod = monthPeriod(today);
+  const currentMonth = periodToInstants(currentMonthPeriod);
   const dayList = enumerateDays(period.startDay, period.endDay);
 
   const [
@@ -230,6 +259,7 @@ export async function buildFinancialReport(
     downstreamModelDaily,
     selfHostedDaily,
     recharges,
+    downstreamTopups,
   ] = await Promise.all([
     getUsdCnyRate(),
     prisma.upstreamProvider.findMany({ where: relayOnly, orderBy: { createdAt: "asc" } }),
@@ -271,6 +301,15 @@ export async function buildFinancialReport(
     }),
     prisma.upstreamRechargeLog.findMany({
       where: { status: "confirmed", rechargedAt: { gte: periodStart, lt: periodEnd } },
+    }),
+    prisma.downstreamTopup.findMany({
+      select: {
+        downstreamId: true,
+        userId: true,
+        moneyRmb: true,
+        status: true,
+        completedAt: true,
+      },
     }),
   ]);
 
@@ -639,9 +678,19 @@ export async function buildFinancialReport(
   // 还没按模型对齐的上游成本 + 全部额外成本，按收入占比回退分摊
   const fallbackUpstreamCost = Math.max(0, upstreamCostRmb - modelAllocatedCostRmb);
   const fallbackCostRmb = round2(fallbackUpstreamCost + operatingRmb + orphan.totalRmb);
-  const privateCostRmb = round2(privateModelCost + fallbackCostRmb * privateShare);
-  const privateProfit = round2(privateRevenueRmb - privateCostRmb);
-  const publicProfit = round2(measuredProfit - privateProfit);
+  const allocation = allocateOwnershipCosts({
+    totalCostRmb,
+    privateRevenueRmb,
+    publicRevenueRmb,
+    privateModelCostRmb: privateModelCost,
+    fallbackCostRmb,
+  });
+  const {
+    privateCostRmb,
+    publicCostRmb,
+    privateProfitRmb: privateProfit,
+    publicProfitRmb: publicProfit,
+  } = allocation;
   const modelCoveragePct =
     upstreamCostRmb > 0
       ? Math.min(100, round2((modelAllocatedCostRmb / upstreamCostRmb) * 100))
@@ -699,6 +748,30 @@ export async function buildFinancialReport(
       return sum + (site.revenueCurrency === "USD" ? rev * usdCny : rev);
     }, 0),
   );
+  const prepaid = summarizePrepaid(
+    downstreamTopups,
+    new Map(
+      sites.map((site) => [
+        site.id,
+        {
+          excludeUserIds: parseUserIds(site.excludeUserIds),
+          privateUserIds: parseUserIds(site.privateUserIds),
+        },
+      ]),
+    ),
+    {
+      period: { start: periodStart, end: periodEnd },
+      month: currentMonth,
+    },
+  );
+  const incompletePrepaidSites = sites.filter(
+    (site) => !site.topupBackfillComplete || !!site.topupSyncError,
+  );
+  if (incompletePrepaidSites.length > 0) {
+    warnings.push(
+      `有 ${incompletePrepaidSites.length} 个下游站点的预收款历史回填不完整，累计金额可能偏低`,
+    );
+  }
 
   return {
     period,
@@ -724,6 +797,8 @@ export async function buildFinancialReport(
         measuredRevenueRmb > 0 ? pct(measuredProfit, measuredRevenueRmb) : null,
       privateRmb: privateProfit,
       publicRmb: publicProfit,
+      privateCostRmb,
+      publicCostRmb,
       privateMarginPct:
         privateRevenueRmb > 0 ? pct(privateProfit, privateRevenueRmb) : null,
       publicMarginPct:
@@ -733,6 +808,11 @@ export async function buildFinancialReport(
       modelAllocatedCostRmb: round2(modelAllocatedCostRmb),
       fallbackCostRmb,
       modelCoveragePct,
+    },
+    prepaid: {
+      ...prepaid,
+      complete: incompletePrepaidSites.length === 0,
+      incompleteSites: incompletePrepaidSites.length,
     },
     daily,
     bySite,

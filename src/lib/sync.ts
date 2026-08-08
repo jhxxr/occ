@@ -6,6 +6,7 @@ import { detectRechargeOnSync } from "@/lib/recharge";
 import { isSelfHosted, relayOnly, selfHostedOnly } from "@/lib/provider-kinds";
 import {
   syncDownstreamModelUsage,
+  syncDownstreamTopups,
   syncDownstreamUsage,
 } from "@/lib/downstream-usage";
 import { summarizeCosts } from "@/lib/operating-cost";
@@ -370,6 +371,11 @@ export async function syncDownstreamSite(id: string): Promise<SyncResultItem> {
       }
     } else {
       usageError = usage.error;
+    }
+    const topups = await syncDownstreamTopups(id);
+    if (!topups.success || !topups.complete) {
+      const topupError = `预收款同步失败：${topups.error || "历史回填不完整"}`;
+      usageError = usageError ? `${usageError}；${topupError}` : topupError;
     }
   } catch (e) {
     usageError = e instanceof Error ? e.message : String(e);

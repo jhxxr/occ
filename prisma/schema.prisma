@@ -285,33 +285,66 @@ model UpstreamRechargeLog {
 }
 
 model DownstreamSite {
-  id              String    @id @default(cuid())
-  name            String    @db.VarChar(200)
-  baseUrl         String    @db.VarChar(500)
-  adminKey        String    @db.Text
-  adminUserId     Int       @default(1)
-  quotaPerDollar  Float     @default(500000)
-  revenueCurrency String    @default("CNY") @db.VarChar(10)
-  excludeUserIds  String    @default("[]") @db.VarChar(2000)
+  id                    String    @id @default(cuid())
+  name                  String    @db.VarChar(200)
+  baseUrl               String    @db.VarChar(500)
+  adminKey              String    @db.Text
+  adminUserId           Int       @default(1)
+  quotaPerDollar        Float     @default(500000)
+  revenueCurrency       String    @default("CNY") @db.VarChar(10)
+  excludeUserIds        String    @default("[]") @db.VarChar(2000)
   /// 私域用户 id（自己推广来的）。空数组 = 全站都算公共池。
   /// 与 excludeUserIds 的关系：先剔测试号，剩下的付费账号再分私域 / 公共。
   /// 同时出现在两个名单里时，排除优先 —— 测试号永远不算收入。
-  privateUserIds  String    @default("[]") @db.VarChar(2000)
-  enabled         Boolean   @default(true)
-  notes           String?   @db.Text
-  lastConsumed    Float?
-  lastRevenue     Float?
-  lastSyncAt      DateTime?
-  lastError       String?   @db.Text
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  privateUserIds        String    @default("[]") @db.VarChar(2000)
+  enabled               Boolean   @default(true)
+  notes                 String?   @db.Text
+  lastConsumed          Float?
+  lastRevenue           Float?
+  lastSyncAt            DateTime?
+  lastError             String?   @db.Text
+  /// 充值订单首次历史回填是否完整；只有 true 时累计预收款才可信
+  topupBackfillComplete Boolean   @default(false)
+  topupLastSyncAt       DateTime?
+  topupSyncError        String?   @db.Text
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   snapshots  DownstreamSnapshot[]
   usageDaily DownstreamUsageDaily[]
+  topups     DownstreamTopup[]
 
   orphanChannels DownstreamOrphanChannel[]
   channelDays    DownstreamChannelDay[]
   modelDaily     DownstreamModelDaily[]
+}
+
+model DownstreamTopup {
+  id              String    @id @default(cuid())
+  downstreamId    String
+  /// NewAPI topups.id；只在所属下游站点内唯一
+  remoteId        Int
+  userId          Int
+  tradeNo         String    @default("") @db.VarChar(255)
+  /// 用户购买的额度面值，仅作对账；预收款以 money 为准
+  amount          Float     @default(0)
+  /// 用户实际支付金额（人民币现金流）
+  moneyRmb        Float     @default(0)
+  status          String    @default("") @db.VarChar(30)
+  paymentMethod   String    @default("") @db.VarChar(50)
+  paymentProvider String    @default("") @db.VarChar(50)
+  createdAtRemote DateTime?
+  /// 实际到账时刻；周期归属只认它
+  completedAt     DateTime?
+  syncedAt        DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  downstream DownstreamSite @relation(fields: [downstreamId], references: [id], onDelete: Cascade)
+
+  @@unique([downstreamId, remoteId])
+  @@index([downstreamId, completedAt])
+  @@index([downstreamId, userId])
+  @@index([status, completedAt])
 }
 
 /// 下游按日实际消费
@@ -329,36 +362,36 @@ model DownstreamSite {
 /// scope=TOTAL 是全站权威口径（报表求和只认它）；
 /// scope=GROUP 仅作分组归因与倍率法对账，避免与 TOTAL 重复相加。
 model DownstreamUsageDaily {
-  id              String   @id @default(cuid())
-  downstreamId    String
-  day             String   @db.VarChar(10)
-  scope           String   @default("TOTAL") @db.VarChar(10)
-  groupName       String   @default("") @db.VarChar(200)
+  id                String   @id @default(cuid())
+  downstreamId      String
+  day               String   @db.VarChar(10)
+  scope             String   @default("TOTAL") @db.VarChar(10)
+  groupName         String   @default("") @db.VarChar(200)
   /// 全部账号的原始额度面值（含测试号）
-  quota           Float    @default(0)
+  quota             Float    @default(0)
   /// 被排除账号（测试号）消耗的额度面值
-  excludedQuota   Float    @default(0)
+  excludedQuota     Float    @default(0)
   /// 私域用户（自己推广的）消耗的额度面值
-  privateQuota    Float    @default(0)
+  privateQuota      Float    @default(0)
   /// 付费账号消费折算的人民币 —— 收入口径
-  revenueRmb      Float    @default(0)
+  revenueRmb        Float    @default(0)
   /// 私域用户消费折算的人民币
-  privateRevenueRmb Float  @default(0)
+  privateRevenueRmb Float    @default(0)
   /// 全部账号消费折算的人民币 —— 对账口径，不是收入
-  grossRevenueRmb Float    @default(0)
+  grossRevenueRmb   Float    @default(0)
   /// 折算时采用的额度单位快照
-  quotaPerUnit    Float    @default(500000)
-  requests        Int      @default(0)
+  quotaPerUnit      Float    @default(500000)
+  requests          Int      @default(0)
   /// 排除口径是否可信：拿不到逐账号数据时为 false，此时 revenue 等于 gross
-  excludeResolved Boolean  @default(false)
+  excludeResolved   Boolean  @default(false)
   /// 私域拆分是否可信：拿不到逐账号数据时为 false
-  privateResolved Boolean  @default(false)
+  privateResolved   Boolean  @default(false)
   /// data-export | log-stat
-  source          String   @default("log-stat") @db.VarChar(30)
+  source            String   @default("log-stat") @db.VarChar(30)
   /// 该日数据是否完整（分页/接口截断时为 false）
-  complete        Boolean  @default(true)
-  syncedAt        DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  complete          Boolean  @default(true)
+  syncedAt          DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   downstream DownstreamSite @relation(fields: [downstreamId], references: [id], onDelete: Cascade)
 

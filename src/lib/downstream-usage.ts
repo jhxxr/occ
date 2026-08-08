@@ -17,6 +17,7 @@ import { decryptSecret } from "@/lib/crypto";
 import {
   fetchDownstreamDailyUsage,
   fetchDownstreamModelDaily,
+  fetchDownstreamTopups,
   listDownstreamUsers,
 } from "@/lib/adapters";
 import { addDays, assertDay, shanghaiDay } from "@/lib/reporting-period";
@@ -511,6 +512,111 @@ export async function syncDownstreamModelUsage(
   }
 
   return { success: true, synced };
+}
+
+export interface DownstreamTopupSyncResult {
+  id: string;
+  name: string;
+  success: boolean;
+  synced: number;
+  total: number;
+  complete: boolean;
+  error?: string;
+}
+
+/** 同步单个下游的充值订单；远端唯一键保证重复执行不会重复入账。 */
+export async function syncDownstreamTopups(
+  siteId: string,
+): Promise<DownstreamTopupSyncResult> {
+  const site = await prisma.downstreamSite.findUnique({ where: { id: siteId } });
+  if (!site) {
+    return {
+      id: siteId,
+      name: "?",
+      success: false,
+      synced: 0,
+      total: 0,
+      complete: false,
+      error: "下游站点不存在",
+    };
+  }
+
+  const fetched = await fetchDownstreamTopups({
+    baseUrl: site.baseUrl,
+    adminKey: decryptSecret(site.adminKey),
+    adminUserId: site.adminUserId ?? 1,
+    quotaPerDollar: site.quotaPerDollar || DEFAULT_QUOTA_PER_UNIT,
+  });
+  const now = new Date();
+
+  if (!fetched.success) {
+    await prisma.downstreamSite.update({
+      where: { id: siteId },
+      data: {
+        topupLastSyncAt: now,
+        topupSyncError: fetched.error || "充值订单同步失败",
+      },
+    });
+    return {
+      id: siteId,
+      name: site.name,
+      success: false,
+      synced: 0,
+      total: fetched.total,
+      complete: false,
+      error: fetched.error,
+    };
+  }
+
+  for (const row of fetched.rows) {
+    const data = {
+      userId: row.userId,
+      tradeNo: row.tradeNo,
+      amount: row.amount,
+      moneyRmb: row.moneyRmb,
+      status: row.status,
+      paymentMethod: row.paymentMethod,
+      paymentProvider: row.paymentProvider,
+      createdAtRemote: row.createdAt,
+      completedAt: row.completedAt,
+      syncedAt: now,
+    };
+    await prisma.downstreamTopup.upsert({
+      where: {
+        downstreamId_remoteId: { downstreamId: siteId, remoteId: row.remoteId },
+      },
+      create: { downstreamId: siteId, remoteId: row.remoteId, ...data },
+      update: data,
+    });
+  }
+
+  await prisma.downstreamSite.update({
+    where: { id: siteId },
+    data: {
+      topupBackfillComplete: site.topupBackfillComplete || fetched.complete,
+      topupLastSyncAt: now,
+      topupSyncError: fetched.complete
+        ? null
+        : fetched.error || "充值订单历史回填不完整",
+    },
+  });
+
+  return {
+    id: siteId,
+    name: site.name,
+    success: true,
+    synced: fetched.rows.length,
+    total: fetched.total,
+    complete: fetched.complete,
+    error: fetched.complete ? undefined : fetched.error || "充值订单历史回填不完整",
+  };
+}
+
+export async function syncAllDownstreamTopups(): Promise<DownstreamTopupSyncResult[]> {
+  const sites = await prisma.downstreamSite.findMany({ where: { enabled: true } });
+  const out: DownstreamTopupSyncResult[] = [];
+  for (const site of sites) out.push(await syncDownstreamTopups(site.id));
+  return out;
 }
 
 /** 给所有启用站点补模型级用量 */

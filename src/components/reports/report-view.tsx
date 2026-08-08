@@ -44,6 +44,8 @@ interface ReportPayload {
     measuredMarginPct: number | null;
     privateRmb: number;
     publicRmb: number;
+    privateCostRmb: number;
+    publicCostRmb: number;
     privateMarginPct: number | null;
     publicMarginPct: number | null;
     privateShare: number;
@@ -51,6 +53,13 @@ interface ReportPayload {
     modelAllocatedCostRmb: number;
     fallbackCostRmb: number;
     modelCoveragePct: number;
+  };
+  prepaid: {
+    period: { totalRmb: number; privateRmb: number; publicRmb: number; orders: number };
+    month: { totalRmb: number; privateRmb: number; publicRmb: number; orders: number };
+    allTime: { totalRmb: number; privateRmb: number; publicRmb: number; orders: number };
+    complete: boolean;
+    incompleteSites: number;
   };
   daily: DailyPoint[];
   bySite: {
@@ -353,8 +362,8 @@ export function ReportView() {
           {/* 私域 / 公共拆分：优先按模型对齐成本，其余退化为收入占比分摊 */}
           <div className="grid gap-4 sm:grid-cols-2">
             <Metric
-              label="私域 · 收入 / 毛利"
-              value={`${formatRmb(data.revenue.privateRmb)} / ${formatRmb(data.profit.privateRmb)}`}
+              label="私域 · 收入 / 成本 / 毛利"
+              value={`${formatRmb(data.revenue.privateRmb)} / ${formatRmb(data.profit.privateCostRmb)} / ${formatRmb(data.profit.privateRmb)}`}
               hint={
                 data.coverage.sitesUnresolvedPrivate > 0
                   ? "有站点拿不到逐账号数据，私域未拆分（全算公共池）"
@@ -365,16 +374,96 @@ export function ReportView() {
               tone="cyan"
             />
             <Metric
-              label="公共池 · 收入 / 毛利"
-              value={`${formatRmb(data.revenue.publicRmb)} / ${formatRmb(data.profit.publicRmb)}`}
+              label="公共池 · 收入 / 成本 / 毛利"
+              value={`${formatRmb(data.revenue.publicRmb)} / ${formatRmb(data.profit.publicCostRmb)} / ${formatRmb(data.profit.publicRmb)}`}
               hint={
-                data.profit.publicMarginPct != null
-                  ? `其他渠道 · 毛利率 ${data.profit.publicMarginPct.toFixed(1)}% · ${data.profit.allocationSource === "model" ? `成本按模型对齐 ${data.profit.modelCoveragePct.toFixed(1)}%` : "成本按收入占比分摊"}`
-                  : "其他渠道（含朋友推广）· 本期无公共收入"
+                data.revenue.publicRmb > 0 || data.profit.publicCostRmb > 0
+                  ? `需收回成本 ${formatRmb(data.profit.publicCostRmb)} · ${data.profit.publicMarginPct != null ? `毛利率 ${data.profit.publicMarginPct.toFixed(1)}% · ` : ""}${data.profit.allocationSource === "model" ? `按模型对齐 ${data.profit.modelCoveragePct.toFixed(1)}%` : "按收入占比分摊"}`
+                  : "其他渠道（含朋友推广）· 本期无公共收入和成本"
               }
               tone="violet"
             />
           </div>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-semibold normal-case tracking-normal text-text">
+                用户预收款（不计入毛利）
+              </CardTitle>
+              <p className="text-[11px] text-muted">
+                用户实际支付金额；用户消费后，才按消费额进入上方收益报表
+                {!data.prepaid.complete &&
+                  ` · ${data.prepaid.incompleteSites} 个站点历史回填不完整`}
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-5">
+              <div className="grid gap-4 sm:grid-cols-3">
+                <div>
+                  <div className="text-[11px] uppercase tracking-wider text-muted">
+                    本月合计预收
+                  </div>
+                  <div className="font-data text-xl text-mint">
+                    {formatRmb(data.prepaid.month.totalRmb)}
+                  </div>
+                  <p className="text-[11px] text-muted">
+                    {data.prepaid.month.orders} 笔成功充值
+                  </p>
+                </div>
+                <div>
+                  <div className="text-[11px] uppercase tracking-wider text-muted">
+                    本月私域预收
+                  </div>
+                  <div className="font-data text-xl text-cyan">
+                    {formatRmb(data.prepaid.month.privateRmb)}
+                  </div>
+                  <p className="text-[11px] text-muted">自己推广用户实际付款</p>
+                </div>
+                <div>
+                  <div className="text-[11px] uppercase tracking-wider text-muted">
+                    本月公共池预收
+                  </div>
+                  <div className="font-data text-xl text-violet">
+                    {formatRmb(data.prepaid.month.publicRmb)}
+                  </div>
+                  <p className="text-[11px] text-muted">其他渠道用户实际付款</p>
+                </div>
+              </div>
+
+              <div className="border-t border-border/60 pt-4">
+                <div className="mb-3 text-xs font-semibold text-secondary">
+                  历史累计{!data.prepaid.complete && "（数据不完整）"}
+                </div>
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <div>
+                    <div className="text-[11px] text-muted">累计合计</div>
+                    <div className="font-data text-lg">
+                      {formatRmb(data.prepaid.allTime.totalRmb)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-muted">累计私域</div>
+                    <div className="font-data text-lg text-cyan">
+                      {formatRmb(data.prepaid.allTime.privateRmb)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-muted">累计公共池</div>
+                    <div className="font-data text-lg text-violet">
+                      {formatRmb(data.prepaid.allTime.publicRmb)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {(data.period.kind !== "month" || data.period.startDay !== new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Shanghai" }).slice(0, 7) + "-01") && (
+                <div className="border-t border-border/60 pt-4 text-xs text-muted">
+                  所选周期预收：合计 {formatRmb(data.prepaid.period.totalRmb)} · 私域{" "}
+                  {formatRmb(data.prepaid.period.privateRmb)} · 公共池{" "}
+                  {formatRmb(data.prepaid.period.publicRmb)}（{data.prepaid.period.orders} 笔）
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
           <ReportTrendChart data={data.daily} />
 
@@ -678,12 +767,12 @@ export function ReportView() {
             <CardContent className="grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
               <div>
                 <div className="text-[11px] uppercase tracking-wider text-muted">
-                  当前已发放额度
+                  当前已发放额度参考
                 </div>
                 <div className="font-data text-lg">
                   {formatRmb(data.reference.downstreamIssuedRmb)}
                 </div>
-                <p className="text-[11px] text-muted">存量负债，用户还没消费</p>
+                <p className="text-[11px] text-muted">存量额度参考，不代表历史实际收款</p>
               </div>
               <div>
                 <div className="text-[11px] uppercase tracking-wider text-muted">

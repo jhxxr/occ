@@ -66,6 +66,28 @@ export interface DownstreamAdapterInput {
   revenueCurrency?: "CNY" | "USD";
 }
 
+export interface DownstreamTopupRow {
+  remoteId: number;
+  userId: number;
+  amount: number;
+  moneyRmb: number;
+  tradeNo: string;
+  paymentMethod: string;
+  paymentProvider: string;
+  status: string;
+  createdAt: Date | null;
+  completedAt: Date | null;
+}
+
+export interface DownstreamTopupResult {
+  success: boolean;
+  rows: DownstreamTopupRow[];
+  scanned: number;
+  total: number;
+  complete: boolean;
+  error?: string;
+}
+
 export interface DownstreamUserRow {
   id: number;
   username: string;

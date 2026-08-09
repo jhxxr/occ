@@ -18,7 +18,9 @@ const providerSchema = z
     name: z.string().min(1).max(100),
     baseUrl: z.string().url(),
     apiKey: z.string().optional().default(""),
-    type: z.enum(["NEWAPI", "SUB2API", "ONEAPI", "OTHER"]).default("NEWAPI"),
+    type: z
+      .enum(["NEWAPI", "SUB2API", "MOLIFANG", "ONEAPI", "OTHER"])
+      .default("NEWAPI"),
     accountEmail: z.string().email().optional().nullable(),
     accountPassword: z.string().optional().nullable(),
     discountRate: z.number().positive().default(7.2),
@@ -39,7 +41,7 @@ const providerSchema = z
           path: ["accountEmail"],
         });
       }
-    } else if (!val.apiKey || !val.apiKey.trim()) {
+    } else if (val.type !== "MOLIFANG" && (!val.apiKey || !val.apiKey.trim())) {
       ctx.addIssue({
         code: "custom",
         message: "API Key 必填",
@@ -58,7 +60,7 @@ const providerSchema = z
 const providerPatchSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   baseUrl: z.string().url().optional(),
-  type: z.enum(["NEWAPI", "SUB2API", "ONEAPI", "OTHER"]).optional(),
+  type: z.enum(["NEWAPI", "SUB2API", "MOLIFANG", "ONEAPI", "OTHER"]).optional(),
   accountEmail: z.string().email().nullable().optional(),
   discountRate: z.number().positive().optional(),
   currency: z.string().min(1).max(10).optional(),
@@ -114,9 +116,32 @@ export async function GET() {
   const providers = await prisma.upstreamProvider.findMany({
     where: relayOnly,
     orderBy: { createdAt: "asc" },
+    include: {
+      boundKeys: {
+        where: { removedAt: null },
+        select: { status: true, lastError: true },
+      },
+    },
   });
   return NextResponse.json({
-    data: providers.map(publicProvider),
+    data: providers.map((provider) => {
+      const providerRow = { ...provider };
+      delete (providerRow as Partial<typeof provider>).boundKeys;
+      const publicData = publicProvider(providerRow);
+      const boundKeyCount = provider.boundKeys.length;
+      const activeBoundKeyCount = provider.boundKeys.filter(
+        (key) => key.status === "active",
+      ).length;
+      const failedBoundKeyCount = provider.boundKeys.filter(
+        (key) => key.status === "active" && !!key.lastError,
+      ).length;
+      return {
+        ...publicData,
+        boundKeyCount,
+        activeBoundKeyCount,
+        failedBoundKeyCount,
+      };
+    }),
   });
 }
 
@@ -155,7 +180,7 @@ export async function POST(req: NextRequest) {
       tokenExpiresAt = login.tokens.expiresAt;
     }
 
-    if (!apiKey && data.type !== "SUB2API") {
+    if (!apiKey && data.type !== "SUB2API" && data.type !== "MOLIFANG") {
       return NextResponse.json({ error: "API Key 必填" }, { status: 400 });
     }
 

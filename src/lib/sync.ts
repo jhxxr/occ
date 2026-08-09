@@ -3,6 +3,7 @@ import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { getSub2ProxyUrl } from "@/lib/sub2/settings";
 import { fetchDownstreamStats, fetchUpstreamBalance } from "@/lib/adapters";
 import { syncSub2ApiKeys } from "@/lib/sub2/sync-keys";
+import { syncMolifangProvider } from "@/lib/molifang/sync";
 import { detectRechargeOnSync } from "@/lib/recharge";
 import { isSelfHosted, relayOnly, selfHostedOnly } from "@/lib/provider-kinds";
 import {
@@ -138,6 +139,24 @@ export async function syncUpstreamProvider(id: string): Promise<SyncResultItem> 
   // 自建站是另一个物种：改走管理端同步，别拿中转上游的余额探测去打它
   if (isSelfHosted(provider.type)) {
     return syncSelfHostedProvider(id);
+  }
+
+  if (provider.type === "MOLIFANG") {
+    const result = await syncMolifangProvider(id);
+    return {
+      id,
+      name: provider.name,
+      kind: "upstream",
+      success: result.success,
+      balance: result.balance,
+      consumed: result.consumed,
+      businessCostRmb:
+        result.success && result.businessDelta != null
+          ? result.businessDelta * provider.discountRate
+          : undefined,
+      billableKeys: result.billableKeys,
+      error: result.error,
+    };
   }
 
   const apiKey = provider.apiKey ? decryptSecret(provider.apiKey) : "";

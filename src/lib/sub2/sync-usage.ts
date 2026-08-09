@@ -460,8 +460,14 @@ export async function recomputeCostFlags(providerId: string) {
     where: { id: providerId },
   });
   if (!provider) return;
-  const keys = await prisma.upstreamApiKey.findMany({ where: { providerId } });
-  const map = new Map(keys.map((k) => [k.remoteKeyId, k.countAsCost]));
+  const [keys, boundKeys] = await Promise.all([
+    prisma.upstreamApiKey.findMany({ where: { providerId } }),
+    prisma.upstreamBoundKey.findMany({ where: { providerId, removedAt: null } }),
+  ]);
+  const map = new Map([
+    ...keys.map((k) => [k.remoteKeyId, k.countAsCost] as const),
+    ...boundKeys.map((k) => [k.id, k.countAsCost] as const),
+  ]);
 
   const dailies = await prisma.upstreamUsageDaily.findMany({
     where: { providerId },

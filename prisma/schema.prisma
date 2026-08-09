@@ -10,8 +10,9 @@ datasource db {
 }
 
 /// Upstream API relay provider
-/// type: NEWAPI | SUB2API | SUB2_ADMIN | ONEAPI | OTHER
+/// type: NEWAPI | SUB2API | MOLIFANG | SUB2_ADMIN | ONEAPI | OTHER
 /// SUB2API = 第三方面板（邮箱密码/JWT）
+/// MOLIFANG = 普通调用 Key 逐条查询 /v1/usage
 /// SUB2_ADMIN = 自建 Sub2API（管理员 X-API-Key）
 model UpstreamProvider {
   id                     String    @id @default(cuid())
@@ -51,6 +52,7 @@ model UpstreamProvider {
 
   snapshots     SnapshotLog[]
   apiKeys       UpstreamApiKey[]
+  boundKeys     UpstreamBoundKey[]
   recharges     UpstreamRechargeLog[]
   usageLogs     UpstreamUsageLog[]
   usageDailies  UpstreamUsageDaily[]
@@ -59,6 +61,34 @@ model UpstreamProvider {
   adminAccounts SelfHostedAccount[]
 
   @@index([retiredAt])
+}
+
+model UpstreamBoundKey {
+  id                  String    @id @default(cuid())
+  providerId          String
+  name                String    @default("") @db.VarChar(200)
+  /// AES-256-GCM encrypted ordinary API key; wiped after removal
+  secret              String    @db.Text
+  secretFingerprint   String    @db.VarChar(64)
+  keyPreview          String    @default("") @db.VarChar(100)
+  status              String    @default("active") @db.VarChar(20)
+  countAsCost         Boolean   @default(true)
+  lastBalance         Float?
+  lastTotalActualCost Float?
+  lastTodayActualCost Float?
+  lastModelStats      String?   @db.LongText
+  lastSyncAt          DateTime?
+  lastSuccessAt       DateTime?
+  lastError           String?   @db.Text
+  removedAt           DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  provider UpstreamProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, secretFingerprint])
+  @@index([providerId, status])
+  @@index([providerId, countAsCost, status])
 }
 
 /// 第三方 Sub2API 用户侧 API Key（邮箱密码登录那套）

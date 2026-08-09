@@ -203,13 +203,13 @@ export function ProviderGrid({
                     <ExternalLink className="h-3.5 w-3.5" />
                     打开
                   </a>
-                  {p.type === "SUB2API" && (
+                  {(p.type === "SUB2API" || p.type === "MOLIFANG") && (
                     <Link
                       href={`/providers/${p.id}`}
                       className={buttonVariants({ variant: "outline", size: "sm" })}
                     >
                       <SlidersHorizontal className="h-3.5 w-3.5" />
-                      密钥/分组
+                      {p.type === "MOLIFANG" ? "绑定密钥" : "密钥/分组"}
                     </Link>
                   )}
                   <Button

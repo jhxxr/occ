@@ -3,7 +3,7 @@
  *
  * UpstreamProvider 表同时装着两类东西，它们的账完全不同：
  *
- * - 中转上游（NEWAPI / SUB2API / ONEAPI / OTHER）
+ * - 中转上游（NEWAPI / SUB2API / MOLIFANG / ONEAPI / OTHER）
  *   别人的站，我们是买方。余额模型：充钱 → 余额 → 消耗。
  *   成本 = 消耗面值 × discountRate（每面值单位实付人民币）。
  *
@@ -18,7 +18,13 @@
 export const SELF_HOSTED_TYPE = "SUB2_ADMIN";
 
 /** 可以配到「上游站点」页面的第三方类型 */
-export const RELAY_TYPES = ["NEWAPI", "SUB2API", "ONEAPI", "OTHER"] as const;
+export const RELAY_TYPES = [
+  "NEWAPI",
+  "SUB2API",
+  "MOLIFANG",
+  "ONEAPI",
+  "OTHER",
+] as const;
 
 export type RelayType = (typeof RELAY_TYPES)[number];
 

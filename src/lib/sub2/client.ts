@@ -7,6 +7,8 @@ import { prisma } from "@/lib/db";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { normalizeBaseUrl } from "@/lib/utils";
 import { fetchUpstreamBalance, sub2Login, sub2Refresh } from "@/lib/adapters";
+import { getSub2ProxyUrl } from "@/lib/sub2/settings";
+import { fetchSub2 } from "@/lib/sub2/proxy";
 
 export class Sub2Error extends Error {
   status: number;
@@ -78,6 +80,7 @@ export async function ensureSub2AccessToken(provider: ProviderRow): Promise<{
   }
 
   const baseUrl = normalizeBaseUrl(provider.baseUrl);
+  const proxyUrl = await getSub2ProxyUrl();
   let access = provider.apiKey ? decryptSecret(provider.apiKey) : "";
   let refresh = provider.refreshToken
     ? decryptSecret(provider.refreshToken)
@@ -95,7 +98,7 @@ export async function ensureSub2AccessToken(provider: ProviderRow): Promise<{
 
   if (needAuth) {
     if (refresh) {
-      const r = await sub2Refresh(baseUrl, refresh);
+      const r = await sub2Refresh(baseUrl, refresh, proxyUrl);
       if (r.ok) {
         access = r.tokens.accessToken;
         refresh = r.tokens.refreshToken;
@@ -108,7 +111,7 @@ export async function ensureSub2AccessToken(provider: ProviderRow): Promise<{
       }
     }
     if (email && password) {
-      const login = await sub2Login(baseUrl, email, password);
+      const login = await sub2Login(baseUrl, email, password, proxyUrl);
       if (!login.ok) {
         throw new Sub2Error(`自动登录失败：${login.error}`, 401, login.raw);
       }
@@ -156,7 +159,7 @@ export async function sub2Request<T = unknown>(
     if (init.body && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
     }
-    const res = await fetch(url, { ...init, headers });
+    const res = await fetchSub2(url, { ...init, headers }, await getSub2ProxyUrl());
     const text = await res.text();
     let data: unknown = null;
     try {
@@ -226,6 +229,7 @@ export async function touchBalance(providerId: string) {
     accountPassword,
     refreshToken,
     tokenExpiresAt: p.tokenExpiresAt,
+    proxyUrl: await getSub2ProxyUrl(),
   });
 }
 

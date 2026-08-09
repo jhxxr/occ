@@ -4,6 +4,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { encryptSecret, maskSecret, decryptSecret } from "@/lib/crypto";
 import { sub2Login } from "@/lib/adapters";
+import { getSub2ProxyUrl } from "@/lib/sub2/settings";
 import { isSelfHosted, relayOnly } from "@/lib/provider-kinds";
 import { resolveUsageArchivePath } from "@/lib/usage-retention";
 
@@ -141,6 +142,7 @@ export async function POST(req: NextRequest) {
         data.baseUrl,
         data.accountEmail,
         data.accountPassword,
+        await getSub2ProxyUrl(),
       );
       if (!login.ok) {
         return NextResponse.json(
@@ -262,7 +264,12 @@ export async function PUT(req: NextRequest) {
       nextPasswordPlain &&
       (passwordJustSet || emailJustSet || body.relogin === true)
     ) {
-      const login = await sub2Login(nextBase, nextEmail, nextPasswordPlain);
+      const login = await sub2Login(
+        nextBase,
+        nextEmail,
+        nextPasswordPlain,
+        await getSub2ProxyUrl(),
+      );
       if (!login.ok) {
         return NextResponse.json(
           { error: `Sub2API 登录失败：${login.error}` },

@@ -47,6 +47,8 @@ export interface UpstreamAdapterInput {
   refreshToken?: string | null;
   /** Known access token expiry */
   tokenExpiresAt?: Date | string | null;
+  /** Optional HTTP/HTTPS/SOCKS5 proxy used only for Sub2API traffic */
+  proxyUrl?: string | null;
 }
 
 export interface DownstreamAdapterInput {

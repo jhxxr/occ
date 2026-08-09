@@ -1,4 +1,5 @@
 import { normalizeBaseUrl } from "@/lib/utils";
+import { fetchSub2 } from "@/lib/sub2/proxy";
 import { addDays, enumerateDays, shanghaiDay } from "@/lib/reporting-period";
 import type {
   DownstreamAdapterInput,
@@ -51,6 +52,7 @@ const MAX_RETRIES = 3;
 async function fetchJson(
   url: string,
   init: RequestInit & { timeoutMs?: number; retries?: number } = {},
+  proxyUrl?: string | null,
 ): Promise<{ ok: boolean; status: number; data: unknown; text: string }> {
   const { timeoutMs = DEFAULT_TIMEOUT_MS, retries = MAX_RETRIES, ...rest } = init;
   const host = hostOf(url);
@@ -69,7 +71,7 @@ async function fetchJson(
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       let res: Response;
       try {
-        res = await fetch(url, { ...rest, signal: controller.signal });
+        res = await fetchSub2(url, { ...rest, signal: controller.signal }, proxyUrl);
       } finally {
         clearTimeout(timer);
       }
@@ -307,6 +309,7 @@ export async function sub2Login(
   baseUrl: string,
   email: string,
   password: string,
+  proxyUrl?: string | null,
 ): Promise<{ ok: true; tokens: Sub2TokenPair } | { ok: false; error: string; raw?: unknown }> {
   const base = normalizeBaseUrl(baseUrl);
   try {
@@ -314,7 +317,7 @@ export async function sub2Login(
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify({ email, password }),
-    });
+    }, proxyUrl);
     if (!isSub2Success(data, ok)) {
       const root = asRecord(data);
       const msg =
@@ -337,6 +340,7 @@ export async function sub2Login(
 export async function sub2Refresh(
   baseUrl: string,
   refreshToken: string,
+  proxyUrl?: string | null,
 ): Promise<{ ok: true; tokens: Sub2TokenPair } | { ok: false; error: string; raw?: unknown }> {
   const base = normalizeBaseUrl(baseUrl);
   try {
@@ -344,7 +348,7 @@ export async function sub2Refresh(
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify({ refresh_token: refreshToken }),
-    });
+    }, proxyUrl);
     if (!isSub2Success(data, ok)) {
       const root = asRecord(data);
       const msg =
@@ -375,6 +379,7 @@ function tokenLooksExpired(expiresAt?: Date | string | null): boolean {
 async function fetchSub2ProfileAndStats(
   base: string,
   accessToken: string,
+  proxyUrl?: string | null,
 ): Promise<UpstreamFetchResult & { unauthorized?: boolean }> {
   const headers = sub2BearerHeaders(accessToken);
   const profilePaths = ["/api/v1/user/profile", "/api/v1/auth/me"];
@@ -389,7 +394,7 @@ async function fetchSub2ProfileAndStats(
       const { ok, status, data } = await fetchJson(`${base}${path}`, {
         method: "GET",
         headers,
-      });
+      }, proxyUrl);
       profileRaw = data;
 
       if (!ok) {
@@ -436,7 +441,7 @@ async function fetchSub2ProfileAndStats(
     const { ok, data } = await fetchJson(`${base}/api/v1/usage/dashboard/stats`, {
       method: "GET",
       headers,
-    });
+    }, proxyUrl);
     if (ok) {
       const stats = unwrapSub2(data);
       const spent = num(
@@ -482,7 +487,7 @@ async function fetchSub2Api(input: UpstreamAdapterInput): Promise<UpstreamFetchR
 
     // 1) refresh
     if (refreshToken) {
-      const refreshed = await sub2Refresh(base, refreshToken);
+      const refreshed = await sub2Refresh(base, refreshToken, input.proxyUrl);
       if (refreshed.ok) {
         accessToken = refreshed.tokens.accessToken;
         refreshToken = refreshed.tokens.refreshToken;
@@ -497,7 +502,7 @@ async function fetchSub2Api(input: UpstreamAdapterInput): Promise<UpstreamFetchR
 
     // 2) password login
     if (email && password) {
-      const logged = await sub2Login(base, email, password);
+      const logged = await sub2Login(base, email, password, input.proxyUrl);
       if (logged.ok) {
         accessToken = logged.tokens.accessToken;
         refreshToken = logged.tokens.refreshToken;
@@ -536,13 +541,13 @@ async function fetchSub2Api(input: UpstreamAdapterInput): Promise<UpstreamFetchR
     }
   }
 
-  let result = await fetchSub2ProfileAndStats(base, accessToken);
+  let result = await fetchSub2ProfileAndStats(base, accessToken, input.proxyUrl);
 
   // On unauthorized, force re-auth once
   if (!result.success && result.unauthorized) {
     const t = await ensureTokens(true);
     if (t) {
-      result = await fetchSub2ProfileAndStats(base, t);
+      result = await fetchSub2ProfileAndStats(base, t, input.proxyUrl);
     } else if (email && password) {
       result = {
         success: false,

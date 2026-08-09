@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
+import { getSub2ProxyUrl } from "@/lib/sub2/settings";
 import { fetchDownstreamStats, fetchUpstreamBalance } from "@/lib/adapters";
 import { syncSub2ApiKeys } from "@/lib/sub2/sync-keys";
 import { detectRechargeOnSync } from "@/lib/recharge";
@@ -156,6 +157,7 @@ export async function syncUpstreamProvider(id: string): Promise<SyncResultItem> 
     accountPassword,
     refreshToken,
     tokenExpiresAt: provider.tokenExpiresAt,
+    proxyUrl: provider.type === "SUB2API" ? await getSub2ProxyUrl() : null,
   });
 
   const tokenPatch: Record<string, unknown> = {};

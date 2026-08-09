@@ -42,6 +42,8 @@ interface TokenRow {
 
 export default function SettingsPage() {
   const [usdCny, setUsdCny] = useState("7.2");
+  const [sub2ProxyUrl, setSub2ProxyUrl] = useState("");
+  const [sub2ProxyConfigured, setSub2ProxyConfigured] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -59,6 +61,8 @@ export default function SettingsPage() {
       .then((r) => r.json())
       .then((j) => {
         if (j.data?.usdCny != null) setUsdCny(String(j.data.usdCny));
+        if (j.data?.sub2ProxyUrl) setSub2ProxyUrl(String(j.data.sub2ProxyUrl));
+        setSub2ProxyConfigured(!!j.data?.sub2ProxyConfigured);
       })
       .catch(() => {});
   }, []);
@@ -86,10 +90,14 @@ export default function SettingsPage() {
       const res = await fetch("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ usdCny: Number(usdCny) }),
+        body: JSON.stringify({
+          usdCny: Number(usdCny),
+          sub2ProxyUrl,
+        }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "保存失败");
+      setSub2ProxyConfigured(!!sub2ProxyUrl.trim());
       setMsg("设置已保存");
     } catch (err) {
       setMsg(err instanceof Error ? err.message : "保存失败");
@@ -180,6 +188,24 @@ export default function SettingsPage() {
                 <p className="text-xs text-muted leading-relaxed">
                   界面统一显示人民币。上游优先用各站「购入成本」；仅当下游选择「面值×汇率」时使用此备用折算率。你的自营站 1:1
                   充值不走这里。
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="sub2ProxyUrl">Sub2API 登录代理（可选）</Label>
+                <Input
+                  id="sub2ProxyUrl"
+                  type="text"
+                  autoComplete="off"
+                  value={sub2ProxyUrl}
+                  onChange={(e) => setSub2ProxyUrl(e.target.value)}
+                  placeholder="socks5://user:password@127.0.0.1:1080"
+                />
+                <p className="text-xs text-muted leading-relaxed">
+                  仅用于第三方 Sub2API 的登录、刷新 JWT 与同步请求，可填
+                  <code className="font-data text-cyan">http://</code>、
+                  <code className="font-data text-cyan">https://</code> 或
+                  <code className="font-data text-cyan">socks5://</code> 地址。
+                  {sub2ProxyConfigured && " 已保存的账号密码会脱敏显示；清空后保存即可停用代理。"}
                 </p>
               </div>
               {msg && <p className="text-xs text-secondary">{msg}</p>}

@@ -2,7 +2,12 @@
  * Unified adapter types for upstream / downstream data fetchers.
  */
 
-export type ProviderType = "NEWAPI" | "SUB2API" | "ONEAPI" | "OTHER";
+export type ProviderType =
+  | "NEWAPI"
+  | "SUB2API"
+  | "MOLIFANG"
+  | "ONEAPI"
+  | "OTHER";
 
 export interface UpstreamFetchResult {
   success: boolean;

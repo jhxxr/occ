@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { loadSub2Provider, Sub2Error } from "@/lib/sub2/client";
+import { Sub2Error } from "@/lib/sub2/client";
 import {
   syncUsageLogs,
   queryUsageLogs,
@@ -39,7 +39,11 @@ function defaultRange() {
 export async function GET(req: NextRequest, ctx: Ctx) {
   try {
     const { id } = await ctx.params;
-    await loadSub2Provider(id);
+    const provider = await prisma.upstreamProvider.findUnique({ where: { id } });
+    if (!provider) throw new Error("上游不存在");
+    if (provider.type !== "SUB2API" && provider.type !== "MOLIFANG") {
+      throw new Error("该上游不支持 Key 用量统计");
+    }
     const sp = req.nextUrl.searchParams;
     const view = sp.get("view") || "logs";
     const startDate = sp.get("startDate") || undefined;
@@ -56,10 +60,19 @@ export async function GET(req: NextRequest, ctx: Ctx) {
         endDate,
         onlyBillable,
       });
-      const keys = await prisma.upstreamApiKey.findMany({
-        where: { providerId: id },
-        orderBy: { name: "asc" },
-      });
+      const keys = provider.type === "MOLIFANG"
+        ? (await prisma.upstreamBoundKey.findMany({
+            where: { providerId: id, removedAt: null },
+            orderBy: { name: "asc" },
+          })).map((key) => ({
+            remoteKeyId: key.id,
+            name: key.name,
+            countAsCost: key.countAsCost,
+          }))
+        : await prisma.upstreamApiKey.findMany({
+            where: { providerId: id },
+            orderBy: { name: "asc" },
+          });
       return NextResponse.json({ data: { ...stats, keys } });
     }
 
@@ -85,7 +98,11 @@ export async function GET(req: NextRequest, ctx: Ctx) {
 export async function POST(req: NextRequest, ctx: Ctx) {
   try {
     const { id } = await ctx.params;
-    await loadSub2Provider(id);
+    const provider = await prisma.upstreamProvider.findUnique({ where: { id } });
+    if (!provider) throw new Error("上游不存在");
+    if (provider.type !== "SUB2API" && provider.type !== "MOLIFANG") {
+      throw new Error("该上游不支持 Key 用量统计");
+    }
     const body = await req.json().catch(() => ({}));
     const range = defaultRange();
     const startDate = (body.startDate as string) || range.startDate;
@@ -94,6 +111,28 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       body.apiKeyId != null && body.apiKeyId !== ""
         ? Number(body.apiKeyId)
         : undefined;
+
+    if (provider.type === "MOLIFANG") {
+      const { syncMolifangProvider } = await import("@/lib/molifang/sync");
+      const result = await syncMolifangProvider(id);
+      if (!result.success) throw new Error(result.error || "同步失败");
+      const stats = await queryUsageStats(id, {
+        startDate,
+        endDate,
+        onlyBillable: true,
+      });
+      return NextResponse.json({
+        data: {
+          sync: {
+            fetched: result.succeeded,
+            inserted: 0,
+            updated: result.succeeded,
+            daysRebuilt: 0,
+          },
+          billableStats: stats.summary,
+        },
+      });
+    }
 
     // 先同步 key 列表，保证名称/勾选状态齐全
     await syncSub2ApiKeys(id).catch(() => null);

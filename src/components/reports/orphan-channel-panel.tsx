@@ -238,6 +238,7 @@ export function OrphanChannelPanel({
   const anchoredDays = coverage.reduce((s, c) => s + c.anchored, 0);
   const compactedDays = coverage.reduce((s, c) => s + c.compacted, 0);
   const allAnchored = totalDays > 0 && missingDays === 0;
+  const hasActionableEntries = entries.some((entry) => !entry.resolved && !entry.ignored);
   const cacheHint =
     totalDays === 0
       ? null
@@ -245,6 +246,8 @@ export function OrphanChannelPanel({
           ? `本周期 ${totalDays} 天已全部缓存，无需重扫`
           : `已缓存 ${anchoredDays}/${totalDays} 天 · 还需扫描 ${missingDays} 天`) +
         (compactedDays > 0 ? ` · 其中 ${compactedDays} 天已压缩为月汇总` : "");
+
+  if (!hasActionableEntries && !error) return null;
 
   return (
     <Card>

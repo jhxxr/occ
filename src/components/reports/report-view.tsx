@@ -9,7 +9,13 @@ import { Callout } from "@/components/ui/callout";
 import { Segmented } from "@/components/ui/segmented";
 import { Table, THead, TBody, HeadRow, TH, TR, TD } from "@/components/ui/table";
 import { formatRmb, cn } from "@/lib/utils";
-import { ChevronLeft, ChevronRight, AlertTriangle, Download } from "lucide-react";
+import {
+  AlertTriangle,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Download,
+} from "lucide-react";
 import { ReportTrendChart } from "@/components/reports/report-charts";
 import { OrphanChannelPanel } from "@/components/reports/orphan-channel-panel";
 
@@ -85,17 +91,7 @@ interface ReportPayload {
     requests: number;
     source: string;
   }[];
-  byKey: {
-    providerId: string;
-    providerName: string;
-    remoteKeyId: string;
-    keyName: string;
-    upstreamRate: number | null;
-    officialBase: number;
-    actualCost: number;
-    costRmb: number;
-    requests: number;
-  }[];
+  byKey: unknown[];
   operatingCosts: {
     id: string;
     name: string;
@@ -148,7 +144,7 @@ function Metric({
   tone?: "mint" | "amber" | "coral" | "violet" | "cyan" | "default";
 }) {
   return (
-    <Card className="transition-shadow duration-200 hover:shadow-lg">
+    <Card>
       <CardContent className="p-5">
         <div className="text-xs font-semibold text-secondary">{label}</div>
         <div
@@ -169,6 +165,35 @@ function Metric({
   );
 }
 
+function BreakdownRow({
+  label,
+  description,
+  revenue,
+  cost,
+  profit,
+  margin,
+}: {
+  label: string;
+  description: string;
+  revenue: number;
+  cost: number;
+  profit: number;
+  margin: number | null;
+}) {
+  return (
+    <div className="grid gap-3 border-b border-border-subtle py-4 last:border-0 sm:grid-cols-[minmax(150px,1.4fr)_repeat(4,minmax(90px,1fr))] sm:items-center">
+      <div>
+        <div className="font-medium text-text">{label}</div>
+        <p className="text-xs text-muted">{description}</p>
+      </div>
+      <div><p className="text-[11px] text-muted sm:hidden">收入</p><p className="font-data text-secondary">{formatRmb(revenue)}</p></div>
+      <div><p className="text-[11px] text-muted sm:hidden">分摊成本</p><p className="font-data text-cost">{formatRmb(cost)}</p></div>
+      <div><p className="text-[11px] text-muted sm:hidden">毛利</p><p className={cn("font-data", profit >= 0 ? "text-mint" : "text-coral")}>{formatRmb(profit)}</p></div>
+      <div><p className="text-[11px] text-muted sm:hidden">毛利率</p><p className="font-data text-secondary">{margin == null ? "—" : `${margin.toFixed(1)}%`}</p></div>
+    </div>
+  );
+}
+
 export function ReportView() {
   const [kind, setKind] = useState<"week" | "month">("month");
   const [offset, setOffset] = useState(0);
@@ -177,15 +202,18 @@ export function ReportView() {
   const [error, setError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  const [detailView, setDetailView] = useState<"income" | "cost">("income");
+  const [showWarnings, setShowWarnings] = useState(false);
+  const [showPrepaid, setShowPrepaid] = useState(false);
+  const [showReconciliation, setShowReconciliation] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(
-        `/api/financial-report?period=${kind}&offset=${offset}`,
-        { cache: "no-store" },
-      );
+      const res = await fetch(`/api/financial-report?period=${kind}&offset=${offset}`, {
+        cache: "no-store",
+      });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "加载失败");
       setData(json.data);
@@ -208,17 +236,12 @@ export function ReportView() {
       const res = await fetch("/api/downstream/usage-sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          startDay: data.period.startDay,
-          endDay: data.period.endDay,
-        }),
+        body: JSON.stringify({ startDay: data.period.startDay, endDay: data.period.endDay }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "同步失败");
-      const ok = (json.data?.results || []).filter(
-        (r: { success: boolean }) => r.success,
-      ).length;
-      setSyncMsg(`已同步 ${ok} 个站点的本周期消费`);
+      const ok = (json.data?.results || []).filter((row: { success: boolean }) => row.success).length;
+      setSyncMsg(`已同步 ${ok} 个站点`);
       await load();
     } catch (e) {
       setSyncMsg(e instanceof Error ? e.message : "同步失败");
@@ -228,12 +251,15 @@ export function ReportView() {
   }
 
   const periodLabel = data?.period.label ?? "";
+  const dataComplete = data?.coverage.measuredComplete && data.coverage.costComplete;
+  const providerRows = data?.byProvider.filter((provider) => provider.costRmb > 0) ?? [];
+  const operatingRows = data?.operatingCosts.filter((cost) => cost.allocatedRmb !== 0) ?? [];
 
   return (
     <div className="space-y-6">
       <TopBar
         title="收益报表"
-        subtitle="消费收入 − 上游使用成本 − 额外成本 = 服务毛利（充值不计入收入）"
+        subtitle="先看收入、成本和毛利；对账与维护信息按需展开"
         showSync={false}
       />
 
@@ -241,558 +267,203 @@ export function ReportView() {
         <Segmented
           ariaLabel="统计周期"
           value={kind}
-          onChange={(next) => {
-            setKind(next);
-            setOffset(0);
-          }}
-          options={[
-            { value: "week", label: "自然周" },
-            { value: "month", label: "自然月" },
-          ]}
+          onChange={(next) => { setKind(next); setOffset(0); }}
+          options={[{ value: "week", label: "自然周" }, { value: "month", label: "自然月" }]}
         />
         <div className="flex items-center gap-1">
-          <Button
-            size="icon"
-            variant="outline"
-            onClick={() => setOffset((o) => o - 1)}
-            aria-label="上一周期"
-          >
+          <Button size="icon" variant="outline" onClick={() => setOffset((value) => value - 1)} aria-label="上一周期">
             <ChevronLeft className="h-3.5 w-3.5" />
           </Button>
-          <span className="min-w-[190px] px-2 text-center text-xs font-data text-secondary">
-            {periodLabel || "…"}
-          </span>
-          <Button
-            size="icon"
-            variant="outline"
-            onClick={() => setOffset((o) => Math.min(0, o + 1))}
-            disabled={offset >= 0}
-            aria-label="下一周期"
-          >
+          <span className="min-w-[190px] px-2 text-center text-xs font-data text-secondary">{periodLabel || "…"}</span>
+          <Button size="icon" variant="outline" onClick={() => setOffset((value) => Math.min(0, value + 1))} disabled={offset >= 0} aria-label="下一周期">
             <ChevronRight className="h-3.5 w-3.5" />
           </Button>
         </div>
-        {offset !== 0 && (
-          <Button size="sm" variant="ghost" onClick={() => setOffset(0)}>
-            回到当前
-          </Button>
-        )}
+        {offset !== 0 && <Button size="sm" variant="ghost" onClick={() => setOffset(0)}>回到当前</Button>}
         <Button size="sm" variant="secondary" disabled={syncing} onClick={syncPeriod}>
           <Download className={cn("h-3.5 w-3.5", syncing && "animate-pulse")} />
           {syncing ? "同步中…" : "同步本周期消费"}
         </Button>
-        {syncMsg && <span className="text-xs text-secondary font-data">{syncMsg}</span>}
+        {syncMsg && <span className="text-xs font-data text-secondary">{syncMsg}</span>}
       </div>
 
       {loading && (
         <div className="space-y-4" role="status" aria-live="polite">
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            {Array.from({ length: 4 }).map((_, index) => (
-              <div
-                key={index}
-                className="h-32 animate-pulse rounded-[var(--r-lg)] border border-border-subtle bg-surface-2"
-              />
-            ))}
+            {Array.from({ length: 4 }).map((_, index) => <div key={index} className="h-32 animate-pulse rounded-[var(--r-lg)] border border-border-subtle bg-surface-2" />)}
           </div>
           <div className="h-80 animate-pulse rounded-[var(--r-lg)] border border-border-subtle bg-surface-2" />
           <span className="sr-only">正在加载收益报表</span>
         </div>
       )}
 
-      {error && !loading && (
-        <Callout tone="error" role="alert">
-          {error}
-        </Callout>
-      )}
+      {error && !loading && <Callout tone="error" role="alert">{error}</Callout>}
 
       {data && !loading && (
         <>
-          {data.coverage.warnings.length > 0 && (
+          <div className={cn("flex flex-wrap items-center justify-between gap-3 rounded-[var(--r-md)] border px-4 py-3", dataComplete ? "border-mint/25 bg-mint/5" : "border-warn/30 bg-tint-warn")}>
+            <div className="flex items-center gap-2 text-sm">
+              {!dataComplete && <AlertTriangle className="h-4 w-4 text-warn" />}
+              <span className={dataComplete ? "text-mint" : "text-text"}>
+                {dataComplete ? "本周期数据完整" : data.coverage.warnings[0] || "本周期数据不完整"}
+              </span>
+            </div>
+            {data.coverage.warnings.length > 0 && (
+              <Button size="sm" variant="ghost" onClick={() => setShowWarnings((value) => !value)} aria-expanded={showWarnings}>
+                {showWarnings ? "收起" : `查看 ${data.coverage.warnings.length} 条说明`}
+                <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", showWarnings && "rotate-180")} />
+              </Button>
+            )}
+          </div>
+
+          {showWarnings && data.coverage.warnings.length > 0 && (
             <Callout tone="warn" icon={false} role="status">
               <div className="space-y-1.5">
-                {data.coverage.warnings.map((w) => (
-                  <div key={w} className="flex items-start gap-2">
-                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
-                    <span>{w}</span>
-                  </div>
-                ))}
+                {data.coverage.warnings.map((warning) => <div key={warning}>{warning}</div>)}
               </div>
             </Callout>
           )}
 
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <Metric
-              label="服务毛利"
-              value={formatRmb(data.profit.measuredRmb)}
-              hint={
-                data.profit.measuredMarginPct != null
-                  ? `毛利率 ${data.profit.measuredMarginPct.toFixed(1)}%`
-                  : "收入为 0，无法算毛利率"
-              }
-              tone={data.profit.measuredRmb >= 0 ? "mint" : "coral"}
-            />
-            <Metric
-              label="消费收入 · 实测"
-              value={formatRmb(data.revenue.measuredRmb)}
-              hint={
-                data.revenue.excludedRmb > 0
-                  ? `付费账号消费 · 已剔除测试号 ${formatRmb(data.revenue.excludedRmb)}`
-                  : data.coverage.sitesUnresolvedExclude > 0
-                    ? "拿不到逐账号数据，测试号未剔除（偏高）"
-                    : data.coverage.measuredComplete
-                      ? "付费账号真实消费，数据完整"
-                      : "付费账号真实消费，数据不完整"
-              }
-              tone="violet"
-            />
-            <Metric
-              label="总成本"
-              value={formatRmb(data.cost.totalRmb)}
-              hint={`上游 ${formatRmb(data.cost.upstreamRmb)} · 额外 ${formatRmb(data.cost.operatingRmb)}${data.cost.orphanRmb > 0 ? ` · 旧渠道 ${formatRmb(data.cost.orphanRmb)}` : ""} · ${COST_SOURCE_LABEL[data.cost.source] ?? data.cost.source}`}
-              tone="amber"
-            />
-            <Metric
-              label="全站消费"
-              value={formatRmb(data.revenue.grossConsumptionRmb)}
-              hint="含测试号，用来跟上游成本对差值"
-              tone="cyan"
-            />
+            <Metric label="付费消费收入" value={formatRmb(data.revenue.measuredRmb)} hint="已剔除测试账号消费" tone="violet" />
+            <Metric label="上游成本" value={formatRmb(data.cost.upstreamRmb)} hint={COST_SOURCE_LABEL[data.cost.source] ?? data.cost.source} tone="amber" />
+            <Metric label="额外成本" value={formatRmb(data.cost.operatingRmb)} hint={data.cost.orphanRmb > 0 ? `含旧渠道补录 ${formatRmb(data.cost.orphanRmb)}` : "采购、订阅及其他运营成本"} tone="amber" />
+            <Metric label="服务毛利" value={formatRmb(data.profit.measuredRmb)} hint={data.profit.measuredMarginPct == null ? "本期无收入" : `毛利率 ${data.profit.measuredMarginPct.toFixed(1)}%`} tone={data.profit.measuredRmb >= 0 ? "mint" : "coral"} />
           </div>
 
-          {/* 私域 / 公共拆分：优先按模型对齐成本，其余退化为收入占比分摊 */}
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Metric
-              label="私域 · 收入 / 成本 / 毛利"
-              value={`${formatRmb(data.revenue.privateRmb)} / ${formatRmb(data.profit.privateCostRmb)} / ${formatRmb(data.profit.privateRmb)}`}
-              hint={
-                data.coverage.sitesUnresolvedPrivate > 0
-                  ? "有站点拿不到逐账号数据，私域未拆分（全算公共池）"
-                  : data.profit.privateMarginPct != null
-                    ? `自己推广 · 毛利率 ${data.profit.privateMarginPct.toFixed(1)}% · ${data.profit.allocationSource === "model" ? `成本按模型对齐 ${data.profit.modelCoveragePct.toFixed(1)}%` : "成本按收入占比分摊"}`
-                    : "自己推广的用户 · 本期无私域收入"
-              }
-              tone="cyan"
-            />
-            <Metric
-              label="公共池 · 收入 / 成本 / 毛利"
-              value={`${formatRmb(data.revenue.publicRmb)} / ${formatRmb(data.profit.publicCostRmb)} / ${formatRmb(data.profit.publicRmb)}`}
-              hint={
-                data.revenue.publicRmb > 0 || data.profit.publicCostRmb > 0
-                  ? `需收回成本 ${formatRmb(data.profit.publicCostRmb)} · ${data.profit.publicMarginPct != null ? `毛利率 ${data.profit.publicMarginPct.toFixed(1)}% · ` : ""}${data.profit.allocationSource === "model" ? `按模型对齐 ${data.profit.modelCoveragePct.toFixed(1)}%` : "按收入占比分摊"}`
-                  : "其他渠道（含朋友推广）· 本期无公共收入和成本"
-              }
-              tone="violet"
-            />
+          <div className="rounded-[var(--r-md)] border border-border-subtle bg-surface-2 px-4 py-3 text-center text-sm text-secondary">
+            <span className="font-data text-violet">{formatRmb(data.revenue.measuredRmb)}</span>
+            <span className="mx-2 text-muted">−</span>
+            <span className="font-data text-cost">{formatRmb(data.cost.upstreamRmb)}</span>
+            <span className="mx-2 text-muted">−</span>
+            <span className="font-data text-cost">{formatRmb(data.cost.operatingRmb)}</span>
+            <span className="mx-2 text-muted">=</span>
+            <span className={cn("font-data font-semibold", data.profit.measuredRmb >= 0 ? "text-mint" : "text-coral")}>{formatRmb(data.profit.measuredRmb)}</span>
           </div>
+
+          <ReportTrendChart data={data.daily} />
 
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-semibold normal-case tracking-normal text-text">
-                用户预收款（不计入毛利）
-              </CardTitle>
-              <p className="text-[11px] text-muted">
-                用户实际支付金额；用户消费后，才按消费额进入上方收益报表
-                {!data.prepaid.complete &&
-                  ` · ${data.prepaid.incompleteSites} 个站点历史回填不完整`}
-              </p>
+              <CardTitle className="text-sm font-semibold normal-case tracking-normal text-text">收入与毛利构成</CardTitle>
+              <p className="text-xs text-muted">成本优先按模型对齐，无法对齐的部分按收入占比分摊</p>
             </CardHeader>
-            <CardContent className="space-y-5">
+            <CardContent>
+              <div className="hidden grid-cols-[minmax(150px,1.4fr)_repeat(4,minmax(90px,1fr))] gap-3 border-b border-border-subtle pb-2 text-[11px] text-muted sm:grid">
+                <span>来源</span><span>收入</span><span>分摊成本</span><span>毛利</span><span>毛利率</span>
+              </div>
+              <BreakdownRow label="私域" description="自己推广的付费用户" revenue={data.revenue.privateRmb} cost={data.profit.privateCostRmb} profit={data.profit.privateRmb} margin={data.profit.privateMarginPct} />
+              <BreakdownRow label="公共池" description="其他渠道的付费用户" revenue={data.revenue.publicRmb} cost={data.profit.publicCostRmb} profit={data.profit.publicRmb} margin={data.profit.publicMarginPct} />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between gap-3 pb-2">
+              <div>
+                <CardTitle className="text-sm font-semibold normal-case tracking-normal text-text">用户预收款</CardTitle>
+                <p className="text-xs text-muted">现金流参考，不计入服务毛利</p>
+              </div>
+              <Button size="sm" variant="ghost" onClick={() => setShowPrepaid((value) => !value)} aria-expanded={showPrepaid}>
+                {showPrepaid ? "收起" : "查看历史"}
+                <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", showPrepaid && "rotate-180")} />
+              </Button>
+            </CardHeader>
+            <CardContent className="space-y-4">
               <div className="grid gap-4 sm:grid-cols-3">
-                <div>
-                  <div className="text-[11px] uppercase tracking-wider text-muted">
-                    本月合计预收
-                  </div>
-                  <div className="font-data text-xl text-mint">
-                    {formatRmb(data.prepaid.month.totalRmb)}
-                  </div>
-                  <p className="text-[11px] text-muted">
-                    {data.prepaid.month.orders} 笔成功充值
-                  </p>
-                </div>
-                <div>
-                  <div className="text-[11px] uppercase tracking-wider text-muted">
-                    本月私域预收
-                  </div>
-                  <div className="font-data text-xl text-cyan">
-                    {formatRmb(data.prepaid.month.privateRmb)}
-                  </div>
-                  <p className="text-[11px] text-muted">自己推广用户实际付款</p>
-                </div>
-                <div>
-                  <div className="text-[11px] uppercase tracking-wider text-muted">
-                    本月公共池预收
-                  </div>
-                  <div className="font-data text-xl text-violet">
-                    {formatRmb(data.prepaid.month.publicRmb)}
-                  </div>
-                  <p className="text-[11px] text-muted">其他渠道用户实际付款</p>
-                </div>
+                <div><p className="text-xs text-muted">本月合计</p><p className="font-data text-xl text-mint">{formatRmb(data.prepaid.month.totalRmb)}</p><p className="text-[11px] text-muted">{data.prepaid.month.orders} 笔成功充值</p></div>
+                <div><p className="text-xs text-muted">本月私域</p><p className="font-data text-xl text-cyan">{formatRmb(data.prepaid.month.privateRmb)}</p></div>
+                <div><p className="text-xs text-muted">本月公共池</p><p className="font-data text-xl text-violet">{formatRmb(data.prepaid.month.publicRmb)}</p></div>
               </div>
-
-              <div className="border-t border-border/60 pt-4">
-                <div className="mb-3 text-xs font-semibold text-secondary">
-                  历史累计{!data.prepaid.complete && "（数据不完整）"}
-                </div>
-                <div className="grid gap-4 sm:grid-cols-3">
-                  <div>
-                    <div className="text-[11px] text-muted">累计合计</div>
-                    <div className="font-data text-lg">
-                      {formatRmb(data.prepaid.allTime.totalRmb)}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[11px] text-muted">累计私域</div>
-                    <div className="font-data text-lg text-cyan">
-                      {formatRmb(data.prepaid.allTime.privateRmb)}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[11px] text-muted">累计公共池</div>
-                    <div className="font-data text-lg text-violet">
-                      {formatRmb(data.prepaid.allTime.publicRmb)}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {(data.period.kind !== "month" || data.period.startDay !== new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Shanghai" }).slice(0, 7) + "-01") && (
-                <div className="border-t border-border/60 pt-4 text-xs text-muted">
-                  所选周期预收：合计 {formatRmb(data.prepaid.period.totalRmb)} · 私域{" "}
-                  {formatRmb(data.prepaid.period.privateRmb)} · 公共池{" "}
-                  {formatRmb(data.prepaid.period.publicRmb)}（{data.prepaid.period.orders} 笔）
+              {showPrepaid && (
+                <div className="grid gap-4 border-t border-border-subtle pt-4 text-sm sm:grid-cols-2">
+                  <div><p className="text-xs text-muted">历史累计</p><p className="font-data text-lg">{formatRmb(data.prepaid.allTime.totalRmb)}</p><p className="text-[11px] text-muted">私域 {formatRmb(data.prepaid.allTime.privateRmb)} · 公共 {formatRmb(data.prepaid.allTime.publicRmb)}</p></div>
+                  <div><p className="text-xs text-muted">所选周期</p><p className="font-data text-lg">{formatRmb(data.prepaid.period.totalRmb)}</p><p className="text-[11px] text-muted">{data.prepaid.period.orders} 笔 · 私域 {formatRmb(data.prepaid.period.privateRmb)} · 公共 {formatRmb(data.prepaid.period.publicRmb)}</p></div>
                 </div>
               )}
             </CardContent>
           </Card>
 
-          <ReportTrendChart data={data.daily} />
-
-          <OrphanChannelPanel
-            period={{ startDay: data.period.startDay, endDay: data.period.endDay }}
-            onChanged={load}
-          />
-
-          {data.byKey.length > 0 && (
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-semibold normal-case tracking-normal text-text">
-                  按计费 Key 的上游成本
-                </CardTitle>
-                <p className="text-[11px] text-muted">
-                  当日实扣 × 当日购入成本率，成本率写入即冻结 · 官方基准来自明细快照
-                </p>
-              </CardHeader>
-              <CardContent className="overflow-x-auto p-0">
-                <Table>
-                  <THead>
-                    <HeadRow>
-                      <TH>Key</TH>
-                      <TH className="text-right">上游倍率</TH>
-                      <TH className="text-right">官方基准</TH>
-                      <TH className="text-right">实扣面值</TH>
-                      <TH className="text-right">请求</TH>
-                      <TH className="text-right">上游成本</TH>
-                    </HeadRow>
-                  </THead>
-                  <TBody>
-                    {data.byKey.map((k) => (
-                      <TR key={`${k.providerId}-${k.remoteKeyId}`}>
-                        <TD>
-                          <div className="max-w-[200px] truncate font-medium">
-                            {k.keyName}
-                          </div>
-                          <div className="text-[11px] text-muted">{k.providerName}</div>
-                        </TD>
-                        <TD className="text-right font-data text-xs text-muted">
-                          {k.upstreamRate != null ? `${k.upstreamRate}x` : "—"}
-                        </TD>
-                        <TD className="text-right font-data text-xs">
-                          {k.officialBase > 0 ? k.officialBase.toFixed(2) : "—"}
-                        </TD>
-                        <TD className="text-right font-data text-xs">
-                          {k.actualCost > 0 ? k.actualCost.toFixed(4) : "—"}
-                        </TD>
-                        <TD className="text-right font-data text-xs text-muted">
-                          {k.requests || "—"}
-                        </TD>
-                        <TD className="text-right font-data text-xs text-cost">
-                          {formatRmb(k.costRmb)}
-                        </TD>
-                      </TR>
-                    ))}
-                  </TBody>
-                </Table>
-              </CardContent>
-            </Card>
-          )}
-
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-semibold normal-case tracking-normal text-text">
-                  下游消费收入
-                </CardTitle>
-                <p className="text-[11px] text-muted">
-                  收入只算付费账号；测试号消费单列，用来跟上游成本对差值
-                </p>
-              </CardHeader>
-              <CardContent className="overflow-x-auto p-0">
-                {data.bySite.length === 0 ? (
-                  <div className="py-8 text-center text-sm text-muted">
-                    尚未绑定下游站点
-                  </div>
-                ) : (
-                  <Table>
-                    <THead>
-                      <HeadRow>
-                        <TH>站点</TH>
-                        <TH className="text-right">收入</TH>
-                        <TH className="text-right">私域</TH>
-                        <TH className="text-right">公共</TH>
-                        <TH className="text-right">测试号</TH>
-                        <TH className="text-right">全站消费</TH>
-                        <TH className="text-right">缺失</TH>
-                      </HeadRow>
-                    </THead>
-                    <TBody>
-                      {data.bySite.map((s) => (
-                        <TR key={s.id}>
-                          <TD>
-                            <div className="max-w-[140px] truncate">{s.name}</div>
-                            <div className="text-[11px] text-muted">
-                              {s.enabled ? `${s.requests} 次请求` : "已停用"}
-                              {!s.excludeResolved && " · 未拆测试号"}
-                              {!s.privateResolved && " · 未拆私域"}
-                            </div>
-                          </TD>
-                          <TD className="text-right font-data text-xs text-mint">
-                            {formatRmb(s.revenueRmb)}
-                          </TD>
-                          <TD className="text-right font-data text-xs text-cyan">
-                            {s.privateRmb > 0 ? formatRmb(s.privateRmb) : "—"}
-                          </TD>
-                          <TD className="text-right font-data text-xs text-violet">
-                            {s.publicRmb > 0 ? formatRmb(s.publicRmb) : "—"}
-                          </TD>
-                          <TD className="text-right font-data text-xs text-muted">
-                            {s.excludedRmb > 0 ? `−${formatRmb(s.excludedRmb)}` : "—"}
-                          </TD>
-                          <TD className="text-right font-data text-xs text-secondary">
-                            {formatRmb(s.grossRmb)}
-                          </TD>
-                          <TD className="text-right font-data text-xs">
-                            {s.missingDays > 0 ? (
-                              <span className="text-amber">{s.missingDays}</span>
-                            ) : (
-                              <span className="text-muted">0</span>
-                            )}
-                          </TD>
-                        </TR>
-                      ))}
-                    </TBody>
-                  </Table>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-semibold normal-case tracking-normal text-text">
-                  上游成本
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="overflow-x-auto p-0">
-                {data.byProvider.filter((p) => p.costRmb > 0).length === 0 ? (
-                  <div className="py-8 text-center text-sm text-muted">
-                    本周期没有上游成本记录
-                  </div>
-                ) : (
-                  <Table>
-                    <THead>
-                      <HeadRow>
-                        <TH>上游</TH>
-                        <TH className="text-right">成本</TH>
-                        <TH className="text-right">面值消耗</TH>
-                        <TH>来源</TH>
-                      </HeadRow>
-                    </THead>
-                    <TBody>
-                      {data.byProvider
-                        .filter((p) => p.costRmb > 0)
-                        .map((p) => (
-                          <TR key={p.id}>
-                            <TD className="max-w-[150px] truncate">{p.name}</TD>
-                            <TD className="text-right font-data text-xs text-cost">
-                              {formatRmb(p.costRmb)}
-                            </TD>
-                            <TD className="text-right font-data text-xs text-muted">
-                              {p.actualCost.toFixed(2)}
-                            </TD>
-                            <TD>
-                              <Badge
-                                variant={p.source === "usage-logs" ? "mint" : "default"}
-                              >
-                                {COST_SOURCE_LABEL[p.source] ?? p.source}
-                              </Badge>
-                            </TD>
-                          </TR>
-                        ))}
-                    </TBody>
-                  </Table>
-                )}
-              </CardContent>
-            </Card>
-          </div>
-
-          {data.operatingCosts.length > 0 && (
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-semibold normal-case tracking-normal text-text">
-                  额外成本入账
-                </CardTitle>
-                <p className="text-[11px] text-muted">
-                  一次性按记账日整笔计入；期间成本按有效期摊销，提前结束会压缩到实际存活区间
-                </p>
-              </CardHeader>
-              <CardContent className="overflow-x-auto p-0">
-                <Table>
-                  <THead>
-                    <HeadRow>
-                      <TH>项目</TH>
-                      <TH>模式</TH>
-                      <TH>有效区间</TH>
-                      <TH className="text-right">总额</TH>
-                      <TH className="text-right">本期入账</TH>
-                    </HeadRow>
-                  </THead>
-                  <TBody>
-                    {data.operatingCosts.map((c) => (
-                      <TR key={c.id}>
-                        <TD>
-                          <div className="max-w-[200px] truncate">{c.name}</div>
-                          <div className="text-[11px] text-muted">{c.category}</div>
-                        </TD>
-                        <TD className="text-xs">
-                          {c.mode === "ONE_TIME" ? (
-                            <Badge variant="default">一次性</Badge>
-                          ) : c.earlyEnded ? (
-                            <Badge variant="coral">提前结束</Badge>
-                          ) : c.openEnded ? (
-                            <Badge variant="default">进行中</Badge>
-                          ) : (
-                            <Badge variant="mint">按期摊销</Badge>
-                          )}
-                        </TD>
-                        <TD className="font-data text-[11px] text-muted">
-                          {c.mode === "ONE_TIME"
-                            ? c.effectiveStartDay
-                            : `${c.effectiveStartDay} ~ ${c.effectiveEndDay} · ${c.effectiveDays}天`}
-                        </TD>
-                        <TD className="text-right font-data text-xs text-muted">
-                          {formatRmb(c.amountRmb)}
-                        </TD>
-                        <TD className="text-right font-data text-xs text-cost">
-                          {formatRmb(c.allocatedRmb)}
-                        </TD>
-                      </TR>
-                    ))}
-                  </TBody>
-                </Table>
-              </CardContent>
-            </Card>
-          )}
-
           <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-semibold normal-case tracking-normal text-text">
-                差值对账
-              </CardTitle>
-              <p className="text-[11px] text-muted">
-                测试号也烧上游额度但没人付钱：全站消费 − 上游成本 = 整体加价空间，
-                跟只算付费账号的毛利分开看
-              </p>
+            <CardHeader className="flex flex-row items-center justify-between gap-3 pb-2">
+              <div>
+                <CardTitle className="text-sm font-semibold normal-case tracking-normal text-text">收支明细</CardTitle>
+                <p className="text-xs text-muted">只保留影响本期收入和成本的项目</p>
+              </div>
+              <Segmented ariaLabel="收支明细类型" value={detailView} onChange={setDetailView} options={[{ value: "income", label: "收入" }, { value: "cost", label: "成本" }]} />
             </CardHeader>
-            <CardContent className="grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
-              <div>
-                <div className="text-[11px] uppercase tracking-wider text-muted">
-                  全站消费（含测试号）
-                </div>
-                <div className="font-data text-lg text-secondary">
-                  {formatRmb(data.revenue.grossConsumptionRmb)}
-                </div>
-                <p className="text-[11px] text-muted">对账基数，不是收入</p>
-              </div>
-              <div>
-                <div className="text-[11px] uppercase tracking-wider text-muted">
-                  其中测试号
-                </div>
-                <div className="font-data text-lg text-amber">
-                  {formatRmb(data.revenue.excludedRmb)}
-                </div>
-                <p className="text-[11px] text-muted">
-                  {data.coverage.sitesUnresolvedExclude > 0
-                    ? "有站点拿不到逐账号数据"
-                    : "已从收入中剔除"}
-                </p>
-              </div>
-              <div>
-                <div className="text-[11px] uppercase tracking-wider text-muted">
-                  全站消费 − 上游成本
-                </div>
-                <div className="font-data text-lg text-cyan">
-                  {formatRmb(data.revenue.grossConsumptionRmb - data.cost.upstreamRmb)}
-                </div>
-                <p className="text-[11px] text-muted">整体加价空间</p>
-              </div>
-              <div>
-                <div className="text-[11px] uppercase tracking-wider text-muted">
-                  整体加价倍数
-                </div>
-                <div className="font-data text-lg">
-                  {data.cost.upstreamRmb > 0
-                    ? `${(data.revenue.grossConsumptionRmb / data.cost.upstreamRmb).toFixed(2)}x`
-                    : "—"}
-                </div>
-                <p className="text-[11px] text-muted">卖出 ÷ 买入</p>
-              </div>
+            <CardContent className="overflow-x-auto p-0">
+              {detailView === "income" ? (
+                data.bySite.length === 0 ? <div className="py-8 text-center text-sm text-muted">本周期没有下游收入</div> : (
+                  <Table>
+                    <THead><HeadRow><TH>站点</TH><TH className="text-right">付费收入</TH><TH className="text-right">私域</TH><TH className="text-right">公共</TH><TH>状态</TH></HeadRow></THead>
+                    <TBody>{data.bySite.map((site) => (
+                      <TR key={site.id}>
+                        <TD><div className="max-w-[180px] truncate font-medium">{site.name}</div><div className="text-[11px] text-muted">{site.requests} 次请求</div></TD>
+                        <TD className="text-right font-data text-xs text-mint">{formatRmb(site.revenueRmb)}</TD>
+                        <TD className="text-right font-data text-xs text-cyan">{formatRmb(site.privateRmb)}</TD>
+                        <TD className="text-right font-data text-xs text-violet">{formatRmb(site.publicRmb)}</TD>
+                        <TD><div className="flex flex-wrap gap-1">{site.missingDays > 0 && <Badge variant="amber">缺 {site.missingDays} 天</Badge>}{!site.excludeResolved && <Badge variant="amber">测试号未拆</Badge>}{!site.privateResolved && <Badge variant="default">私域未拆</Badge>}{site.missingDays === 0 && site.excludeResolved && site.privateResolved && <Badge variant="mint">完整</Badge>}</div></TD>
+                      </TR>
+                    ))}</TBody>
+                  </Table>
+                )
+              ) : providerRows.length === 0 ? <div className="py-8 text-center text-sm text-muted">本周期没有上游成本</div> : (
+                <Table>
+                  <THead><HeadRow><TH>上游</TH><TH className="text-right">本期成本</TH><TH className="text-right">面值消耗</TH><TH>数据来源</TH></HeadRow></THead>
+                  <TBody>{providerRows.map((provider) => (
+                    <TR key={provider.id}>
+                      <TD className="max-w-[200px] truncate font-medium">{provider.name}</TD>
+                      <TD className="text-right font-data text-xs text-cost">{formatRmb(provider.costRmb)}</TD>
+                      <TD className="text-right font-data text-xs text-muted">{provider.actualCost.toFixed(2)}</TD>
+                      <TD><Badge variant={provider.source === "usage-logs" ? "mint" : "default"}>{COST_SOURCE_LABEL[provider.source] ?? provider.source}</Badge></TD>
+                    </TR>
+                  ))}</TBody>
+                </Table>
+              )}
             </CardContent>
           </Card>
 
+          {operatingRows.length > 0 && (
+            <Card>
+              <CardHeader className="pb-2"><CardTitle className="text-sm font-semibold normal-case tracking-normal text-text">额外成本明细</CardTitle></CardHeader>
+              <CardContent className="overflow-x-auto p-0">
+                <Table>
+                  <THead><HeadRow><TH>项目</TH><TH>有效期</TH><TH className="text-right">本期入账</TH></HeadRow></THead>
+                  <TBody>{operatingRows.map((cost) => (
+                    <TR key={cost.id}>
+                      <TD><div className="max-w-[220px] truncate font-medium">{cost.name}</div><div className="text-[11px] text-muted">{cost.category} · {cost.mode === "ONE_TIME" ? "一次性" : cost.earlyEnded ? "提前结束" : "按期摊销"}</div></TD>
+                      <TD className="font-data text-[11px] text-muted">{cost.mode === "ONE_TIME" ? cost.effectiveStartDay : `${cost.effectiveStartDay} ~ ${cost.effectiveEndDay}`}</TD>
+                      <TD className="text-right font-data text-xs text-cost">{formatRmb(cost.allocatedRmb)}</TD>
+                    </TR>
+                  ))}</TBody>
+                </Table>
+              </CardContent>
+            </Card>
+          )}
+
+          <OrphanChannelPanel period={{ startDay: data.period.startDay, endDay: data.period.endDay }} onChanged={load} />
+
           <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-semibold normal-case tracking-normal text-text">
-                参考项（不计入毛利）
-              </CardTitle>
+            <CardHeader className="flex flex-row items-center justify-between gap-3 pb-2">
+              <div>
+                <CardTitle className="text-sm font-semibold normal-case tracking-normal text-text">对账与数据质量</CardTitle>
+                <p className="text-xs text-muted">这些数字不参与服务毛利，仅用于核对和排查</p>
+              </div>
+              <Button size="sm" variant="ghost" onClick={() => setShowReconciliation((value) => !value)} aria-expanded={showReconciliation}>
+                {showReconciliation ? "收起" : "展开"}
+                <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", showReconciliation && "rotate-180")} />
+              </Button>
             </CardHeader>
-            <CardContent className="grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
-              <div>
-                <div className="text-[11px] uppercase tracking-wider text-muted">
-                  当前已发放额度参考
-                </div>
-                <div className="font-data text-lg">
-                  {formatRmb(data.reference.downstreamIssuedRmb)}
-                </div>
-                <p className="text-[11px] text-muted">存量额度参考，不代表历史实际收款</p>
-              </div>
-              <div>
-                <div className="text-[11px] uppercase tracking-wider text-muted">
-                  本期上游充值实付
-                </div>
-                <div className="font-data text-lg">
-                  {formatRmb(data.reference.upstreamRechargePaidRmb)}
-                </div>
-                <p className="text-[11px] text-muted">现金流，成本按实际消耗入账</p>
-              </div>
-              <div>
-                <div className="text-[11px] uppercase tracking-wider text-muted">
-                  自建站官方用量
-                </div>
-                <div className="font-data text-lg">
-                  {data.reference.selfHostedOfficialCost.toFixed(2)}
-                </div>
-                <p className="text-[11px] text-muted">官方计价面值（美元）</p>
-              </div>
-            </CardContent>
+            {showReconciliation && (
+              <CardContent className="grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-3">
+                <div><p className="text-xs text-muted">全站消费（含测试号）</p><p className="font-data text-lg">{formatRmb(data.revenue.grossConsumptionRmb)}</p></div>
+                <div><p className="text-xs text-muted">测试号消费</p><p className="font-data text-lg text-amber">{formatRmb(data.revenue.excludedRmb)}</p></div>
+                <div><p className="text-xs text-muted">全站消费减上游成本</p><p className="font-data text-lg text-cyan">{formatRmb(data.revenue.grossConsumptionRmb - data.cost.upstreamRmb)}</p></div>
+                <div><p className="text-xs text-muted">当前已发放额度</p><p className="font-data text-lg">{formatRmb(data.reference.downstreamIssuedRmb)}</p></div>
+                <div><p className="text-xs text-muted">本期上游充值实付</p><p className="font-data text-lg">{formatRmb(data.reference.upstreamRechargePaidRmb)}</p></div>
+                <div><p className="text-xs text-muted">自建站官方用量</p><p className="font-data text-lg">{data.reference.selfHostedOfficialCost.toFixed(2)}</p></div>
+              </CardContent>
+            )}
           </Card>
         </>
       )}

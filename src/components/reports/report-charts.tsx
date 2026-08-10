@@ -54,6 +54,7 @@ function ChartTooltip({
 export function ReportTrendChart({ data }: { data: DailyPoint[] }) {
   const chartData = data.map((d) => ({
     ...d,
+    totalCostRmb: d.upstreamCostRmb + d.operatingCostRmb,
     label: d.day.slice(5),
   }));
   const hasAny = data.some(
@@ -68,7 +69,7 @@ export function ReportTrendChart({ data }: { data: DailyPoint[] }) {
       <CardHeader className="pb-2">
         <CardTitle>本周期逐日走势</CardTitle>
         <p className="text-xs text-muted">
-          柱：上游成本 + 额外成本 · 实线：付费账号收入 · 虚线：服务毛利
+          收入、总成本和毛利的每日变化
         </p>
       </CardHeader>
       <CardContent className="h-[320px] pl-2 sm:pl-5">
@@ -111,17 +112,9 @@ export function ReportTrendChart({ data }: { data: DailyPoint[] }) {
               <Tooltip content={<ChartTooltip />} />
               <Legend wrapperStyle={{ fontSize: 12, color: "var(--text-secondary)" }} />
               <Bar
-                dataKey="upstreamCostRmb"
-                name="上游成本"
-                stackId="cost"
+                dataKey="totalCostRmb"
+                name="总成本"
                 fill="var(--series-3)"
-                maxBarSize={20}
-              />
-              <Bar
-                dataKey="operatingCostRmb"
-                name="额外成本"
-                stackId="cost"
-                fill="var(--series-4)"
                 radius={[3, 3, 0, 0]}
                 maxBarSize={20}
               />

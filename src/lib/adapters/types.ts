@@ -5,7 +5,7 @@
 export type ProviderType =
   | "NEWAPI"
   | "SUB2API"
-  | "MOLIFANG"
+  | "SUB2API_KEY"
   | "ONEAPI"
   | "OTHER";
 

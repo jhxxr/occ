@@ -167,7 +167,7 @@ export default function ProvidersPage() {
               throw new Error("Sub2API 请填写邮箱+密码（推荐），或单独填 JWT");
             }
           }
-        } else if (form.type !== "MOLIFANG" && !form.apiKey.trim()) {
+        } else if (form.type !== "SUB2API_KEY" && !form.apiKey.trim()) {
           throw new Error("请填写 API Key");
         }
         const res = await fetch("/api/providers", {
@@ -382,7 +382,7 @@ export default function ProvidersPage() {
                 >
                   <option value="NEWAPI">NewAPI</option>
                   <option value="SUB2API">Sub2API</option>
-                  <option value="MOLIFANG">MoLiFang 多 Key</option>
+                  <option value="SUB2API_KEY">Sub2API Key 模式</option>
                   <option value="ONEAPI">OneAPI</option>
                   <option value="OTHER">Other</option>
                 </Select>
@@ -447,7 +447,7 @@ export default function ProvidersPage() {
                     />
                   </div>
                 </div>
-              ) : form.type === "MOLIFANG" ? (
+              ) : form.type === "SUB2API_KEY" ? (
                 <div className="rounded-[var(--r-lg)] border border-mint/25 bg-mint/10 p-3.5 text-xs leading-5 text-secondary">
                   先创建供应商，保存后进入「绑定密钥」，可添加多条普通
                   <code className="mx-1 font-data text-mint">sk-...</code>
@@ -507,7 +507,7 @@ export default function ProvidersPage() {
                     }
                   />
                 </div>
-                {!isSub2 && form.type !== "MOLIFANG" && (
+                {!isSub2 && form.type !== "SUB2API_KEY" && (
                   <div className="space-y-1.5 col-span-2">
                     <Label htmlFor="quotaPerDollar">Quota / 面值单位</Label>
                     <Input
@@ -580,7 +580,7 @@ export default function ProvidersPage() {
                     <div className="flex flex-wrap items-center gap-2">
                       <h3 className="font-semibold text-text">{p.name}</h3>
                       <Badge variant="cyan">{p.type}</Badge>
-                      {p.type === "MOLIFANG" && (
+                      {p.type === "SUB2API_KEY" && (
                         <Badge variant={p.failedBoundKeyCount ? "coral" : "mint"}>
                           {p.activeBoundKeyCount || 0} 个 Key
                           {p.failedBoundKeyCount ? ` · ${p.failedBoundKeyCount} 失败` : ""}
@@ -608,9 +608,9 @@ export default function ProvidersPage() {
                     </div>
                     <p className="truncate text-xs text-muted">{p.baseUrl}</p>
                     <p className="text-xs text-secondary font-data">
-                      {p.type === "MOLIFANG" ? (
+                      {p.type === "SUB2API_KEY" ? (
                         <>
-                          已绑定多 Key · 成本 {formatRmb(p.discountRate)}/面值 · 预警{" "}
+                          Sub2API Key 模式 · 成本 {formatRmb(p.discountRate)}/面值 · 预警{" "}
                           {formatRmb(p.alertThreshold * p.discountRate)}
                         </>
                       ) : p.type === "SUB2API" ? (
@@ -666,7 +666,7 @@ export default function ProvidersPage() {
                         <Wallet className="h-4 w-4" />
                       </Link>
                     )}
-                    {(p.type === "SUB2API" || p.type === "MOLIFANG") && !p.retiredAt && (
+                    {(p.type === "SUB2API" || p.type === "SUB2API_KEY") && !p.retiredAt && (
                       <Link
                         href={`/providers/${p.id}`}
                         aria-label="密钥与分组"

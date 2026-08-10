@@ -3,7 +3,7 @@
  *
  * UpstreamProvider 表同时装着两类东西，它们的账完全不同：
  *
- * - 中转上游（NEWAPI / SUB2API / MOLIFANG / ONEAPI / OTHER）
+ * - 中转上游（NEWAPI / SUB2API / SUB2API_KEY / ONEAPI / OTHER）
  *   别人的站，我们是买方。余额模型：充钱 → 余额 → 消耗。
  *   成本 = 消耗面值 × discountRate（每面值单位实付人民币）。
  *
@@ -16,12 +16,24 @@
  */
 
 export const SELF_HOSTED_TYPE = "SUB2_ADMIN";
+export const SUB2API_KEY_TYPE = "SUB2API_KEY";
+export const LEGACY_SUB2API_KEY_TYPE = "MOLIFANG";
+
+/** 已发布版本遗留的 MOLIFANG 记录仍按 Sub2API Key 模式处理。 */
+export function isSub2ApiKeyType(type: string | null | undefined): boolean {
+  return type === SUB2API_KEY_TYPE || type === LEGACY_SUB2API_KEY_TYPE;
+}
+
+/** API 与新写入统一采用规范类型，旧输入/数据库记录不再向外传播。 */
+export function normalizeProviderType(type: string): string {
+  return isSub2ApiKeyType(type) ? SUB2API_KEY_TYPE : type;
+}
 
 /** 可以配到「上游站点」页面的第三方类型 */
 export const RELAY_TYPES = [
   "NEWAPI",
   "SUB2API",
-  "MOLIFANG",
+  "SUB2API_KEY",
   "ONEAPI",
   "OTHER",
 ] as const;

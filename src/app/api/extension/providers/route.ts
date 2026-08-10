@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { relayOnly } from "@/lib/provider-kinds";
+import { normalizeProviderType, relayOnly } from "@/lib/provider-kinds";
 import {
   extractExtensionToken,
   findUsableExtensionToken,
@@ -98,7 +98,7 @@ export async function GET(req: NextRequest) {
       id: p.id,
       name: p.name,
       baseUrl: p.baseUrl,
-      type: p.type,
+      type: normalizeProviderType(p.type),
       enabled: p.enabled,
       lastSyncAt: p.lastSyncAt,
       lastError: p.lastError,

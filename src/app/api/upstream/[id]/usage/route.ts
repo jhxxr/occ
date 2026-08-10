@@ -7,6 +7,7 @@ import {
   queryUsageStats,
 } from "@/lib/sub2/sync-usage";
 import { syncSub2ApiKeys } from "@/lib/sub2/sync-keys";
+import { isSub2ApiKeyType } from "@/lib/provider-kinds";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -41,7 +42,7 @@ export async function GET(req: NextRequest, ctx: Ctx) {
     const { id } = await ctx.params;
     const provider = await prisma.upstreamProvider.findUnique({ where: { id } });
     if (!provider) throw new Error("上游不存在");
-    if (provider.type !== "SUB2API" && provider.type !== "MOLIFANG") {
+    if (provider.type !== "SUB2API" && !isSub2ApiKeyType(provider.type)) {
       throw new Error("该上游不支持 Key 用量统计");
     }
     const sp = req.nextUrl.searchParams;
@@ -60,7 +61,7 @@ export async function GET(req: NextRequest, ctx: Ctx) {
         endDate,
         onlyBillable,
       });
-      const keys = provider.type === "MOLIFANG"
+      const keys = isSub2ApiKeyType(provider.type)
         ? (await prisma.upstreamBoundKey.findMany({
             where: { providerId: id, removedAt: null },
             orderBy: { name: "asc" },
@@ -100,7 +101,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     const { id } = await ctx.params;
     const provider = await prisma.upstreamProvider.findUnique({ where: { id } });
     if (!provider) throw new Error("上游不存在");
-    if (provider.type !== "SUB2API" && provider.type !== "MOLIFANG") {
+    if (provider.type !== "SUB2API" && !isSub2ApiKeyType(provider.type)) {
       throw new Error("该上游不支持 Key 用量统计");
     }
     const body = await req.json().catch(() => ({}));
@@ -112,9 +113,9 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         ? Number(body.apiKeyId)
         : undefined;
 
-    if (provider.type === "MOLIFANG") {
-      const { syncMolifangProvider } = await import("@/lib/molifang/sync");
-      const result = await syncMolifangProvider(id);
+    if (isSub2ApiKeyType(provider.type)) {
+      const { syncSub2ApiKeyProvider } = await import("@/lib/sub2api-key/sync");
+      const result = await syncSub2ApiKeyProvider(id);
       if (!result.success) throw new Error(result.error || "同步失败");
       const stats = await queryUsageStats(id, {
         startDate,

@@ -2,7 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { encryptSecret } from "@/lib/crypto";
 import { normalizeBaseUrl } from "@/lib/utils";
-import { isSelfHosted, relayOnly } from "@/lib/provider-kinds";
+import {
+  isSelfHosted,
+  normalizeProviderType,
+  relayOnly,
+} from "@/lib/provider-kinds";
 import {
   extractExtensionToken,
   findUsableExtensionToken,
@@ -230,7 +234,7 @@ export async function POST(req: NextRequest) {
       providerId: provider.id,
       providerName: provider.name,
       baseUrl: provider.baseUrl,
-      type: provider.type,
+      type: normalizeProviderType(provider.type),
       hasRefreshToken: !!refreshToken,
       tokenExpiresAt: expiresAt,
     });

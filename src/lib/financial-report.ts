@@ -36,7 +36,13 @@ import {
 } from "@/lib/operating-cost";
 import { orphanCostForPeriod } from "@/lib/orphan-channels";
 import { allocateOwnershipCosts } from "@/lib/cost-allocation";
-import { summarizePrepaid, type PrepaidTotals } from "@/lib/prepaid";
+import {
+  summarizePrepaid,
+  summarizePrepaidLiability,
+  type PrepaidTotals,
+} from "@/lib/prepaid";
+
+const DEFAULT_QUOTA_PER_UNIT = 500_000;
 
 function round2(n: number): number {
   return Math.round((Number.isFinite(n) ? n : 0) * 100) / 100;
@@ -186,6 +192,15 @@ export interface FinancialReport {
     modelCoveragePct: number;
   };
   prepaid: {
+    /** 用户当前未消费余额，按最新完整余额快照统计 */
+    current: {
+      totalRmb: number;
+      privateRmb: number;
+      publicRmb: number;
+      excludedRmb: number;
+      users: number;
+      observedAt: Date | null;
+    };
     /** 当前报表所选周期内实际到账的预收款 */
     period: PrepaidTotals;
     /** 当前自然月实际到账的预收款 */
@@ -260,6 +275,7 @@ export async function buildFinancialReport(
     selfHostedDaily,
     recharges,
     downstreamTopups,
+    downstreamBalances,
   ] = await Promise.all([
     getUsdCnyRate(),
     prisma.upstreamProvider.findMany({ where: relayOnly, orderBy: { createdAt: "asc" } }),
@@ -309,6 +325,15 @@ export async function buildFinancialReport(
         moneyRmb: true,
         status: true,
         completedAt: true,
+      },
+    }),
+    prisma.downstreamUserBalance.findMany({
+      select: {
+        downstreamId: true,
+        userId: true,
+        role: true,
+        quota: true,
+        observedAt: true,
       },
     }),
   ]);
@@ -748,6 +773,27 @@ export async function buildFinancialReport(
       return sum + (site.revenueCurrency === "USD" ? rev * usdCny : rev);
     }, 0),
   );
+  const prepaidLiability = summarizePrepaidLiability(
+    downstreamBalances.map((balance) => ({
+      downstreamId: balance.downstreamId,
+      userId: balance.userId,
+      role: balance.role,
+      quota: balance.quota,
+      quotaPerUnit:
+        sites.find((site) => site.id === balance.downstreamId)?.quotaPerDollar ||
+        DEFAULT_QUOTA_PER_UNIT,
+      observedAt: balance.observedAt,
+    })),
+    new Map(
+      sites.map((site) => [
+        site.id,
+        {
+          excludeUserIds: parseUserIds(site.excludeUserIds),
+          privateUserIds: parseUserIds(site.privateUserIds),
+        },
+      ]),
+    ),
+  );
   const prepaid = summarizePrepaid(
     downstreamTopups,
     new Map(
@@ -811,6 +857,7 @@ export async function buildFinancialReport(
     },
     prepaid: {
       ...prepaid,
+      current: prepaidLiability,
       complete: incompletePrepaidSites.length === 0,
       incompleteSites: incompletePrepaidSites.length,
     },

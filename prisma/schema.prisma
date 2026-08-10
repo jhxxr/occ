@@ -333,16 +333,22 @@ model DownstreamSite {
   lastRevenue           Float?
   lastSyncAt            DateTime?
   lastError             String?   @db.Text
-  /// 充值订单首次历史回填是否完整；只有 true 时累计预收款才可信
+  /// 充值订单首次历史回填是否完整；只有 true 时历史流入才可信
   topupBackfillComplete Boolean   @default(false)
   topupLastSyncAt       DateTime?
   topupSyncError        String?   @db.Text
+  /// 当前用户余额最近一次完整同步时间；余额存量独立于充值历史
+  balanceLastSyncAt     DateTime?
+  balanceSyncError      String?   @db.Text
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
-  snapshots  DownstreamSnapshot[]
-  usageDaily DownstreamUsageDaily[]
-  topups     DownstreamTopup[]
+  snapshots       DownstreamSnapshot[]
+  usageDaily      DownstreamUsageDaily[]
+  topups          DownstreamTopup[]
+  userBalances    DownstreamUserBalance[]
+  rechargeOps     DownstreamRechargeOperation[]
+  creditLots      DownstreamCreditLot[]
 
   orphanChannels DownstreamOrphanChannel[]
   channelDays    DownstreamChannelDay[]
@@ -363,6 +369,9 @@ model DownstreamTopup {
   status          String    @default("") @db.VarChar(30)
   paymentMethod   String    @default("") @db.VarChar(50)
   paymentProvider String    @default("") @db.VarChar(50)
+  /// 原始来源字段明确可识别时归一化；未知不得猜测
+  source           String   @default("UNKNOWN") @db.VarChar(30)
+  sourceRaw       String   @default("") @db.VarChar(100)
   createdAtRemote DateTime?
   /// 实际到账时刻；周期归属只认它
   completedAt     DateTime?
@@ -377,7 +386,76 @@ model DownstreamTopup {
   @@index([status, completedAt])
 }
 
-/// 下游按日实际消费
+model DownstreamUserBalance {
+  id            String   @id @default(cuid())
+  downstreamId  String
+  userId        Int
+  username      String   @default("") @db.VarChar(200)
+  role          Int      @default(0)
+  quota         Float    @default(0)
+  usedQuota     Float    @default(0)
+  observedAt    DateTime
+  complete      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  downstream DownstreamSite @relation(fields: [downstreamId], references: [id], onDelete: Cascade)
+
+  @@unique([downstreamId, userId])
+  @@index([downstreamId, observedAt])
+  @@index([downstreamId, role])
+}
+
+model DownstreamRechargeOperation {
+  id              String   @id @default(cuid())
+  downstreamId    String
+  userId          Int
+  idempotencyKey  String   @db.VarChar(100)
+  paidRmb         Float    @default(0)
+  creditedRmb     Float    @default(0)
+  creditedQuota   Float    @default(0)
+  bonusRmb        Float    @default(0)
+  quotaPerDollar  Float    @default(500000)
+  balanceBefore  Float?
+  balanceAfter   Float?
+  status          String   @default("PREPARED") @db.VarChar(30)
+  source          String   @default("ADMIN_MANUAL") @db.VarChar(30)
+  note            String?  @db.Text
+  error           String?  @db.Text
+  remoteRaw       String?  @db.Text
+  operator        String   @default("") @db.VarChar(200)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  downstream DownstreamSite @relation(fields: [downstreamId], references: [id], onDelete: Cascade)
+  creditLots DownstreamCreditLot[]
+
+  @@unique([downstreamId, idempotencyKey])
+  @@index([downstreamId, userId, createdAt])
+  @@index([downstreamId, status])
+}
+
+model DownstreamCreditLot {
+  id             String   @id @default(cuid())
+  downstreamId   String
+  userId         Int
+  operationId    String?
+  source         String   @default("OPENING_UNKNOWN") @db.VarChar(30)
+  originalQuota  Float    @default(0)
+  remainingQuota Float    @default(0)
+  cashBasisRmb   Float?
+  occurredAt     DateTime @default(now())
+  note           String?  @db.Text
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  downstream  DownstreamSite @relation(fields: [downstreamId], references: [id], onDelete: Cascade)
+  operation   DownstreamRechargeOperation? @relation(fields: [operationId], references: [id], onDelete: SetNull)
+
+  @@index([downstreamId, userId, occurredAt])
+  @@index([downstreamId, source])
+}
+
 ///
 /// 一行同时存两个口径，别混用：
 /// - quota / grossRevenueRmb：**全部账号**的真实消费（含测试号），

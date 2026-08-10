@@ -17,6 +17,7 @@ import {
   syncDownstreamTopups,
   syncDownstreamUsage,
 } from "@/lib/downstream-usage";
+import { syncDownstreamUserBalances } from "@/lib/downstream-recharge";
 import { summarizeCosts } from "@/lib/operating-cost";
 import { monthPeriod, addDays, shanghaiDay, startOfMonthDay } from "@/lib/reporting-period";
 import {
@@ -400,6 +401,12 @@ export async function syncDownstreamSite(id: string): Promise<SyncResultItem> {
       usageError = usage.error;
     }
     const topups = await syncDownstreamTopups(id);
+    try {
+      await syncDownstreamUserBalances(id);
+    } catch (e) {
+      const balanceError = `用户余额同步失败：${e instanceof Error ? e.message : String(e)}`;
+      usageError = usageError ? `${usageError}；${balanceError}` : balanceError;
+    }
     if (!topups.success || !topups.complete) {
       const topupError = `预收款同步失败：${topups.error || "历史回填不完整"}`;
       usageError = usageError ? `${usageError}；${topupError}` : topupError;

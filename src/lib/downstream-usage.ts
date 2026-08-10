@@ -577,6 +577,8 @@ export async function syncDownstreamTopups(
       status: row.status,
       paymentMethod: row.paymentMethod,
       paymentProvider: row.paymentProvider,
+      source: row.source,
+      sourceRaw: row.sourceRaw,
       createdAtRemote: row.createdAt,
       completedAt: row.completedAt,
       syncedAt: now,

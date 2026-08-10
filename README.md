@@ -27,6 +27,7 @@ npm install
 cp .env.example .env
 # 必填：ENCRYPTION_SECRET、AUTH_SECRET 各设为独立的随机长字符串
 #      AUTH_USERNAME、AUTH_PASSWORD 设为你的登录账号密码
+#      RECHARGE_SECURITY_PASSWORD 设为独立的充值安全密码
 
 # 初始化数据库
 npx prisma migrate dev
@@ -46,13 +47,14 @@ npm run dev
 | `AUTH_USERNAME` | **是** | 登录用户名（固定单账号，无注册） |
 | `AUTH_PASSWORD` | **是** | 登录密码 |
 | `AUTH_SECRET` | **是** | 签名会话 Cookie 的密钥，与 `ENCRYPTION_SECRET` 用不同的随机值 |
+| `RECHARGE_SECURITY_PASSWORD` | **是** | 中转站用户充值的独立安全密码；验证后 10 分钟内免重复输入，不得与登录密码相同 |
 | `DEFAULT_USD_CNY` | 否 | 默认美元兑人民币汇率，默认 `7.2` |
 | `USAGE_RETENTION_ENABLED` | 否 | 是否每天自动维护上游使用记录，默认 `true` |
 | `USAGE_RAW_RETENTION_DAYS` | 否 | 原始请求 JSON 在线保留天数，默认 `30` |
 | `USAGE_DETAIL_RETENTION_DAYS` | 否 | 可查询明细在线保留天数，默认 `90`，不得短于原始 JSON |
 | `USAGE_ARCHIVE_DIR` | 否 | gzip 归档目录，默认 `./data/usage-archives` |
 
-四个必填项缺任意一个都无法登录：`AUTH_SECRET` 缺失会在签发/校验会话时抛错，`AUTH_USERNAME` 或 `AUTH_PASSWORD` 缺失则所有登录请求一律失败。已有数据库不要改动 `ENCRYPTION_SECRET`，否则已存的凭据无法解密。
+五个必填项缺任意一个都会导致相应功能不可用：`AUTH_SECRET` 缺失会在签发/校验会话时抛错，`AUTH_USERNAME` 或 `AUTH_PASSWORD` 缺失则所有登录请求一律失败，`RECHARGE_SECURITY_PASSWORD` 缺失则用户充值无法解锁。已有数据库不要改动 `ENCRYPTION_SECRET`，否则已存的凭据无法解密。
 
 Docker 部署的完整变量说明见 [DOCKER.md](DOCKER.md)。
 

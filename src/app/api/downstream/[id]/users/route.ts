@@ -67,6 +67,7 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
           privateUserIds,
           lastRevenue: site.lastRevenue,
           lastConsumed: site.lastConsumed,
+          quotaPerDollar: site.quotaPerDollar,
         },
         users: result.users,
         summary: {

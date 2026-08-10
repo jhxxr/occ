@@ -61,6 +61,7 @@ interface ReportPayload {
     modelCoveragePct: number;
   };
   prepaid: {
+    current: { totalRmb: number; privateRmb: number; publicRmb: number; excludedRmb: number; users: number; observedAt: string | null };
     period: { totalRmb: number; privateRmb: number; publicRmb: number; orders: number };
     month: { totalRmb: number; privateRmb: number; publicRmb: number; orders: number };
     allTime: { totalRmb: number; privateRmb: number; publicRmb: number; orders: number };
@@ -360,8 +361,8 @@ export function ReportView() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between gap-3 pb-2">
               <div>
-                <CardTitle className="text-sm font-semibold normal-case tracking-normal text-text">用户预收款</CardTitle>
-                <p className="text-xs text-muted">现金流参考，不计入服务毛利</p>
+                <CardTitle className="text-sm font-semibold normal-case tracking-normal text-text">用户余额与预收款</CardTitle>
+                <p className="text-xs text-muted">当前余额是未消费负债；充值流入不直接计入服务毛利</p>
               </div>
               <Button size="sm" variant="ghost" onClick={() => setShowPrepaid((value) => !value)} aria-expanded={showPrepaid}>
                 {showPrepaid ? "收起" : "查看历史"}
@@ -370,14 +371,15 @@ export function ReportView() {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid gap-4 sm:grid-cols-3">
-                <div><p className="text-xs text-muted">本月合计</p><p className="font-data text-xl text-mint">{formatRmb(data.prepaid.month.totalRmb)}</p><p className="text-[11px] text-muted">{data.prepaid.month.orders} 笔成功充值</p></div>
-                <div><p className="text-xs text-muted">本月私域</p><p className="font-data text-xl text-cyan">{formatRmb(data.prepaid.month.privateRmb)}</p></div>
-                <div><p className="text-xs text-muted">本月公共池</p><p className="font-data text-xl text-violet">{formatRmb(data.prepaid.month.publicRmb)}</p></div>
+                <div><p className="text-xs text-muted">当前用户余额</p><p className="font-data text-xl text-mint">{formatRmb(data.prepaid.current.totalRmb)}</p><p className="text-[11px] text-muted">{data.prepaid.current.users} 个付费账号 · 已排除测试号</p></div>
+                <div><p className="text-xs text-muted">当前私域余额</p><p className="font-data text-xl text-cyan">{formatRmb(data.prepaid.current.privateRmb)}</p></div>
+                <div><p className="text-xs text-muted">当前公共余额</p><p className="font-data text-xl text-violet">{formatRmb(data.prepaid.current.publicRmb)}</p></div>
               </div>
               {showPrepaid && (
-                <div className="grid gap-4 border-t border-border-subtle pt-4 text-sm sm:grid-cols-2">
-                  <div><p className="text-xs text-muted">历史累计</p><p className="font-data text-lg">{formatRmb(data.prepaid.allTime.totalRmb)}</p><p className="text-[11px] text-muted">私域 {formatRmb(data.prepaid.allTime.privateRmb)} · 公共 {formatRmb(data.prepaid.allTime.publicRmb)}</p></div>
-                  <div><p className="text-xs text-muted">所选周期</p><p className="font-data text-lg">{formatRmb(data.prepaid.period.totalRmb)}</p><p className="text-[11px] text-muted">{data.prepaid.period.orders} 笔 · 私域 {formatRmb(data.prepaid.period.privateRmb)} · 公共 {formatRmb(data.prepaid.period.publicRmb)}</p></div>
+                <div className="grid gap-4 border-t border-border-subtle pt-4 text-sm sm:grid-cols-3">
+                  <div><p className="text-xs text-muted">本月充值流入</p><p className="font-data text-lg">{formatRmb(data.prepaid.month.totalRmb)}</p><p className="text-[11px] text-muted">{data.prepaid.month.orders} 笔成功充值</p></div>
+                  <div><p className="text-xs text-muted">历史累计流入</p><p className="font-data text-lg">{formatRmb(data.prepaid.allTime.totalRmb)}</p><p className="text-[11px] text-muted">私域 {formatRmb(data.prepaid.allTime.privateRmb)} · 公共 {formatRmb(data.prepaid.allTime.publicRmb)}</p></div>
+                  <div><p className="text-xs text-muted">所选周期流入</p><p className="font-data text-lg">{formatRmb(data.prepaid.period.totalRmb)}</p><p className="text-[11px] text-muted">{data.prepaid.period.orders} 笔 · 测试号余额已排除 {formatRmb(data.prepaid.current.excludedRmb)}</p></div>
                 </div>
               )}
             </CardContent>

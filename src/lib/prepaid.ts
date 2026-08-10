@@ -1,3 +1,55 @@
+export interface PrepaidBalanceInput {
+  downstreamId: string;
+  userId: number;
+  role: number;
+  quota: number;
+  quotaPerUnit: number;
+  observedAt: Date;
+}
+
+export interface PrepaidLiability {
+  totalRmb: number;
+  privateRmb: number;
+  publicRmb: number;
+  excludedRmb: number;
+  users: number;
+  observedAt: Date | null;
+}
+
+export function summarizePrepaidLiability(
+  balances: PrepaidBalanceInput[],
+  ownershipBySite: Map<string, PrepaidOwnership>,
+): PrepaidLiability {
+  let privateRmb = 0;
+  let publicRmb = 0;
+  let excludedRmb = 0;
+  let users = 0;
+  let observedAt: Date | null = null;
+  for (const balance of balances) {
+    const ownership = ownershipBySite.get(balance.downstreamId);
+    if (!ownership || !balance.quotaPerUnit) continue;
+    const amount = Math.max(0, balance.quota) / balance.quotaPerUnit;
+    if (!observedAt || balance.observedAt < observedAt) observedAt = balance.observedAt;
+    if (balance.role >= 100 || ownership.excludeUserIds.has(balance.userId)) {
+      excludedRmb += amount;
+      continue;
+    }
+    users++;
+    if (ownership.privateUserIds.has(balance.userId)) privateRmb += amount;
+    else publicRmb += amount;
+  }
+  privateRmb = round2(privateRmb);
+  publicRmb = round2(publicRmb);
+  return {
+    privateRmb,
+    publicRmb,
+    totalRmb: round2(privateRmb + publicRmb),
+    excludedRmb: round2(excludedRmb),
+    users,
+    observedAt,
+  };
+}
+
 export interface PrepaidOrderInput {
   downstreamId: string;
   userId: number;

@@ -73,6 +73,12 @@ export interface DownstreamAdapterInput {
   revenueCurrency?: "CNY" | "USD";
 }
 
+export type DownstreamTopupSource =
+  | "ADMIN_MANUAL"
+  | "REDEEM_CODE"
+  | "WEBSITE_PAYMENT"
+  | "UNKNOWN";
+
 export interface DownstreamTopupRow {
   remoteId: number;
   userId: number;
@@ -81,6 +87,8 @@ export interface DownstreamTopupRow {
   tradeNo: string;
   paymentMethod: string;
   paymentProvider: string;
+  source: DownstreamTopupSource;
+  sourceRaw: string;
   status: string;
   createdAt: Date | null;
   completedAt: Date | null;
@@ -93,6 +101,13 @@ export interface DownstreamTopupResult {
   total: number;
   complete: boolean;
   error?: string;
+}
+
+export interface DownstreamRechargeResult {
+  success: boolean;
+  ambiguous: boolean;
+  error?: string;
+  raw?: unknown;
 }
 
 export interface DownstreamUserRow {

@@ -19,7 +19,7 @@ import {
   TD,
 } from "@/components/ui/table";
 import { formatRmb } from "@/lib/utils";
-import { ArrowLeft, ExternalLink, RefreshCw, Save, Users } from "lucide-react";
+import { ArrowLeft, ExternalLink, RefreshCw, Save, Users, WalletCards } from "lucide-react";
 
 interface UserRow {
   id: number;
@@ -325,6 +325,13 @@ export default function DownstreamUsersPage() {
           <ExternalLink className="h-3.5 w-3.5" />
           打开网站
         </a>
+        <Link
+          href={`/downstream/${id}/recharges`}
+          className={buttonVariants({ variant: "outline", size: "sm" })}
+        >
+          <WalletCards className="h-3.5 w-3.5" />
+          用户充值
+        </Link>
         <Button size="sm" variant="secondary" onClick={load}>
           <RefreshCw className="h-3.5 w-3.5" />
           刷新用户

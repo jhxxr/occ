@@ -8,6 +8,7 @@ import {
   syncDownstreamTopups,
   syncDownstreamUsage,
 } from "@/lib/downstream-usage";
+import { syncDownstreamUserBalances } from "@/lib/downstream-recharge";
 
 export const dynamic = "force-dynamic";
 
@@ -54,12 +55,16 @@ export async function POST(req: NextRequest) {
     const topupResults = id
       ? [await syncDownstreamTopups(id)]
       : await syncAllDownstreamTopups();
+    const balanceResults = id
+      ? [await syncDownstreamUserBalances(id).then(() => ({ success: true })).catch((error) => ({ success: false, error: error instanceof Error ? error.message : String(error) }))]
+      : [];
 
     return NextResponse.json({
       data: {
         results,
         modelResults,
         topupResults,
+        balanceResults,
         summary: {
           ok: results.filter((r) => r.success).length,
           fail: results.filter((r) => !r.success).length,

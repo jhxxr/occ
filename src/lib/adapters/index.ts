@@ -12,6 +12,8 @@ import type {
   DownstreamModelDailyResult,
   DownstreamTopupResult,
   DownstreamTopupRow,
+  DownstreamTopupSource,
+  DownstreamRechargeResult,
   DownstreamUserRow,
   UpstreamAdapterInput,
   UpstreamFetchResult,
@@ -811,6 +813,26 @@ function unixSecondsToDate(value: unknown): Date | null {
   return Number.isFinite(date.getTime()) ? date : null;
 }
 
+function normalizeTopupSource(row: Record<string, unknown>): {
+  source: DownstreamTopupSource;
+  sourceRaw: string;
+} {
+  const raw = [row.source, row.topup_source, row.recharge_source, row.type]
+    .find((value) => typeof value === "string" && value.trim()) as string | undefined;
+  const sourceRaw = raw?.trim().slice(0, 100) || "";
+  const normalized = sourceRaw.toLowerCase().replace(/[\s-]+/g, "_");
+  if (["admin", "admin_manual", "manual_admin", "manage_user"].includes(normalized)) {
+    return { source: "ADMIN_MANUAL", sourceRaw };
+  }
+  if (["redeem", "redeem_code", "redemption", "redemption_code"].includes(normalized)) {
+    return { source: "REDEEM_CODE", sourceRaw };
+  }
+  if (["website", "website_payment", "online_payment"].includes(normalized)) {
+    return { source: "WEBSITE_PAYMENT", sourceRaw };
+  }
+  return { source: "UNKNOWN", sourceRaw };
+}
+
 /**
  * 拉取 NewAPI 管理员充值订单。
  *
@@ -880,7 +902,8 @@ export async function fetchDownstreamTopups(
         const row = asRecord(item);
         const remoteId = num(row?.id);
         const topupUserId = num(row?.user_id);
-        if (remoteId == null || topupUserId == null) continue;
+        if (remoteId == null || topupUserId == null || !row) continue;
+        const source = normalizeTopupSource(row);
         rows.push({
           remoteId,
           userId: topupUserId,
@@ -891,6 +914,7 @@ export async function fetchDownstreamTopups(
             typeof row?.payment_method === "string" ? row.payment_method : "",
           paymentProvider:
             typeof row?.payment_provider === "string" ? row.payment_provider : "",
+          ...source,
           status: typeof row?.status === "string" ? row.status : String(row?.status ?? ""),
           createdAt: unixSecondsToDate(row?.create_time),
           completedAt: unixSecondsToDate(row?.complete_time),
@@ -928,6 +952,55 @@ export async function fetchDownstreamTopups(
       total,
       complete: false,
       error: e instanceof Error ? e.message : String(e),
+    };
+  }
+}
+
+export async function addDownstreamUserQuota(
+  input: DownstreamAdapterInput,
+  userIdToCredit: number,
+  quota: number,
+): Promise<DownstreamRechargeResult> {
+  const base = normalizeBaseUrl(input.baseUrl);
+  const adminUserId = input.adminUserId && input.adminUserId > 0 ? input.adminUserId : 1;
+  if (!Number.isInteger(userIdToCredit) || userIdToCredit <= 0) {
+    return { success: false, ambiguous: false, error: "用户 ID 无效" };
+  }
+  if (!Number.isInteger(quota) || quota <= 0) {
+    return { success: false, ambiguous: false, error: "充值额度必须是正整数 quota" };
+  }
+
+  try {
+    const res = await fetchJson(`${base}/api/user/manage`, {
+      method: "POST",
+      headers: newApiAdminHeaders(input.adminKey, adminUserId),
+      body: JSON.stringify({
+        id: userIdToCredit,
+        action: "add_quota",
+        value: quota,
+        mode: "add",
+      }),
+      timeoutMs: 30_000,
+      retries: 0,
+    });
+    const failure = newApiFailure(res.data);
+    if (!res.ok || failure) {
+      return {
+        success: false,
+        ambiguous: false,
+        error: failure || `充值失败 (HTTP ${res.status})`,
+        raw: res.data,
+      };
+    }
+    return { success: true, ambiguous: false, raw: res.data };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    return {
+      success: false,
+      ambiguous: true,
+      error: message.includes("abort")
+        ? "充值请求超时，远端是否到账未知，请先核验余额"
+        : `充值结果未知：${message}`,
     };
   }
 }

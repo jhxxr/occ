@@ -10,9 +10,9 @@ datasource db {
 }
 
 /// Upstream API relay provider
-/// type: NEWAPI | SUB2API | MOLIFANG | SUB2_ADMIN | ONEAPI | OTHER
+/// type: NEWAPI | SUB2API | SUB2API_KEY | SUB2_ADMIN | ONEAPI | OTHER
 /// SUB2API = 第三方面板（邮箱密码/JWT）
-/// MOLIFANG = 普通调用 Key 逐条查询 /v1/usage
+/// SUB2API_KEY = Sub2API 普通调用 Key 逐条查询 /v1/usage
 /// SUB2_ADMIN = 自建 Sub2API（管理员 X-API-Key）
 model UpstreamProvider {
   id                     String    @id @default(cuid())

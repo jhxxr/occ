@@ -3,9 +3,10 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import {
   publicBoundKey,
-  refreshMolifangProviderAggregate,
-  syncMolifangBoundKey,
-} from "@/lib/molifang/sync";
+  refreshSub2ApiKeyProviderAggregate,
+  syncSub2ApiKeyBoundKey,
+} from "@/lib/sub2api-key/sync";
+import { isSub2ApiKeyType } from "@/lib/provider-kinds";
 import { recomputeCostFlags } from "@/lib/sub2/sync-usage";
 
 type Ctx = { params: Promise<{ id: string; keyId: string }> };
@@ -13,7 +14,7 @@ type Ctx = { params: Promise<{ id: string; keyId: string }> };
 async function loadOwned(id: string, keyId: string) {
   const provider = await prisma.upstreamProvider.findUnique({ where: { id } });
   if (!provider) throw new Error("上游不存在");
-  if (provider.type !== "MOLIFANG") throw new Error("该上游不支持本地多 Key 绑定");
+  if (!isSub2ApiKeyType(provider.type)) throw new Error("该上游不是 Sub2API Key 模式");
   const key = await prisma.upstreamBoundKey.findFirst({
     where: { id: keyId, providerId: id, removedAt: null },
   });
@@ -40,8 +41,8 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
       return NextResponse.json({ error: "参数不合法" }, { status: 400 });
     }
     if (parsed.data.sync) {
-      const result = await syncMolifangBoundKey(id, keyId);
-      await refreshMolifangProviderAggregate(id);
+      const result = await syncSub2ApiKeyBoundKey(id, keyId);
+      await refreshSub2ApiKeyProviderAggregate(id);
       if (!result.success) {
         return NextResponse.json({ error: result.error }, { status: 502 });
       }
@@ -52,7 +53,7 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
       ? await prisma.upstreamBoundKey.update({ where: { id: key.id }, data })
       : await prisma.upstreamBoundKey.findUniqueOrThrow({ where: { id: key.id } });
     if (parsed.data.countAsCost !== undefined) await recomputeCostFlags(id);
-    await refreshMolifangProviderAggregate(id);
+    await refreshSub2ApiKeyProviderAggregate(id);
     return NextResponse.json({ data: publicBoundKey(updated) });
   } catch (error) {
     return NextResponse.json(
@@ -76,7 +77,7 @@ export async function DELETE(_req: NextRequest, ctx: Ctx) {
         secretFingerprint: `removed:${key.id}`,
       },
     });
-    await refreshMolifangProviderAggregate(id);
+    await refreshSub2ApiKeyProviderAggregate(id);
     return NextResponse.json({ success: true });
   } catch (error) {
     return NextResponse.json(

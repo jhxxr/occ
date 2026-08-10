@@ -3,9 +3,15 @@ import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { getSub2ProxyUrl } from "@/lib/sub2/settings";
 import { fetchDownstreamStats, fetchUpstreamBalance } from "@/lib/adapters";
 import { syncSub2ApiKeys } from "@/lib/sub2/sync-keys";
-import { syncMolifangProvider } from "@/lib/molifang/sync";
+import { syncSub2ApiKeyProvider } from "@/lib/sub2api-key/sync";
 import { detectRechargeOnSync } from "@/lib/recharge";
-import { isSelfHosted, relayOnly, selfHostedOnly } from "@/lib/provider-kinds";
+import {
+  isSelfHosted,
+  isSub2ApiKeyType,
+  normalizeProviderType,
+  relayOnly,
+  selfHostedOnly,
+} from "@/lib/provider-kinds";
 import {
   syncDownstreamModelUsage,
   syncDownstreamTopups,
@@ -141,8 +147,8 @@ export async function syncUpstreamProvider(id: string): Promise<SyncResultItem> 
     return syncSelfHostedProvider(id);
   }
 
-  if (provider.type === "MOLIFANG") {
-    const result = await syncMolifangProvider(id);
+  if (isSub2ApiKeyType(provider.type)) {
+    const result = await syncSub2ApiKeyProvider(id);
     return {
       id,
       name: provider.name,
@@ -808,7 +814,7 @@ export async function getDashboardData() {
       id: p.id,
       name: p.name,
       baseUrl: p.baseUrl,
-      type: p.type,
+      type: normalizeProviderType(p.type),
       discountRate: p.discountRate,
       currency: p.currency,
       alertThreshold: p.alertThreshold,

@@ -15,7 +15,7 @@ function nonNegative(value: unknown): number {
   return Math.max(0, finite(value) ?? 0);
 }
 
-export interface MolifangDailyUsage {
+export interface Sub2ApiKeyDailyUsage {
   day: string;
   requests: number;
   inputTokens: number;
@@ -26,25 +26,25 @@ export interface MolifangDailyUsage {
   standardCost: number;
 }
 
-export interface MolifangUsage {
+export interface Sub2ApiKeyUsage {
   balance: number;
   totalActualCost: number;
   todayActualCost: number;
-  daily: MolifangDailyUsage[];
+  daily: Sub2ApiKeyDailyUsage[];
   modelStats: unknown[];
 }
 
-export class MolifangError extends Error {
+export class Sub2ApiKeyError extends Error {
   status: number;
 
   constructor(message: string, status = 400) {
     super(message);
-    this.name = "MolifangError";
+    this.name = "Sub2ApiKeyError";
     this.status = status;
   }
 }
 
-export function parseMolifangUsage(payload: unknown): MolifangUsage {
+export function parseSub2ApiKeyUsage(payload: unknown): Sub2ApiKeyUsage {
   const root = asRecord(payload);
   const usage = asRecord(root?.usage);
   const total = asRecord(usage?.total);
@@ -53,10 +53,10 @@ export function parseMolifangUsage(payload: unknown): MolifangUsage {
   const totalActualCost = finite(total?.actual_cost);
 
   if (!root || root.isValid === false) {
-    throw new MolifangError("该 API Key 已失效", 401);
+    throw new Sub2ApiKeyError("该 API Key 已失效", 401);
   }
   if (balance == null || totalActualCost == null) {
-    throw new MolifangError("上游 /v1/usage 返回格式不受支持", 502);
+    throw new Sub2ApiKeyError("上游 /v1/usage 返回格式不受支持", 502);
   }
 
   const daily = Array.isArray(root.daily_usage)
@@ -86,10 +86,10 @@ export function parseMolifangUsage(payload: unknown): MolifangUsage {
   };
 }
 
-export async function fetchMolifangUsage(
+export async function fetchSub2ApiKeyUsage(
   baseUrl: string,
   apiKey: string,
-): Promise<MolifangUsage> {
+): Promise<Sub2ApiKeyUsage> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 20_000);
   try {
@@ -105,20 +105,20 @@ export async function fetchMolifangUsage(
     const payload = await response.json().catch(() => null);
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) {
-        throw new MolifangError("API Key 无效或无权查询用量", response.status);
+        throw new Sub2ApiKeyError("API Key 无效或无权查询用量", response.status);
       }
       if (response.status === 429) {
-        throw new MolifangError("上游请求过于频繁，请稍后重试", 429);
+        throw new Sub2ApiKeyError("上游请求过于频繁，请稍后重试", 429);
       }
-      throw new MolifangError(`上游用量查询失败 (HTTP ${response.status})`, response.status);
+      throw new Sub2ApiKeyError(`上游用量查询失败 (HTTP ${response.status})`, response.status);
     }
-    return parseMolifangUsage(payload);
+    return parseSub2ApiKeyUsage(payload);
   } catch (error) {
-    if (error instanceof MolifangError) throw error;
+    if (error instanceof Sub2ApiKeyError) throw error;
     if (error instanceof Error && error.name === "AbortError") {
-      throw new MolifangError("上游用量查询超时", 504);
+      throw new Sub2ApiKeyError("上游用量查询超时", 504);
     }
-    throw new MolifangError("无法连接上游用量接口", 502);
+    throw new Sub2ApiKeyError("无法连接上游用量接口", 502);
   } finally {
     clearTimeout(timeout);
   }

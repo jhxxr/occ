@@ -5,7 +5,12 @@ import { prisma } from "@/lib/db";
 import { encryptSecret, maskSecret, decryptSecret } from "@/lib/crypto";
 import { sub2Login } from "@/lib/adapters";
 import { getSub2ProxyUrl } from "@/lib/sub2/settings";
-import { isSelfHosted, relayOnly } from "@/lib/provider-kinds";
+import {
+  isSelfHosted,
+  isSub2ApiKeyType,
+  normalizeProviderType,
+  relayOnly,
+} from "@/lib/provider-kinds";
 import { resolveUsageArchivePath } from "@/lib/usage-retention";
 
 /** 自建站只能在 /api/self-hosted 管，避免把 Admin Key 记录改成第三方面板 */
@@ -19,7 +24,7 @@ const providerSchema = z
     baseUrl: z.string().url(),
     apiKey: z.string().optional().default(""),
     type: z
-      .enum(["NEWAPI", "SUB2API", "MOLIFANG", "ONEAPI", "OTHER"])
+      .enum(["NEWAPI", "SUB2API", "SUB2API_KEY", "MOLIFANG", "ONEAPI", "OTHER"])
       .default("NEWAPI"),
     accountEmail: z.string().email().optional().nullable(),
     accountPassword: z.string().optional().nullable(),
@@ -41,7 +46,7 @@ const providerSchema = z
           path: ["accountEmail"],
         });
       }
-    } else if (val.type !== "MOLIFANG" && (!val.apiKey || !val.apiKey.trim())) {
+    } else if (!isSub2ApiKeyType(val.type) && (!val.apiKey || !val.apiKey.trim())) {
       ctx.addIssue({
         code: "custom",
         message: "API Key 必填",
@@ -60,7 +65,7 @@ const providerSchema = z
 const providerPatchSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   baseUrl: z.string().url().optional(),
-  type: z.enum(["NEWAPI", "SUB2API", "MOLIFANG", "ONEAPI", "OTHER"]).optional(),
+  type: z.enum(["NEWAPI", "SUB2API", "SUB2API_KEY", "MOLIFANG", "ONEAPI", "OTHER"]).optional(),
   accountEmail: z.string().email().nullable().optional(),
   discountRate: z.number().positive().optional(),
   currency: z.string().min(1).max(10).optional(),
@@ -103,6 +108,7 @@ function publicProvider(p: {
 }) {
   return {
     ...p,
+    type: normalizeProviderType(p.type),
     apiKey: p.apiKey ? maskSecret(decryptSecret(p.apiKey)) : "",
     apiKeySet: !!p.apiKey,
     accountPassword: p.accountPassword ? "••••••••" : null,
@@ -155,7 +161,10 @@ export async function POST(req: NextRequest) {
         { status: 400 },
       );
     }
-    const data = parsed.data;
+    const data = {
+      ...parsed.data,
+      type: normalizeProviderType(parsed.data.type),
+    };
 
     let apiKey = data.apiKey?.trim() || "";
     let refreshToken: string | null = null;
@@ -180,7 +189,7 @@ export async function POST(req: NextRequest) {
       tokenExpiresAt = login.tokens.expiresAt;
     }
 
-    if (!apiKey && data.type !== "SUB2API" && data.type !== "MOLIFANG") {
+    if (!apiKey && data.type !== "SUB2API" && !isSub2ApiKeyType(data.type)) {
       return NextResponse.json({ error: "API Key 必填" }, { status: 400 });
     }
 
@@ -249,6 +258,12 @@ export async function PUT(req: NextRequest) {
     }
 
     const updates: Record<string, unknown> = { ...parsed.data };
+    if (typeof updates.type === "string") {
+      updates.type = normalizeProviderType(updates.type);
+    } else if (isSub2ApiKeyType(existing.type)) {
+      // 编辑旧记录时顺手迁移为规范类型，不触碰绑定 Key 或历史用量。
+      updates.type = normalizeProviderType(existing.type);
+    }
 
     if (body.apiKey && typeof body.apiKey === "string" && !body.apiKey.includes("•")) {
       updates.apiKey = encryptSecret(body.apiKey);

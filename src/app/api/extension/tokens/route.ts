@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { createExtensionToken } from "@/lib/crypto";
-import { isSelfHosted, relayOnly } from "@/lib/provider-kinds";
+import {
+  isSelfHosted,
+  normalizeProviderType,
+  relayOnly,
+} from "@/lib/provider-kinds";
 import {
   DEFAULT_TOKEN_TTL_DAYS,
   isTokenExpired,
@@ -68,11 +72,14 @@ export async function GET() {
       toMetadata(r, r.providerId ? nameMap[r.providerId] : null),
     ),
     // 只列中转上游，自建站不进扩展绑定下拉
-    providers: await prisma.upstreamProvider.findMany({
+    providers: (await prisma.upstreamProvider.findMany({
       where: relayOnly,
       orderBy: { createdAt: "asc" },
       select: { id: true, name: true, baseUrl: true, type: true },
-    }),
+    })).map((provider) => ({
+      ...provider,
+      type: normalizeProviderType(provider.type),
+    })),
   });
 }
 

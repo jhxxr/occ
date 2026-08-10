@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Sub2ProviderManager from "@/components/providers/sub2-provider-manager";
-import MolifangProviderManager from "@/components/providers/molifang-provider-manager";
+import Sub2ApiKeyProviderManager from "@/components/providers/sub2api-key-provider-manager";
 import { Spinner } from "@/components/ui/spinner";
 
 export default function ProviderDetailPage() {
@@ -26,6 +26,6 @@ export default function ProviderDetailPage() {
   if (!type) {
     return <div className="flex min-h-[40vh] items-center justify-center"><Spinner /></div>;
   }
-  if (type === "MOLIFANG") return <MolifangProviderManager />;
+  if (type === "SUB2API_KEY") return <Sub2ApiKeyProviderManager />;
   return <Sub2ProviderManager />;
 }

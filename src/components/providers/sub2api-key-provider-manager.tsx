@@ -33,7 +33,7 @@ interface BoundKey {
   modelStats: unknown[];
 }
 
-export default function MolifangProviderManager() {
+export default function Sub2ApiKeyProviderManager() {
   const params = useParams();
   const id = String(params.id || "");
   const [provider, setProvider] = useState<ProviderMeta | null>(null);
@@ -130,9 +130,6 @@ export default function MolifangProviderManager() {
     }
   }
 
-  const totalBalance = keys
-    .filter((key) => key.status === "active")
-    .reduce((sum, key) => sum + (key.lastBalance || 0), 0);
   const totalCost = keys
     .filter((key) => key.status === "active" && key.countAsCost)
     .reduce((sum, key) => sum + (key.lastTotalActualCost || 0), 0);
@@ -143,14 +140,14 @@ export default function MolifangProviderManager() {
         <ArrowLeft className="h-4 w-4" /> 上游站点
       </Link>
       <TopBar
-        title={`${provider?.name || "MoLiFang"} · 绑定密钥`}
-        subtitle="每条 Key 独立读取 /v1/usage，再汇总为一个供应商"
+        title={`${provider?.name || "Sub2API Key 模式"} · 绑定密钥`}
+        subtitle="每条 Key 独立读取用量，账号余额只计一次"
         showSync={false}
       />
 
       <div className="grid gap-4 sm:grid-cols-3">
         <Card><CardContent className="p-4"><p className="text-xs text-muted">启用 Key</p><p className="font-data text-2xl text-text">{keys.filter((key) => key.status === "active").length}</p></CardContent></Card>
-        <Card><CardContent className="p-4"><p className="text-xs text-muted">聚合余额</p><p className="font-data text-2xl text-mint">{formatRmb(totalBalance * (provider?.discountRate || 1))}</p></CardContent></Card>
+        <Card><CardContent className="p-4"><p className="text-xs text-muted">账号余额</p><p className="font-data text-2xl text-mint">{formatRmb(provider?.lastBalance == null ? null : provider.lastBalance * provider.discountRate)}</p></CardContent></Card>
         <Card><CardContent className="p-4"><p className="text-xs text-muted">计入成本的累计用量</p><p className="font-data text-2xl text-amber">{formatRmb(totalCost * (provider?.discountRate || 1))}</p></CardContent></Card>
       </div>
 
@@ -175,7 +172,7 @@ export default function MolifangProviderManager() {
                 <div className="space-y-1">
                   <div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold text-text">{key.name}</h3><Badge variant={key.status === "active" ? "mint" : "default"}>{key.status === "active" ? "启用" : "停用"}</Badge>{key.countAsCost && <Badge variant="amber">计入成本</Badge>}</div>
                   <p className="font-data text-xs text-muted">{key.keyPreview}</p>
-                  <p className="text-xs text-secondary">余额 {formatRmb((key.lastBalance || 0) * (provider?.discountRate || 1))} · 今日实际用量 {(key.lastTodayActualCost || 0).toFixed(6)} · 累计 {(key.lastTotalActualCost || 0).toFixed(6)}</p>
+                  <p className="text-xs text-secondary">账号余额（该 Key 查询） {formatRmb(key.lastBalance == null || !provider ? null : key.lastBalance * provider.discountRate)} · 今日实际用量 {(key.lastTodayActualCost || 0).toFixed(6)} · 累计 {(key.lastTotalActualCost || 0).toFixed(6)}</p>
                   <p className="text-[11px] text-muted">{key.lastSuccessAt ? `成功同步于 ${new Date(key.lastSuccessAt).toLocaleString("zh-CN")}` : "尚未成功同步"}</p>
                   {key.lastError && <p className="text-xs text-coral">{key.lastError}</p>}
                 </div>

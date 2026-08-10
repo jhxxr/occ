@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { prisma } from "@/lib/db";
 import { decryptSecret, encryptSecret, maskSecret } from "@/lib/crypto";
-import { fetchMolifangUsage, MolifangUsage } from "@/lib/molifang/client";
-
-export const MOLIFANG_TYPE = "MOLIFANG";
+import { fetchSub2ApiKeyUsage } from "@/lib/sub2api-key/client";
+import type { Sub2ApiKeyUsage } from "@/lib/sub2api-key/client";
+import { isSub2ApiKeyType } from "@/lib/provider-kinds";
+import { selectSharedAccountBalance } from "@/lib/sub2api-key/aggregate";
 
 export function boundKeyFingerprint(secret: string): string {
   return createHash("sha256").update(secret.trim()).digest("hex");
@@ -50,10 +51,10 @@ export function publicBoundKey(key: {
   };
 }
 
-async function loadMolifangProvider(providerId: string) {
+async function loadSub2ApiKeyProvider(providerId: string) {
   const provider = await prisma.upstreamProvider.findUnique({ where: { id: providerId } });
   if (!provider) throw new Error("上游不存在");
-  if (provider.type !== MOLIFANG_TYPE) throw new Error("该上游不支持本地多 Key 绑定");
+  if (!isSub2ApiKeyType(provider.type)) throw new Error("该上游不是 Sub2API Key 模式");
   if (provider.retiredAt) throw new Error("该上游已弃用，不能继续远端同步");
   return provider;
 }
@@ -64,7 +65,7 @@ async function writeDailyUsage(
   keyName: string,
   countAsCost: boolean,
   discountRate: number,
-  usage: MolifangUsage,
+  usage: Sub2ApiKeyUsage,
 ) {
   for (const day of usage.daily) {
     const existing = await prisma.upstreamUsageDaily.findUnique({
@@ -108,11 +109,11 @@ async function writeDailyUsage(
   }
 }
 
-export async function addMolifangBoundKey(
+export async function addSub2ApiKeyBoundKey(
   providerId: string,
   input: { name: string; secret: string; countAsCost?: boolean },
 ) {
-  const provider = await loadMolifangProvider(providerId);
+  const provider = await loadSub2ApiKeyProvider(providerId);
   const secret = input.secret.trim();
   const name = input.name.trim();
   if (!name) throw new Error("Key 名称不能为空");
@@ -124,7 +125,7 @@ export async function addMolifangBoundKey(
   });
   if (duplicate) throw new Error("该 API Key 已绑定，请勿重复添加");
 
-  const usage = await fetchMolifangUsage(provider.baseUrl, secret);
+  const usage = await fetchSub2ApiKeyUsage(provider.baseUrl, secret);
   const countAsCost = input.countAsCost ?? true;
   const key = await prisma.upstreamBoundKey.create({
     data: {
@@ -143,12 +144,12 @@ export async function addMolifangBoundKey(
     },
   });
   await writeDailyUsage(providerId, key.id, name, countAsCost, provider.discountRate, usage);
-  await refreshMolifangProviderAggregate(providerId);
+  await refreshSub2ApiKeyProviderAggregate(providerId);
   return key;
 }
 
-export async function syncMolifangBoundKey(providerId: string, keyId: string) {
-  const provider = await loadMolifangProvider(providerId);
+export async function syncSub2ApiKeyBoundKey(providerId: string, keyId: string) {
+  const provider = await loadSub2ApiKeyProvider(providerId);
   const key = await prisma.upstreamBoundKey.findFirst({
     where: { id: keyId, providerId, removedAt: null },
   });
@@ -158,7 +159,7 @@ export async function syncMolifangBoundKey(providerId: string, keyId: string) {
   if (!secret) throw new Error("API Key 无法解密，请重新绑定");
 
   try {
-    const usage = await fetchMolifangUsage(provider.baseUrl, secret);
+    const usage = await fetchSub2ApiKeyUsage(provider.baseUrl, secret);
     const previous = key.lastTotalActualCost;
     const reset = previous != null && usage.totalActualCost < previous;
     const delta = previous == null || reset
@@ -195,11 +196,12 @@ export async function syncMolifangBoundKey(providerId: string, keyId: string) {
   }
 }
 
-export async function refreshMolifangProviderAggregate(providerId: string) {
+export async function refreshSub2ApiKeyProviderAggregate(providerId: string) {
   const keys = await prisma.upstreamBoundKey.findMany({
     where: { providerId, status: "active", removedAt: null },
   });
-  const balance = keys.reduce((sum, key) => sum + (key.lastBalance ?? 0), 0);
+  // /v1/usage 的余额是供应商账号级余额，不是每条 Key 的独立额度。
+  const balance = selectSharedAccountBalance(keys) ?? 0;
   const consumed = keys.reduce((sum, key) => sum + (key.lastTotalActualCost ?? 0), 0);
   const business = keys.reduce(
     (sum, key) => sum + (key.countAsCost ? key.lastTotalActualCost ?? 0 : 0),
@@ -212,8 +214,8 @@ export async function refreshMolifangProviderAggregate(providerId: string) {
   return { keys: keys.length, balance, consumed, business };
 }
 
-export async function syncMolifangProvider(providerId: string) {
-  const provider = await loadMolifangProvider(providerId);
+export async function syncSub2ApiKeyProvider(providerId: string) {
+  const provider = await loadSub2ApiKeyProvider(providerId);
   const keys = await prisma.upstreamBoundKey.findMany({
     where: { providerId, status: "active", removedAt: null },
     orderBy: { createdAt: "asc" },
@@ -239,8 +241,8 @@ export async function syncMolifangProvider(providerId: string) {
   }
 
   const results = [];
-  for (const key of keys) results.push(await syncMolifangBoundKey(providerId, key.id));
-  const aggregate = await refreshMolifangProviderAggregate(providerId);
+  for (const key of keys) results.push(await syncSub2ApiKeyBoundKey(providerId, key.id));
+  const aggregate = await refreshSub2ApiKeyProviderAggregate(providerId);
   const succeeded = results.filter((result) => result.success);
   const failed = results.filter((result) => !result.success);
   const businessDelta = succeeded.reduce((sum, result) => {

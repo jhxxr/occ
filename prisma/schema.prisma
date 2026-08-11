@@ -315,40 +315,45 @@ model UpstreamRechargeLog {
 }
 
 model DownstreamSite {
-  id                    String    @id @default(cuid())
-  name                  String    @db.VarChar(200)
-  baseUrl               String    @db.VarChar(500)
-  adminKey              String    @db.Text
-  adminUserId           Int       @default(1)
-  quotaPerDollar        Float     @default(500000)
-  revenueCurrency       String    @default("CNY") @db.VarChar(10)
-  excludeUserIds        String    @default("[]") @db.VarChar(2000)
+  id                      String    @id @default(cuid())
+  name                    String    @db.VarChar(200)
+  baseUrl                 String    @db.VarChar(500)
+  adminKey                String    @db.Text
+  adminUserId             Int       @default(1)
+  quotaPerDollar          Float     @default(500000)
+  revenueCurrency         String    @default("CNY") @db.VarChar(10)
+  excludeUserIds          String    @default("[]") @db.VarChar(2000)
   /// 私域用户 id（自己推广来的）。空数组 = 全站都算公共池。
   /// 与 excludeUserIds 的关系：先剔测试号，剩下的付费账号再分私域 / 公共。
   /// 同时出现在两个名单里时，排除优先 —— 测试号永远不算收入。
-  privateUserIds        String    @default("[]") @db.VarChar(2000)
-  enabled               Boolean   @default(true)
-  notes                 String?   @db.Text
-  lastConsumed          Float?
-  lastRevenue           Float?
-  lastSyncAt            DateTime?
-  lastError             String?   @db.Text
+  privateUserIds          String    @default("[]") @db.VarChar(2000)
+  enabled                 Boolean   @default(true)
+  notes                   String?   @db.Text
+  lastConsumed            Float?
+  lastRevenue             Float?
+  lastSyncAt              DateTime?
+  lastError               String?   @db.Text
   /// 充值订单首次历史回填是否完整；只有 true 时历史流入才可信
-  topupBackfillComplete Boolean   @default(false)
-  topupLastSyncAt       DateTime?
-  topupSyncError        String?   @db.Text
+  topupBackfillComplete   Boolean   @default(false)
+  topupLastSyncAt         DateTime?
+  topupSyncError          String?   @db.Text
   /// 当前用户余额最近一次完整同步时间；余额存量独立于充值历史
-  balanceLastSyncAt     DateTime?
-  balanceSyncError      String?   @db.Text
-  createdAt             DateTime  @default(now())
-  updatedAt             DateTime  @updatedAt
+  balanceLastSyncAt       DateTime?
+  balanceSyncError        String?   @db.Text
+  /// 管理充值启用时间；在此之前的消费沿用历史面值口径
+  rechargeLedgerEnabledAt DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
 
-  snapshots       DownstreamSnapshot[]
-  usageDaily      DownstreamUsageDaily[]
-  topups          DownstreamTopup[]
-  userBalances    DownstreamUserBalance[]
-  rechargeOps     DownstreamRechargeOperation[]
-  creditLots      DownstreamCreditLot[]
+  snapshots         DownstreamSnapshot[]
+  usageDaily        DownstreamUsageDaily[]
+  topups            DownstreamTopup[]
+  userBalances      DownstreamUserBalance[]
+  rechargeOps       DownstreamRechargeOperation[]
+  redemptionCodes   DownstreamRedemptionCode[]
+  giftCodeIntents   DownstreamGiftCodeIntent[]
+  creditLots        DownstreamCreditLot[]
+  creditAllocations DownstreamCreditAllocation[]
 
   orphanChannels DownstreamOrphanChannel[]
   channelDays    DownstreamChannelDay[]
@@ -370,8 +375,8 @@ model DownstreamTopup {
   paymentMethod   String    @default("") @db.VarChar(50)
   paymentProvider String    @default("") @db.VarChar(50)
   /// 原始来源字段明确可识别时归一化；未知不得猜测
-  source           String   @default("UNKNOWN") @db.VarChar(30)
-  sourceRaw       String   @default("") @db.VarChar(100)
+  source          String    @default("UNKNOWN") @db.VarChar(30)
+  sourceRaw       String    @default("") @db.VarChar(100)
   createdAtRemote DateTime?
   /// 实际到账时刻；周期归属只认它
   completedAt     DateTime?
@@ -387,17 +392,17 @@ model DownstreamTopup {
 }
 
 model DownstreamUserBalance {
-  id            String   @id @default(cuid())
-  downstreamId  String
-  userId        Int
-  username      String   @default("") @db.VarChar(200)
-  role          Int      @default(0)
-  quota         Float    @default(0)
-  usedQuota     Float    @default(0)
-  observedAt    DateTime
-  complete      Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id           String   @id @default(cuid())
+  downstreamId String
+  userId       Int
+  username     String   @default("") @db.VarChar(200)
+  role         Int      @default(0)
+  quota        Float    @default(0)
+  usedQuota    Float    @default(0)
+  observedAt   DateTime
+  complete     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   downstream DownstreamSite @relation(fields: [downstreamId], references: [id], onDelete: Cascade)
 
@@ -406,28 +411,66 @@ model DownstreamUserBalance {
   @@index([downstreamId, role])
 }
 
-model DownstreamRechargeOperation {
-  id              String   @id @default(cuid())
-  downstreamId    String
-  userId          Int
-  idempotencyKey  String   @db.VarChar(100)
-  paidRmb         Float    @default(0)
-  creditedRmb     Float    @default(0)
-  creditedQuota   Float    @default(0)
-  bonusRmb        Float    @default(0)
-  quotaPerDollar  Float    @default(500000)
-  balanceBefore  Float?
-  balanceAfter   Float?
-  status          String   @default("PREPARED") @db.VarChar(30)
-  source          String   @default("ADMIN_MANUAL") @db.VarChar(30)
-  note            String?  @db.Text
-  error           String?  @db.Text
-  remoteRaw       String?  @db.Text
-  operator        String   @default("") @db.VarChar(200)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+model DownstreamGiftCodeIntent {
+  id           String   @id @default(cuid())
+  downstreamId String
+  keyHash      String   @db.VarChar(64)
+  createdAt    DateTime @default(now())
 
   downstream DownstreamSite @relation(fields: [downstreamId], references: [id], onDelete: Cascade)
+
+  @@unique([downstreamId, keyHash])
+  @@index([downstreamId, createdAt])
+}
+
+model DownstreamRedemptionCode {
+  id              String    @id @default(cuid())
+  downstreamId    String
+  remoteId        Int
+  name            String    @default("") @db.VarChar(200)
+  keyPreview      String    @default("") @db.VarChar(20)
+  quota           Float     @default(0)
+  status          Int       @default(1)
+  giftManaged     Boolean   @default(false)
+  createdAtRemote DateTime?
+  redeemedAt      DateTime?
+  usedUserId      Int?
+  expiredAt       DateTime?
+  syncedAt        DateTime  @default(now())
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  downstream DownstreamSite @relation(fields: [downstreamId], references: [id], onDelete: Cascade)
+
+  @@unique([downstreamId, remoteId])
+  @@index([downstreamId, status])
+  @@index([downstreamId, usedUserId, redeemedAt])
+}
+
+/// Legacy records created by Orbit's removed direct-quota mutation flow.
+/// Kept read-only so existing financial history remains auditable.
+model DownstreamRechargeOperation {
+  id             String   @id @default(cuid())
+  downstreamId   String
+  userId         Int
+  idempotencyKey String   @db.VarChar(100)
+  paidRmb        Float    @default(0)
+  creditedRmb    Float    @default(0)
+  creditedQuota  Float    @default(0)
+  bonusRmb       Float    @default(0)
+  quotaPerDollar Float    @default(500000)
+  balanceBefore  Float?
+  balanceAfter   Float?
+  status         String   @default("PREPARED") @db.VarChar(30)
+  source         String   @default("ADMIN_MANUAL") @db.VarChar(30)
+  note           String?  @db.Text
+  error          String?  @db.Text
+  remoteRaw      String?  @db.Text
+  operator       String   @default("") @db.VarChar(200)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  downstream DownstreamSite        @relation(fields: [downstreamId], references: [id], onDelete: Cascade)
   creditLots DownstreamCreditLot[]
 
   @@unique([downstreamId, idempotencyKey])
@@ -440,6 +483,8 @@ model DownstreamCreditLot {
   downstreamId   String
   userId         Int
   operationId    String?
+  /// Stable idempotency key for externally sourced lots and replay-safe writes.
+  ledgerKey      String?  @unique @db.VarChar(200)
   source         String   @default("OPENING_UNKNOWN") @db.VarChar(30)
   originalQuota  Float    @default(0)
   remainingQuota Float    @default(0)
@@ -449,15 +494,36 @@ model DownstreamCreditLot {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  downstream  DownstreamSite @relation(fields: [downstreamId], references: [id], onDelete: Cascade)
+  downstream  DownstreamSite               @relation(fields: [downstreamId], references: [id], onDelete: Cascade)
   operation   DownstreamRechargeOperation? @relation(fields: [operationId], references: [id], onDelete: SetNull)
+  allocations DownstreamCreditAllocation[]
 
   @@index([downstreamId, userId, occurredAt])
   @@index([downstreamId, source])
 }
 
+model DownstreamCreditAllocation {
+  id            String   @id @default(cuid())
+  downstreamId  String
+  userId        Int
+  lotId         String
+  day           String   @db.VarChar(10)
+  ownership     String   @default("PUBLIC") @db.VarChar(20)
+  consumedQuota Float    @default(0)
+  recognizedRmb Float    @default(0)
+  source        String   @db.VarChar(30)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  downstream DownstreamSite      @relation(fields: [downstreamId], references: [id], onDelete: Cascade)
+  lot        DownstreamCreditLot @relation(fields: [lotId], references: [id], onDelete: Cascade)
+
+  @@unique([lotId, day, ownership])
+  @@index([downstreamId, day])
+  @@index([downstreamId, userId, day])
+}
+
 ///
-/// 一行同时存两个口径，别混用：
 /// - quota / grossRevenueRmb：**全部账号**的真实消费（含测试号），
 ///   用来跟上游成本对差值 —— 测试号也烧了上游额度。
 /// - revenueRmb：**只算付费账号**，这才是收入。测试号没人付钱，

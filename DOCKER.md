@@ -20,7 +20,6 @@ The image contains no application credentials. Supply all of these at runtime:
 - `AUTH_USERNAME`: private administrator username.
 - `AUTH_PASSWORD`: strong administrator password.
 - `AUTH_SECRET`: independent long random value used to sign session cookies.
-- `RECHARGE_SECURITY_PASSWORD`: separate password used to unlock downstream user recharge operations for 10 minutes.
 - `DATABASE_URL`: defaults to `file:/app/data/orbit.db` in the image.
 - `DEFAULT_USD_CNY`: optional; defaults to `7.2`.
 
@@ -51,7 +50,6 @@ ENCRYPTION_SECRET=<random value>
 AUTH_USERNAME=admin
 AUTH_PASSWORD=<strong password>
 AUTH_SECRET=<different random value>
-RECHARGE_SECURITY_PASSWORD=<separate recharge password>
 ```
 
 `ORBIT_IMAGE` and `ORBIT_PORT` are optional overrides. They default to `ghcr.io/jhxxr/occ:latest` and `3000`; set `ORBIT_IMAGE` to a SHA or version tag to pin production, and `ORBIT_PORT` to publish on a different host port. `DEFAULT_USD_CNY` defaults to `7.2`.

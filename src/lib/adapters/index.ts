@@ -13,7 +13,10 @@ import type {
   DownstreamTopupResult,
   DownstreamTopupRow,
   DownstreamTopupSource,
-  DownstreamRechargeResult,
+  DownstreamDailyUserUsageResult,
+  DownstreamRedemptionCreateResult,
+  DownstreamRedemptionResult,
+  DownstreamUserListResult,
   DownstreamUserRow,
   UpstreamAdapterInput,
   UpstreamFetchResult,
@@ -956,62 +959,159 @@ export async function fetchDownstreamTopups(
   }
 }
 
-export async function addDownstreamUserQuota(
+export async function fetchDownstreamRedemptions(
   input: DownstreamAdapterInput,
-  userIdToCredit: number,
-  quota: number,
-): Promise<DownstreamRechargeResult> {
+  opts: { maxPages?: number } = {},
+): Promise<DownstreamRedemptionResult> {
   const base = normalizeBaseUrl(input.baseUrl);
-  const adminUserId = input.adminUserId && input.adminUserId > 0 ? input.adminUserId : 1;
-  if (!Number.isInteger(userIdToCredit) || userIdToCredit <= 0) {
-    return { success: false, ambiguous: false, error: "用户 ID 无效" };
-  }
-  if (!Number.isInteger(quota) || quota <= 0) {
-    return { success: false, ambiguous: false, error: "充值额度必须是正整数 quota" };
-  }
+  const userId = input.adminUserId && input.adminUserId > 0 ? input.adminUserId : 1;
+  const headers = newApiAdminHeaders(input.adminKey, userId);
+  const maxPages = Math.max(1, Math.min(opts.maxPages ?? 10_000, 10_000));
+  const rows: DownstreamRedemptionResult["rows"] = [];
+  let total = 0;
 
   try {
-    const res = await fetchJson(`${base}/api/user/manage`, {
-      method: "POST",
-      headers: newApiAdminHeaders(input.adminKey, adminUserId),
-      body: JSON.stringify({
-        id: userIdToCredit,
-        action: "add_quota",
-        value: quota,
-        mode: "add",
-      }),
-      timeoutMs: 30_000,
-      retries: 0,
-    });
-    const failure = newApiFailure(res.data);
-    if (!res.ok || failure) {
-      return {
-        success: false,
-        ambiguous: false,
-        error: failure || `充值失败 (HTTP ${res.status})`,
-        raw: res.data,
-      };
+    for (let page = 1; page <= maxPages; page++) {
+      const res = await fetchJson(
+        `${base}/api/redemption/?p=${page}&page_size=100`,
+        { method: "GET", headers, timeoutMs: 30_000 },
+      );
+      const root = asRecord(res.data);
+      if (!res.ok || root?.success === false) {
+        return {
+          success: false,
+          rows,
+          scanned: rows.length,
+          total,
+          complete: false,
+          error:
+            (typeof root?.message === "string" && root.message) ||
+            `拉取兑换码失败 (HTTP ${res.status})`,
+        };
+      }
+      const payload = asRecord(root?.data) ?? root;
+      const items = payload?.items;
+      const remoteTotal = num(payload?.total);
+      if (remoteTotal != null && remoteTotal >= 0) total = remoteTotal;
+      if (!Array.isArray(items)) {
+        return {
+          success: false,
+          rows,
+          scanned: rows.length,
+          total,
+          complete: false,
+          error: "兑换码列表格式无法解析",
+        };
+      }
+
+      for (const item of items) {
+        const row = asRecord(item);
+        const remoteId = num(row?.id);
+        if (!row || remoteId == null) continue;
+        rows.push({
+          remoteId,
+          name: typeof row.name === "string" ? row.name : "",
+          key: typeof row.key === "string" ? row.key : "",
+          quota: num(row.quota) ?? 0,
+          status: num(row.status) ?? 0,
+          createdAt: unixSecondsToDate(row.created_time),
+          redeemedAt: unixSecondsToDate(row.redeemed_time),
+          usedUserId: num(row.used_user_id),
+          expiredAt: unixSecondsToDate(row.expired_time),
+        });
+      }
+
+      if (total > 0 && rows.length >= total) {
+        return { success: true, rows, scanned: rows.length, total, complete: true };
+      }
+      if (items.length === 0 || (items.length < 100 && total === 0)) {
+        const inferredTotal = total || rows.length;
+        return {
+          success: true,
+          rows,
+          scanned: rows.length,
+          total: inferredTotal,
+          complete: rows.length >= inferredTotal,
+        };
+      }
     }
-    return { success: true, ambiguous: false, raw: res.data };
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
+
+    return {
+      success: true,
+      rows,
+      scanned: rows.length,
+      total,
+      complete: total > 0 && rows.length >= total,
+      error: "兑换码超过同步分页上限",
+    };
+  } catch (error) {
     return {
       success: false,
-      ambiguous: true,
-      error: message.includes("abort")
-        ? "充值请求超时，远端是否到账未知，请先核验余额"
-        : `充值结果未知：${message}`,
+      rows,
+      scanned: rows.length,
+      total,
+      complete: false,
+      error: error instanceof Error ? error.message : String(error),
     };
   }
 }
 
-/** List NewAPI users for revenue exclusion UI */
+export async function createDownstreamRedemptions(
+  input: DownstreamAdapterInput,
+  payload: { name: string; quota: number; count: number; expiredTime?: number },
+): Promise<DownstreamRedemptionCreateResult> {
+  const base = normalizeBaseUrl(input.baseUrl);
+  const userId = input.adminUserId && input.adminUserId > 0 ? input.adminUserId : 1;
+  if (!payload.name.trim() || payload.name.trim().length > 20) {
+    return { success: false, keys: [], error: "兑换码名称需要 1-20 个字符" };
+  }
+  if (!Number.isInteger(payload.quota) || payload.quota <= 0) {
+    return { success: false, keys: [], error: "赠送额度必须是正整数 quota" };
+  }
+  if (!Number.isInteger(payload.count) || payload.count < 1 || payload.count > 100) {
+    return { success: false, keys: [], error: "每次可创建 1-100 个兑换码" };
+  }
+
+  try {
+    const res = await fetchJson(`${base}/api/redemption/`, {
+      method: "POST",
+      headers: newApiAdminHeaders(input.adminKey, userId),
+      body: JSON.stringify({
+        name: payload.name.trim(),
+        quota: payload.quota,
+        count: payload.count,
+        expired_time: payload.expiredTime || 0,
+      }),
+      timeoutMs: 30_000,
+      retries: 0,
+    });
+    const root = asRecord(res.data);
+    const keys = Array.isArray(root?.data)
+      ? root.data.filter((value): value is string => typeof value === "string")
+      : [];
+    if (!res.ok || root?.success === false) {
+      return {
+        success: false,
+        keys,
+        error:
+          (typeof root?.message === "string" && root.message) ||
+          `创建兑换码失败 (HTTP ${res.status})`,
+      };
+    }
+    return { success: true, keys };
+  } catch (error) {
+    return {
+      success: false,
+      keys: [],
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/** List all NewAPI users for revenue exclusion and balance accounting. */
 export async function listDownstreamUsers(
   input: DownstreamAdapterInput,
-): Promise<
-  | { success: true; users: DownstreamUserRow[] }
-  | { success: false; error: string }
-> {
+): Promise<DownstreamUserListResult> {
   const base = normalizeBaseUrl(input.baseUrl);
   const quotaPerDollar = input.quotaPerDollar || DEFAULT_QUOTA_PER_DOLLAR;
   const userId = input.adminUserId && input.adminUserId > 0 ? input.adminUserId : 1;
@@ -1022,64 +1122,84 @@ export async function listDownstreamUsers(
   const privateSet = new Set(
     (input.privateUserIds || []).map((x) => Number(x)).filter((n) => Number.isFinite(n)),
   );
+  const pageSize = 100;
+  const maxPages = 1_000;
 
   try {
-    const usersRes = await fetchJson(`${base}/api/user/?p=0&page_size=1000`, {
-      method: "GET",
-      headers,
-    });
-    if (!usersRes.ok) {
-      const root = asRecord(usersRes.data);
-      return {
-        success: false,
-        error:
-          (typeof root?.message === "string" && root.message) ||
-          `拉取用户失败 (HTTP ${usersRes.status})`,
-      };
-    }
-    const udata = asRecord(usersRes.data);
-    const payload = asRecord(udata?.data) ?? udata;
-    const items = (payload?.items ?? payload?.data ?? []) as unknown;
-    if (!Array.isArray(items)) {
-      return { success: false, error: "用户列表格式无法解析" };
-    }
-
     const users: DownstreamUserRow[] = [];
-    for (const row of items) {
-      const u = asRecord(row);
-      if (!u) continue;
-      const id = num(u.id);
-      if (id == null) continue;
-      const quota = num(u.quota) ?? 0;
-      const used = num(u.used_quota) ?? 0;
-      const role = num(u.role) ?? 0;
-      const autoExcluded = role >= 100;
-      users.push({
-        id,
-        username: String(u.username || ""),
-        display_name: typeof u.display_name === "string" ? u.display_name : undefined,
-        role,
-        status: num(u.status) ?? undefined,
-        email: typeof u.email === "string" ? u.email : undefined,
-        quota,
-        used_quota: used,
-        issuedUsd: quotaToUsd(quota + used, quotaPerDollar),
-        usedUsd: quotaToUsd(used, quotaPerDollar),
-        request_count: num(u.request_count) ?? undefined,
-        excluded: autoExcluded || excludeSet.has(id),
-        // 排除优先：测试号不算收入，也就谈不上私域
-        isPrivate: !autoExcluded && !excludeSet.has(id) && privateSet.has(id),
+    const seen = new Set<number>();
+    let total = 0;
+    for (let page = 1; page <= maxPages; page++) {
+      const usersRes = await fetchJson(`${base}/api/user/?p=${page}&page_size=${pageSize}`, {
+        method: "GET",
+        headers,
       });
+      if (!usersRes.ok) {
+        const root = asRecord(usersRes.data);
+        return {
+          success: false,
+          users,
+          scanned: users.length,
+          total,
+          complete: false,
+          error:
+            (typeof root?.message === "string" && root.message) ||
+            `拉取用户失败 (HTTP ${usersRes.status})`,
+        };
+      }
+      const udata = asRecord(usersRes.data);
+      const payload = asRecord(udata?.data) ?? udata;
+      const items = (payload?.items ?? payload?.data ?? []) as unknown;
+      const remoteTotal = num(payload?.total);
+      if (remoteTotal != null && remoteTotal >= 0) total = remoteTotal;
+      if (!Array.isArray(items)) {
+        return { success: false, users, scanned: users.length, total, complete: false, error: "用户列表格式无法解析" };
+      }
+
+      let added = 0;
+      for (const row of items) {
+        const u = asRecord(row);
+        if (!u) continue;
+        const id = num(u.id);
+        if (id == null || seen.has(id)) continue;
+        seen.add(id);
+        added++;
+        const quota = num(u.quota) ?? 0;
+        const used = num(u.used_quota) ?? 0;
+        const role = num(u.role) ?? 0;
+        const autoExcluded = role >= 100;
+        users.push({
+          id,
+          username: String(u.username || ""),
+          display_name: typeof u.display_name === "string" ? u.display_name : undefined,
+          role,
+          status: num(u.status) ?? undefined,
+          email: typeof u.email === "string" ? u.email : undefined,
+          quota,
+          used_quota: used,
+          issuedUsd: quotaToUsd(quota + used, quotaPerDollar),
+          usedUsd: quotaToUsd(used, quotaPerDollar),
+          request_count: num(u.request_count) ?? undefined,
+          excluded: autoExcluded || excludeSet.has(id),
+          isPrivate: !autoExcluded && !excludeSet.has(id) && privateSet.has(id),
+        });
+      }
+
+      if (total > 0 && users.length >= total) {
+        users.sort((a, b) => b.issuedUsd - a.issuedUsd);
+        return { success: true, users, scanned: users.length, total, complete: true };
+      }
+      if (items.length === 0 || added === 0 || (items.length < pageSize && total === 0)) {
+        users.sort((a, b) => b.issuedUsd - a.issuedUsd);
+        const inferredTotal = total || users.length;
+        return { success: true, users, scanned: users.length, total: inferredTotal, complete: users.length >= inferredTotal };
+      }
     }
     users.sort((a, b) => b.issuedUsd - a.issuedUsd);
-
-    return { success: true, users };
+    return { success: true, users, scanned: users.length, total, complete: false, error: "用户数量超过同步分页上限" };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    return {
-      success: false,
-      error: msg.includes("abort") ? "Request timeout" : msg,
-    };
+    return { success: false, users: [], scanned: 0, total: 0, complete: false, error: msg.includes("abort") ? "Request timeout" : msg };
   }
 }
 
@@ -1316,6 +1436,38 @@ export async function fetchDownstreamDailyUsage(
       privateResolved: false,
       error: msg.includes("abort") ? "Request timeout" : msg,
     };
+  }
+}
+
+export async function fetchDownstreamDailyUserUsage(
+  input: DownstreamAdapterInput & { startDay: string; endDay: string },
+): Promise<DownstreamDailyUserUsageResult> {
+  const base = normalizeBaseUrl(input.baseUrl);
+  const userId = input.adminUserId && input.adminUserId > 0 ? input.adminUserId : 1;
+  const headers = newApiAdminHeaders(input.adminKey, userId);
+  try {
+    const rangeStart = shanghaiDayBounds(input.startDay).start;
+    const rangeEnd = shanghaiDayBounds(input.endDay).end;
+    const res = await fetchJson(
+      `${base}/api/data/users?start_timestamp=${rangeStart}&end_timestamp=${rangeEnd}`,
+      { method: "GET", headers, timeoutMs: 30_000 },
+    );
+    if (!res.ok) return { success: false, rows: [], complete: false, error: `逐用户消费拉取失败 (HTTP ${res.status})` };
+    const data = asRecord(res.data)?.data;
+    if (!Array.isArray(data)) return { success: false, rows: [], complete: false, error: "逐用户消费格式无法解析" };
+    const rows = [];
+    for (const item of data) {
+      const row = asRecord(item);
+      const createdAt = num(row?.created_at);
+      const username = typeof row?.username === "string" ? row.username : "";
+      if (createdAt == null || !username) continue;
+      const day = shanghaiDay(createdAt * 1000);
+      if (day < input.startDay || day > input.endDay) continue;
+      rows.push({ day, occurredAt: new Date(createdAt * 1000), username, quota: num(row?.quota) ?? 0, requests: num(row?.count) ?? 0 });
+    }
+    return { success: true, rows, complete: data.length === 0 ? false : true, error: data.length === 0 ? "逐用户消费为空，无法执行赠送额度分摊" : undefined };
+  } catch (e) {
+    return { success: false, rows: [], complete: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
 

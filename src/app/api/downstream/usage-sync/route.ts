@@ -8,6 +8,7 @@ import {
   syncDownstreamTopups,
   syncDownstreamUsage,
 } from "@/lib/downstream-usage";
+import { prisma } from "@/lib/db";
 import { syncDownstreamUserBalances } from "@/lib/downstream-recharge";
 
 export const dynamic = "force-dynamic";
@@ -55,9 +56,27 @@ export async function POST(req: NextRequest) {
     const topupResults = id
       ? [await syncDownstreamTopups(id)]
       : await syncAllDownstreamTopups();
-    const balanceResults = id
-      ? [await syncDownstreamUserBalances(id).then(() => ({ success: true })).catch((error) => ({ success: false, error: error instanceof Error ? error.message : String(error) }))]
-      : [];
+    const balanceResults = [];
+    const balanceSiteIds = id
+      ? [id]
+      : (
+          await prisma.downstreamSite.findMany({
+            where: { enabled: true },
+            select: { id: true },
+          })
+        ).map((site) => site.id);
+    // Balance pagination can be expensive on large NewAPI sites. Run sites
+    // sequentially so one report refresh cannot stampede every downstream.
+    for (const siteId of balanceSiteIds) {
+      balanceResults.push(
+        await syncDownstreamUserBalances(siteId)
+          .then(() => ({ success: true }))
+          .catch((error) => ({
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          })),
+      );
+    }
 
     return NextResponse.json({
       data: {

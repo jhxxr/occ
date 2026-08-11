@@ -330,7 +330,7 @@ export default function DownstreamUsersPage() {
           className={buttonVariants({ variant: "outline", size: "sm" })}
         >
           <WalletCards className="h-3.5 w-3.5" />
-          用户充值
+          赠送兑换码
         </Link>
         <Button size="sm" variant="secondary" onClick={load}>
           <RefreshCw className="h-3.5 w-3.5" />

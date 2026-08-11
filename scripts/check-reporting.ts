@@ -41,6 +41,13 @@ import {
 } from "../src/lib/extension-token.ts";
 import { allocateOwnershipCosts } from "../src/lib/cost-allocation.ts";
 import { summarizePrepaid } from "../src/lib/prepaid.ts";
+import {
+  __resetGiftIssuanceLimit,
+  checkGiftIssuanceAllowed,
+  GIFT_ISSUANCE_LIMITS,
+  recordGiftIssuance,
+  validateGiftIssuanceValue,
+} from "../src/lib/gift-issuance-limit.ts";
 
 let passed = 0;
 function check(name: string, fn: () => void) {
@@ -663,6 +670,34 @@ check("新建 token 默认带期限，显式传 null 才永久", () => {
     Math.round((huge.getTime() - now.getTime()) / 86_400_000),
     MAX_TOKEN_TTL_DAYS,
   );
+});
+
+console.log("\n赠送兑换码签发限制");
+
+check("单码与单批面值上限在服务端生效", () => {
+  validateGiftIssuanceValue({ quota: 1_000 * 500_000, count: 5, quotaPerUnit: 500_000 });
+  assert.throws(
+    () => validateGiftIssuanceValue({ quota: 1_001 * 500_000, count: 1, quotaPerUnit: 500_000 }),
+    /单个赠送码不能超过/,
+  );
+  assert.throws(
+    () => validateGiftIssuanceValue({ quota: 501 * 500_000, count: 10, quotaPerUnit: 500_000 }),
+    /单批赠送总额不能超过/,
+  );
+});
+
+check("签发频率达到窗口上限后返回重试时间", () => {
+  __resetGiftIssuanceLimit();
+  const now = 1_000_000;
+  for (let i = 0; i < GIFT_ISSUANCE_LIMITS.MAX_REQUESTS_PER_WINDOW; i++) {
+    assert.equal(checkGiftIssuanceAllowed(now).allowed, true);
+    recordGiftIssuance(now);
+  }
+  const blocked = checkGiftIssuanceAllowed(now);
+  assert.equal(blocked.allowed, false);
+  assert.equal(blocked.retryAfterSec, GIFT_ISSUANCE_LIMITS.WINDOW_MS / 1000);
+  assert.equal(checkGiftIssuanceAllowed(now + GIFT_ISSUANCE_LIMITS.WINDOW_MS).allowed, true);
+  __resetGiftIssuanceLimit();
 });
 
 console.log(`\n全部通过：${passed} 项`);

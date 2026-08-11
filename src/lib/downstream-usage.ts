@@ -20,6 +20,7 @@ import {
   fetchDownstreamTopups,
   listDownstreamUsers,
 } from "@/lib/adapters";
+import { syncManagedCreditLedger } from "@/lib/downstream-credit-ledger";
 import { addDays, assertDay, shanghaiDay } from "@/lib/reporting-period";
 
 /** 收入按人民币口径直接累计：额度面值 ÷ 每元额度单位 */
@@ -319,6 +320,11 @@ export async function syncDownstreamUsage(
   }
   if (!privateResolved) {
     notes.push("拿不到逐账号消费，私域收入未拆分（需开启数据看板导出）");
+  }
+
+  const ledger = await syncManagedCreditLedger(siteId);
+  if (!ledger.success) {
+    notes.push(`赠送额度分摊失败：${ledger.error || "未知错误"}`);
   }
 
   await prisma.downstreamSite.update({

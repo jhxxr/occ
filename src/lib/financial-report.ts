@@ -275,7 +275,10 @@ export async function buildFinancialReport(
     selfHostedDaily,
     recharges,
     downstreamTopups,
+    managedRecharges,
     downstreamBalances,
+    creditAllocations,
+    bonusLots,
   ] = await Promise.all([
     getUsdCnyRate(),
     prisma.upstreamProvider.findMany({ where: relayOnly, orderBy: { createdAt: "asc" } }),
@@ -327,7 +330,17 @@ export async function buildFinancialReport(
         completedAt: true,
       },
     }),
+    prisma.downstreamRechargeOperation.findMany({
+      where: { status: "APPLIED" },
+      select: {
+        downstreamId: true,
+        userId: true,
+        paidRmb: true,
+        createdAt: true,
+      },
+    }),
     prisma.downstreamUserBalance.findMany({
+      where: { complete: true },
       select: {
         downstreamId: true,
         userId: true,
@@ -335,6 +348,14 @@ export async function buildFinancialReport(
         quota: true,
         observedAt: true,
       },
+    }),
+    prisma.downstreamCreditAllocation.findMany({
+      where: { day: { gte: period.startDay, lte: period.endDay } },
+      select: { downstreamId: true, userId: true, day: true, ownership: true, consumedQuota: true, recognizedRmb: true, source: true },
+    }),
+    prisma.downstreamCreditLot.findMany({
+      where: { source: { in: ["ADMIN_BONUS", "REDEEM_CODE"] } },
+      select: { downstreamId: true, userId: true, originalQuota: true, remainingQuota: true },
     }),
   ]);
 
@@ -448,15 +469,48 @@ export async function buildFinancialReport(
     }
   >();
 
+  const allocationBySiteDay = new Map<
+    string,
+    { bonusRmb: number; privateBonusRmb: number; bonusQuota: number }
+  >();
+  const quotaPerUnitBySiteDay = new Map(
+    totalRows.map((row) => [
+      `${row.downstreamId}|${row.day}`,
+      row.quotaPerUnit || DEFAULT_QUOTA_PER_UNIT,
+    ]),
+  );
+  for (const allocation of creditAllocations) {
+    if (allocation.ownership === "EXCLUDED") continue;
+    if (allocation.source !== "ADMIN_BONUS" && allocation.source !== "REDEEM_CODE") continue;
+    const key = `${allocation.downstreamId}|${allocation.day}`;
+    const current = allocationBySiteDay.get(key) || {
+      bonusRmb: 0,
+      privateBonusRmb: 0,
+      bonusQuota: 0,
+    };
+    const bonusRmb = allocation.consumedQuota /
+      (quotaPerUnitBySiteDay.get(key) || DEFAULT_QUOTA_PER_UNIT);
+    current.bonusRmb += bonusRmb;
+    if (allocation.ownership === "PRIVATE") current.privateBonusRmb += bonusRmb;
+    current.bonusQuota += allocation.consumedQuota;
+    allocationBySiteDay.set(key, current);
+  }
+
   for (const row of totalRows) {
-    revenueByDay.set(row.day, (revenueByDay.get(row.day) || 0) + (row.revenueRmb || 0));
+    const allocation = allocationBySiteDay.get(`${row.downstreamId}|${row.day}`);
+    const rowRevenue = Math.max(0, (row.revenueRmb || 0) - (allocation?.bonusRmb || 0));
+    const rowPrivateRevenue = Math.max(
+      0,
+      (row.privateRevenueRmb || 0) - (allocation?.privateBonusRmb || 0),
+    );
+    revenueByDay.set(row.day, (revenueByDay.get(row.day) || 0) + rowRevenue);
     grossByDay.set(
       row.day,
       (grossByDay.get(row.day) || 0) + (row.grossRevenueRmb || row.revenueRmb || 0),
     );
     privateByDay.set(
       row.day,
-      (privateByDay.get(row.day) || 0) + (row.privateRevenueRmb || 0),
+      (privateByDay.get(row.day) || 0) + rowPrivateRevenue,
     );
     const cur =
       siteAgg.get(row.downstreamId) ||
@@ -473,10 +527,10 @@ export async function buildFinancialReport(
         unresolvedPrivate: 0,
       };
     const gross = row.grossRevenueRmb || row.revenueRmb || 0;
-    cur.revenueRmb += row.revenueRmb || 0;
-    cur.privateRmb += row.privateRevenueRmb || 0;
+    cur.revenueRmb += rowRevenue;
+    cur.privateRmb += rowPrivateRevenue;
     cur.grossRmb += gross;
-    cur.excludedRmb += gross - (row.revenueRmb || 0);
+    cur.excludedRmb += Math.max(0, gross - (row.revenueRmb || 0));
     cur.quota += row.quota || 0;
     cur.requests += row.requests || 0;
     cur.days.add(row.day);
@@ -534,7 +588,8 @@ export async function buildFinancialReport(
   });
 
   const measuredComplete =
-    enabledSites.length > 0 && sitesMissingDays === 0 &&
+    enabledSites.length > 0 &&
+    sitesMissingDays === 0 &&
     bySite.every((s) => s.incompleteDays === 0);
 
   if (enabledSites.length === 0) {
@@ -773,6 +828,16 @@ export async function buildFinancialReport(
       return sum + (site.revenueCurrency === "USD" ? rev * usdCny : rev);
     }, 0),
   );
+  const bonusRemainingQuota = bonusLots.reduce((sum, lot) => sum + Math.max(0, lot.remainingQuota), 0);
+  const bonusConsumedQuota = creditAllocations
+    .filter((allocation) => allocation.source === "ADMIN_BONUS" || allocation.source === "REDEEM_CODE")
+    .reduce((sum, allocation) => sum + allocation.consumedQuota, 0);
+  if (bonusRemainingQuota > 0 || bonusConsumedQuota > 0) {
+    warnings.push(
+      `赠送额度：本期已消费 ${round2(bonusConsumedQuota / DEFAULT_QUOTA_PER_UNIT)} 面值，当前剩余 ${round2(bonusRemainingQuota / DEFAULT_QUOTA_PER_UNIT)} 面值；消费收入按 0 确认`,
+    );
+  }
+
   const prepaidLiability = summarizePrepaidLiability(
     downstreamBalances.map((balance) => ({
       downstreamId: balance.downstreamId,
@@ -795,7 +860,16 @@ export async function buildFinancialReport(
     ),
   );
   const prepaid = summarizePrepaid(
-    downstreamTopups,
+    [
+      ...downstreamTopups,
+      ...managedRecharges.map((operation) => ({
+        downstreamId: operation.downstreamId,
+        userId: operation.userId,
+        moneyRmb: operation.paidRmb,
+        status: "success",
+        completedAt: operation.createdAt,
+      })),
+    ],
     new Map(
       sites.map((site) => [
         site.id,

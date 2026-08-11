@@ -103,11 +103,62 @@ export interface DownstreamTopupResult {
   error?: string;
 }
 
-export interface DownstreamRechargeResult {
+export interface DownstreamRedemptionRow {
+  remoteId: number;
+  name: string;
+  key: string;
+  quota: number;
+  status: number;
+  createdAt: Date | null;
+  redeemedAt: Date | null;
+  usedUserId: number | null;
+  expiredAt: Date | null;
+}
+
+export interface DownstreamRedemptionResult {
   success: boolean;
-  ambiguous: boolean;
+  rows: DownstreamRedemptionRow[];
+  scanned: number;
+  total: number;
+  complete: boolean;
   error?: string;
-  raw?: unknown;
+}
+
+export interface DownstreamRedemptionCreateResult {
+  success: boolean;
+  keys: string[];
+  error?: string;
+}
+
+export interface DownstreamDailyUserUsageResult {
+  success: boolean;
+  rows: DownstreamDailyUserUsageRow[];
+  complete: boolean;
+  error?: string;
+}
+
+export interface DownstreamDailyUserUsageRow {
+  day: string;
+  occurredAt: Date;
+  username: string;
+  quota: number;
+  requests: number;
+}
+
+export interface DownstreamUserListResult {
+  success: boolean;
+  users: DownstreamUserRow[];
+  scanned: number;
+  total: number;
+  complete: boolean;
+  error?: string;
+}
+
+export interface DownstreamDailyUserRow {
+  day: string;
+  username: string;
+  quota: number;
+  requests: number;
 }
 
 export interface DownstreamUserRow {

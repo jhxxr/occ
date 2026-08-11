@@ -315,40 +315,47 @@ model UpstreamRechargeLog {
 }
 
 model DownstreamSite {
-  id                      String    @id @default(cuid())
-  name                    String    @db.VarChar(200)
-  baseUrl                 String    @db.VarChar(500)
-  adminKey                String    @db.Text
-  adminUserId             Int       @default(1)
-  quotaPerDollar          Float     @default(500000)
-  revenueCurrency         String    @default("CNY") @db.VarChar(10)
-  excludeUserIds          String    @default("[]") @db.VarChar(2000)
+  id                        String    @id @default(cuid())
+  name                      String    @db.VarChar(200)
+  baseUrl                   String    @db.VarChar(500)
+  adminKey                  String    @db.Text
+  adminUserId               Int       @default(1)
+  quotaPerDollar            Float     @default(500000)
+  revenueCurrency           String    @default("CNY") @db.VarChar(10)
+  excludeUserIds            String    @default("[]") @db.VarChar(2000)
   /// 私域用户 id（自己推广来的）。空数组 = 全站都算公共池。
   /// 与 excludeUserIds 的关系：先剔测试号，剩下的付费账号再分私域 / 公共。
   /// 同时出现在两个名单里时，排除优先 —— 测试号永远不算收入。
-  privateUserIds          String    @default("[]") @db.VarChar(2000)
-  enabled                 Boolean   @default(true)
-  notes                   String?   @db.Text
-  lastConsumed            Float?
-  lastRevenue             Float?
-  lastSyncAt              DateTime?
-  lastError               String?   @db.Text
+  privateUserIds            String    @default("[]") @db.VarChar(2000)
+  enabled                   Boolean   @default(true)
+  notes                     String?   @db.Text
+  lastConsumed              Float?
+  lastRevenue               Float?
+  lastSyncAt                DateTime?
+  lastError                 String?   @db.Text
   /// 充值订单首次历史回填是否完整；只有 true 时历史流入才可信
-  topupBackfillComplete   Boolean   @default(false)
-  topupLastSyncAt         DateTime?
-  topupSyncError          String?   @db.Text
+  topupBackfillComplete     Boolean   @default(false)
+  topupLastSyncAt           DateTime?
+  topupSyncError            String?   @db.Text
   /// 当前用户余额最近一次完整同步时间；余额存量独立于充值历史
-  balanceLastSyncAt       DateTime?
-  balanceSyncError        String?   @db.Text
+  balanceLastSyncAt         DateTime?
+  balanceSyncError          String?   @db.Text
+  /// 期初预收款批次一旦生成即冻结，避免后续余额变化改写历史
+  openingPrepaidAppliedAt   DateTime?
+  openingPrepaidExcludedRmb Float     @default(0)
+  /// 兑换码最近一次完整同步状态；期初迁移前必须可信
+  redemptionLastSyncAt      DateTime?
+  redemptionSyncError       String?   @db.Text
   /// 管理充值启用时间；在此之前的消费沿用历史面值口径
-  rechargeLedgerEnabledAt DateTime?
-  createdAt               DateTime  @default(now())
-  updatedAt               DateTime  @updatedAt
+  rechargeLedgerEnabledAt   DateTime?
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
 
   snapshots         DownstreamSnapshot[]
   usageDaily        DownstreamUsageDaily[]
   topups            DownstreamTopup[]
   userBalances      DownstreamUserBalance[]
+  openingPrepaids   DownstreamOpeningPrepaid[]
   rechargeOps       DownstreamRechargeOperation[]
   redemptionCodes   DownstreamRedemptionCode[]
   giftCodeIntents   DownstreamGiftCodeIntent[]
@@ -409,6 +416,26 @@ model DownstreamUserBalance {
   @@unique([downstreamId, userId])
   @@index([downstreamId, observedAt])
   @@index([downstreamId, role])
+}
+
+model DownstreamOpeningPrepaid {
+  id           String   @id @default(cuid())
+  downstreamId String
+  userId       Int
+  openingDay   String   @db.VarChar(10)
+  ownership    String   @db.VarChar(20)
+  openingQuota Float    @default(0)
+  quotaPerUnit Float    @default(500000)
+  moneyRmb     Float    @default(0)
+  observedAt   DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  downstream DownstreamSite @relation(fields: [downstreamId], references: [id], onDelete: Cascade)
+
+  @@unique([downstreamId, userId, openingDay])
+  @@index([openingDay])
+  @@index([downstreamId, ownership])
 }
 
 model DownstreamGiftCodeIntent {

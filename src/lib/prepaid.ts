@@ -56,6 +56,10 @@ export interface PrepaidOrderInput {
   moneyRmb: number;
   status: string;
   completedAt: Date | null;
+  /** Frozen ownership for migration/opening entries. */
+  ownership?: "PRIVATE" | "PUBLIC";
+  /** Frozen entries are not reclassified by later exclusion-list edits. */
+  frozen?: boolean;
 }
 
 export interface PrepaidOwnership {
@@ -129,9 +133,11 @@ export function summarizePrepaid(
   for (const order of orders) {
     if (order.status.toLowerCase() !== "success" || !order.completedAt) continue;
     const ownership = ownershipBySite.get(order.downstreamId);
-    if (!ownership || ownership.excludeUserIds.has(order.userId)) continue;
+    if (!ownership || (!order.frozen && ownership.excludeUserIds.has(order.userId))) continue;
     const amount = round2(Math.max(0, order.moneyRmb));
-    const isPrivate = ownership.privateUserIds.has(order.userId);
+    const isPrivate = order.ownership
+      ? order.ownership === "PRIVATE"
+      : ownership.privateUserIds.has(order.userId);
 
     add(allTime, amount, isPrivate);
     if (inWindow(order.completedAt, windows.month)) add(month, amount, isPrivate);

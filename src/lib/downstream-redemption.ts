@@ -25,6 +25,14 @@ export async function syncDownstreamRedemptions(downstreamId: string) {
     quotaPerDollar: site.quotaPerDollar,
   });
   if (!result.success || !result.complete) {
+    await prisma.downstreamSite.update({
+      where: { id: downstreamId },
+      data: {
+        redemptionLastSyncAt: new Date(),
+        redemptionSyncError:
+          result.error || `兑换码列表不完整（${result.scanned}/${result.total || "?"}）`,
+      },
+    });
     throw new Error(result.error || `兑换码列表不完整（${result.scanned}/${result.total || "?"}）`);
   }
 
@@ -119,6 +127,10 @@ export async function syncDownstreamRedemptions(downstreamId: string) {
         }),
       ),
   );
+  await prisma.downstreamSite.update({
+    where: { id: downstreamId },
+    data: { redemptionLastSyncAt: syncedAt, redemptionSyncError: null },
+  });
   return { site, rows: result.rows, syncedAt };
 }
 

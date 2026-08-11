@@ -10,6 +10,7 @@ import {
 } from "@/lib/downstream-usage";
 import { prisma } from "@/lib/db";
 import { syncDownstreamUserBalances } from "@/lib/downstream-recharge";
+import { syncDownstreamRedemptions } from "@/lib/downstream-redemption";
 
 export const dynamic = "force-dynamic";
 
@@ -56,7 +57,13 @@ export async function POST(req: NextRequest) {
     const topupResults = id
       ? [await syncDownstreamTopups(id)]
       : await syncAllDownstreamTopups();
-    const balanceResults = [];
+    const balanceResults: {
+      id: string;
+      success: boolean;
+      users?: number;
+      observedAt?: Date;
+      error?: string;
+    }[] = [];
     const balanceSiteIds = id
       ? [id]
       : (
@@ -69,9 +76,16 @@ export async function POST(req: NextRequest) {
     // sequentially so one report refresh cannot stampede every downstream.
     for (const siteId of balanceSiteIds) {
       balanceResults.push(
-        await syncDownstreamUserBalances(siteId)
-          .then(() => ({ success: true }))
+        await syncDownstreamRedemptions(siteId)
+          .then(() => syncDownstreamUserBalances(siteId))
+          .then((result) => ({
+            id: siteId,
+            success: true,
+            users: result.users.length,
+            observedAt: result.observedAt,
+          }))
           .catch((error) => ({
+            id: siteId,
             success: false,
             error: error instanceof Error ? error.message : String(error),
           })),
@@ -91,6 +105,12 @@ export async function POST(req: NextRequest) {
             Math.round(
               results.reduce((s, r) => s + (r.revenueRmb || 0), 0) * 100,
             ) / 100,
+          balanceOk: balanceResults.filter((result) => result.success).length,
+          balanceFail: balanceResults.filter((result) => !result.success).length,
+          balanceUsers: balanceResults.reduce(
+            (sum, result) => sum + (result.users || 0),
+            0,
+          ),
         },
       },
     });

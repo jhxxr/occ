@@ -40,7 +40,7 @@ import {
   MAX_TOKEN_TTL_DAYS,
 } from "../src/lib/extension-token.ts";
 import { allocateOwnershipCosts } from "../src/lib/cost-allocation.ts";
-import { summarizePrepaid } from "../src/lib/prepaid.ts";
+import { summarizePrepaid, summarizePrepaidLiability } from "../src/lib/prepaid.ts";
 import {
   __resetGiftIssuanceLimit,
   checkGiftIssuanceAllowed,
@@ -485,6 +485,81 @@ check("只认成功订单的实际付款 money，并按完成时间入账", () =
   assert.equal(summary.month.totalRmb, 60);
   assert.equal(summary.month.orders, 1);
   assert.equal(summary.allTime.totalRmb, 60);
+});
+
+check("期初迁移冻结归属并只落在 2026-08-01", () => {
+  const ownership = new Map([
+    ["site-a", { excludeUserIds: new Set([1]), privateUserIds: new Set<number>() }],
+  ]);
+  const summary = summarizePrepaid(
+    [
+      {
+        downstreamId: "site-a",
+        userId: 1,
+        moneyRmb: 80,
+        status: "success",
+        completedAt: new Date("2026-08-01T00:00:00+08:00"),
+        ownership: "PRIVATE" as const,
+        frozen: true,
+      },
+      {
+        downstreamId: "site-a",
+        userId: 2,
+        moneyRmb: 120,
+        status: "success",
+        completedAt: new Date("2026-08-01T00:00:00+08:00"),
+        ownership: "PUBLIC" as const,
+        frozen: true,
+      },
+    ],
+    ownership,
+    {
+      period: {
+        start: new Date("2026-08-01T00:00:00+08:00"),
+        end: new Date("2026-08-02T00:00:00+08:00"),
+      },
+      month: {
+        start: new Date("2026-08-01T00:00:00+08:00"),
+        end: new Date("2026-09-01T00:00:00+08:00"),
+      },
+    },
+  );
+  assert.deepEqual(summary.period, {
+    privateRmb: 80,
+    publicRmb: 120,
+    totalRmb: 200,
+    orders: 2,
+  });
+});
+
+check("当前余额只认未消费 quota，不会叠加期初已发放额度", () => {
+  const liability = summarizePrepaidLiability(
+    [
+      {
+        downstreamId: "site-a",
+        userId: 1,
+        role: 1,
+        quota: 25_000_000,
+        quotaPerUnit: 500_000,
+        observedAt: new Date("2026-08-11T00:00:00+08:00"),
+      },
+      {
+        downstreamId: "site-a",
+        userId: 2,
+        role: 100,
+        quota: 50_000_000,
+        quotaPerUnit: 500_000,
+        observedAt: new Date("2026-08-11T00:00:00+08:00"),
+      },
+    ],
+    new Map([
+      ["site-a", { excludeUserIds: new Set<number>(), privateUserIds: new Set([1]) }],
+    ]),
+  );
+  assert.equal(liability.totalRmb, 50);
+  assert.equal(liability.privateRmb, 50);
+  assert.equal(liability.excludedRmb, 100);
+  assert.equal(liability.users, 1);
 });
 
 console.log("\n图表按日分桶（回归：时区错位会吞掉今天）");

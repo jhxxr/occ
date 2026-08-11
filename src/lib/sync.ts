@@ -18,6 +18,7 @@ import {
   syncDownstreamUsage,
 } from "@/lib/downstream-usage";
 import { syncDownstreamUserBalances } from "@/lib/downstream-recharge";
+import { syncDownstreamRedemptions } from "@/lib/downstream-redemption";
 import { summarizeCosts } from "@/lib/operating-cost";
 import { monthPeriod, addDays, shanghaiDay, startOfMonthDay } from "@/lib/reporting-period";
 import {
@@ -402,6 +403,7 @@ export async function syncDownstreamSite(id: string): Promise<SyncResultItem> {
     }
     const topups = await syncDownstreamTopups(id);
     try {
+      await syncDownstreamRedemptions(id);
       await syncDownstreamUserBalances(id);
     } catch (e) {
       const balanceError = `用户余额同步失败：${e instanceof Error ? e.message : String(e)}`;

@@ -209,6 +209,16 @@ export interface FinancialReport {
     allTime: PrepaidTotals;
     complete: boolean;
     incompleteSites: number;
+    balanceComplete: boolean;
+    balanceIncompleteSites: number;
+    balanceSites: {
+      id: string;
+      name: string;
+      snapshotRows: number;
+      lastSyncAt: Date | null;
+      error: string | null;
+      complete: boolean;
+    }[];
   };
   daily: DailyPoint[];
   bySite: SiteRow[];
@@ -276,6 +286,7 @@ export async function buildFinancialReport(
     recharges,
     downstreamTopups,
     managedRecharges,
+    openingPrepaids,
     downstreamBalances,
     creditAllocations,
     bonusLots,
@@ -337,6 +348,15 @@ export async function buildFinancialReport(
         userId: true,
         paidRmb: true,
         createdAt: true,
+      },
+    }),
+    prisma.downstreamOpeningPrepaid.findMany({
+      select: {
+        downstreamId: true,
+        userId: true,
+        moneyRmb: true,
+        openingDay: true,
+        ownership: true,
       },
     }),
     prisma.downstreamUserBalance.findMany({
@@ -839,16 +859,18 @@ export async function buildFinancialReport(
   }
 
   const prepaidLiability = summarizePrepaidLiability(
-    downstreamBalances.map((balance) => ({
-      downstreamId: balance.downstreamId,
-      userId: balance.userId,
-      role: balance.role,
-      quota: balance.quota,
-      quotaPerUnit:
-        sites.find((site) => site.id === balance.downstreamId)?.quotaPerDollar ||
-        DEFAULT_QUOTA_PER_UNIT,
-      observedAt: balance.observedAt,
-    })),
+    downstreamBalances
+      .filter((balance) => sites.some((site) => site.id === balance.downstreamId && site.enabled))
+      .map((balance) => ({
+        downstreamId: balance.downstreamId,
+        userId: balance.userId,
+        role: balance.role,
+        quota: balance.quota,
+        quotaPerUnit:
+          sites.find((site) => site.id === balance.downstreamId)?.quotaPerDollar ||
+          DEFAULT_QUOTA_PER_UNIT,
+        observedAt: balance.observedAt,
+      })),
     new Map(
       sites.map((site) => [
         site.id,
@@ -868,6 +890,15 @@ export async function buildFinancialReport(
         moneyRmb: operation.paidRmb,
         status: "success",
         completedAt: operation.createdAt,
+      })),
+      ...openingPrepaids.map((opening) => ({
+        downstreamId: opening.downstreamId,
+        userId: opening.userId,
+        moneyRmb: opening.moneyRmb,
+        status: "success",
+        completedAt: new Date(`${opening.openingDay}T00:00:00+08:00`),
+        ownership: opening.ownership === "PRIVATE" ? "PRIVATE" as const : "PUBLIC" as const,
+        frozen: true,
       })),
     ],
     new Map(
@@ -890,6 +921,30 @@ export async function buildFinancialReport(
   if (incompletePrepaidSites.length > 0) {
     warnings.push(
       `有 ${incompletePrepaidSites.length} 个下游站点的预收款历史回填不完整，累计金额可能偏低`,
+    );
+  }
+  const balanceRowsBySite = new Map<string, number>();
+  for (const balance of downstreamBalances) {
+    balanceRowsBySite.set(
+      balance.downstreamId,
+      (balanceRowsBySite.get(balance.downstreamId) || 0) + 1,
+    );
+  }
+  const balanceSites = sites.filter((site) => site.enabled).map((site) => {
+    const snapshotRows = balanceRowsBySite.get(site.id) || 0;
+    return {
+      id: site.id,
+      name: site.name,
+      snapshotRows,
+      lastSyncAt: site.balanceLastSyncAt,
+      error: site.balanceSyncError,
+      complete: !!site.balanceLastSyncAt && !site.balanceSyncError && snapshotRows > 0,
+    };
+  });
+  const balanceIncompleteSites = balanceSites.filter((site) => !site.complete);
+  if (balanceIncompleteSites.length > 0) {
+    warnings.push(
+      `有 ${balanceIncompleteSites.length} 个下游站点没有完整用户余额快照，当前预收负债不能按 ¥0.00 解读`,
     );
   }
 
@@ -934,6 +989,9 @@ export async function buildFinancialReport(
       current: prepaidLiability,
       complete: incompletePrepaidSites.length === 0,
       incompleteSites: incompletePrepaidSites.length,
+      balanceComplete: balanceIncompleteSites.length === 0,
+      balanceIncompleteSites: balanceIncompleteSites.length,
+      balanceSites,
     },
     daily,
     bySite,

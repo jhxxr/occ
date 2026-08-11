@@ -67,6 +67,16 @@ interface ReportPayload {
     allTime: { totalRmb: number; privateRmb: number; publicRmb: number; orders: number };
     complete: boolean;
     incompleteSites: number;
+    balanceComplete: boolean;
+    balanceIncompleteSites: number;
+    balanceSites: {
+      id: string;
+      name: string;
+      snapshotRows: number;
+      lastSyncAt: string | null;
+      error: string | null;
+      complete: boolean;
+    }[];
   };
   daily: DailyPoint[];
   bySite: {
@@ -124,6 +134,21 @@ interface ReportPayload {
     openEndedCostEntries: number;
     warnings: string[];
   };
+}
+
+interface OpeningPreview {
+  downstreamId: string;
+  name: string;
+  openingDay: string;
+  users: number;
+  existing: number;
+  privateRmb: number;
+  publicRmb: number;
+  totalRmb: number;
+  excludedRmb: number;
+  observedAt: string;
+  applied: boolean;
+  error?: string;
 }
 
 const COST_SOURCE_LABEL: Record<string, string> = {
@@ -206,6 +231,9 @@ export function ReportView() {
   const [detailView, setDetailView] = useState<"income" | "cost">("income");
   const [showWarnings, setShowWarnings] = useState(false);
   const [showPrepaid, setShowPrepaid] = useState(false);
+  const [openingPreviews, setOpeningPreviews] = useState<OpeningPreview[]>([]);
+  const [openingLoading, setOpeningLoading] = useState(false);
+  const [openingBusy, setOpeningBusy] = useState<string | null>(null);
   const [showReconciliation, setShowReconciliation] = useState(false);
 
   const load = useCallback(async () => {
@@ -241,13 +269,91 @@ export function ReportView() {
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "同步失败");
-      const ok = (json.data?.results || []).filter((row: { success: boolean }) => row.success).length;
-      setSyncMsg(`已同步 ${ok} 个站点`);
+      const summary = json.data?.summary || {};
+      const balanceResults = (json.data?.balanceResults || []) as {
+        success: boolean;
+        users?: number;
+        error?: string;
+      }[];
+      const balanceErrors = balanceResults
+        .filter((row) => !row.success)
+        .map((row) => row.error || "未知错误");
+      setSyncMsg(
+        balanceErrors.length
+          ? `消费 ${summary.ok || 0} 站成功；用户余额同步失败：${balanceErrors.join("；")}`
+          : `消费 ${summary.ok || 0} 站成功；已同步 ${summary.balanceUsers || 0} 个用户余额`,
+      );
       await load();
     } catch (e) {
       setSyncMsg(e instanceof Error ? e.message : "同步失败");
     } finally {
       setSyncing(false);
+    }
+  }
+
+  async function loadOpeningPreviews() {
+    if (!data) return;
+    setOpeningLoading(true);
+    try {
+      const previews = await Promise.all(
+        data.bySite.map(async (site) => {
+          const response = await fetch(`/api/downstream/${site.id}/opening-prepaid`, {
+            cache: "no-store",
+          });
+          const json = await response.json();
+          if (!response.ok) {
+            return {
+              downstreamId: site.id,
+              name: site.name,
+              openingDay: "2026-08-01",
+              users: 0,
+              existing: 0,
+              privateRmb: 0,
+              publicRmb: 0,
+              totalRmb: 0,
+              excludedRmb: 0,
+              observedAt: "",
+              applied: false,
+              error: json.error || "无法生成预览",
+            } satisfies OpeningPreview;
+          }
+          return json.data as OpeningPreview;
+        }),
+      );
+      setOpeningPreviews(previews);
+    } finally {
+      setOpeningLoading(false);
+    }
+  }
+
+  async function applyOpening(siteId: string) {
+    setOpeningBusy(siteId);
+    try {
+      const response = await fetch(`/api/downstream/${siteId}/opening-prepaid`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json.error || "生成期初充值失败");
+      setOpeningPreviews((current) =>
+        current.map((preview) =>
+          preview.downstreamId === siteId
+            ? (json.data as OpeningPreview)
+            : preview,
+        ),
+      );
+      await load();
+    } catch (e) {
+      setOpeningPreviews((current) =>
+        current.map((preview) =>
+          preview.downstreamId === siteId
+            ? { ...preview, error: e instanceof Error ? e.message : "生成失败" }
+            : preview,
+        ),
+      );
+    } finally {
+      setOpeningBusy(null);
     }
   }
 
@@ -370,16 +476,68 @@ export function ReportView() {
               </Button>
             </CardHeader>
             <CardContent className="space-y-4">
+              {!data.prepaid.balanceComplete && (
+                <Callout tone="warn" icon={false} role="status">
+                  {data.prepaid.balanceSites.filter((site) => !site.complete).map((site) => (
+                    <div key={site.id}>
+                      {site.name}：{site.error || "没有完整用户余额快照，请先同步"}
+                    </div>
+                  ))}
+                </Callout>
+              )}
               <div className="grid gap-4 sm:grid-cols-3">
-                <div><p className="text-xs text-muted">当前用户余额</p><p className="font-data text-xl text-mint">{formatRmb(data.prepaid.current.totalRmb)}</p><p className="text-[11px] text-muted">{data.prepaid.current.users} 个付费账号 · 已排除测试号</p></div>
-                <div><p className="text-xs text-muted">当前私域余额</p><p className="font-data text-xl text-cyan">{formatRmb(data.prepaid.current.privateRmb)}</p></div>
-                <div><p className="text-xs text-muted">当前公共余额</p><p className="font-data text-xl text-violet">{formatRmb(data.prepaid.current.publicRmb)}</p></div>
+                <div><p className="text-xs text-muted">当前用户余额</p><p className="font-data text-xl text-mint">{data.prepaid.balanceComplete ? formatRmb(data.prepaid.current.totalRmb) : "未同步"}</p><p className="text-[11px] text-muted">{data.prepaid.balanceComplete ? `${data.prepaid.current.users} 个付费账号 · 已排除测试号` : "余额缺失不能按 ¥0.00 解读"}</p></div>
+                <div><p className="text-xs text-muted">当前私域余额</p><p className="font-data text-xl text-cyan">{data.prepaid.balanceComplete ? formatRmb(data.prepaid.current.privateRmb) : "—"}</p></div>
+                <div><p className="text-xs text-muted">当前公共余额</p><p className="font-data text-xl text-violet">{data.prepaid.balanceComplete ? formatRmb(data.prepaid.current.publicRmb) : "—"}</p></div>
               </div>
+              {data.prepaid.balanceComplete && data.prepaid.current.observedAt && (
+                <p className="text-[11px] text-muted">
+                  余额快照：{new Date(data.prepaid.current.observedAt).toLocaleString("zh-CN")} · 覆盖 {data.prepaid.balanceSites.reduce((sum, site) => sum + site.snapshotRows, 0)} 个账号
+                </p>
+              )}
               {showPrepaid && (
-                <div className="grid gap-4 border-t border-border-subtle pt-4 text-sm sm:grid-cols-3">
-                  <div><p className="text-xs text-muted">本月充值流入</p><p className="font-data text-lg">{formatRmb(data.prepaid.month.totalRmb)}</p><p className="text-[11px] text-muted">{data.prepaid.month.orders} 笔成功充值</p></div>
-                  <div><p className="text-xs text-muted">历史累计流入</p><p className="font-data text-lg">{formatRmb(data.prepaid.allTime.totalRmb)}</p><p className="text-[11px] text-muted">私域 {formatRmb(data.prepaid.allTime.privateRmb)} · 公共 {formatRmb(data.prepaid.allTime.publicRmb)}</p></div>
-                  <div><p className="text-xs text-muted">所选周期流入</p><p className="font-data text-lg">{formatRmb(data.prepaid.period.totalRmb)}</p><p className="text-[11px] text-muted">{data.prepaid.period.orders} 笔 · 测试号余额已排除 {formatRmb(data.prepaid.current.excludedRmb)}</p></div>
+                <div className="space-y-4 border-t border-border-subtle pt-4">
+                  <div className="grid gap-4 text-sm sm:grid-cols-3">
+                    <div><p className="text-xs text-muted">本月充值流入</p><p className="font-data text-lg">{formatRmb(data.prepaid.month.totalRmb)}</p><p className="text-[11px] text-muted">{data.prepaid.month.orders} 笔成功充值</p></div>
+                    <div><p className="text-xs text-muted">历史累计流入</p><p className="font-data text-lg">{formatRmb(data.prepaid.allTime.totalRmb)}</p><p className="text-[11px] text-muted">私域 {formatRmb(data.prepaid.allTime.privateRmb)} · 公共 {formatRmb(data.prepaid.allTime.publicRmb)}</p></div>
+                    <div><p className="text-xs text-muted">所选周期流入</p><p className="font-data text-lg">{formatRmb(data.prepaid.period.totalRmb)}</p><p className="text-[11px] text-muted">{data.prepaid.period.orders} 笔 · 测试号余额已排除 {formatRmb(data.prepaid.current.excludedRmb)}</p></div>
+                  </div>
+                  <div className="rounded-[var(--r-md)] border border-border-subtle bg-surface-2 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-medium text-text">2026-08-01 期初充值</p>
+                        <p className="text-xs text-muted">把迁移前已发放与已消费额度一次性记入历史预收款，不改变当前余额或 NewAPI 数据。</p>
+                      </div>
+                      <Button size="sm" variant="secondary" disabled={openingLoading} onClick={loadOpeningPreviews}>
+                        {openingLoading ? "计算中…" : "查看初始化预览"}
+                      </Button>
+                    </div>
+                    {openingPreviews.length > 0 && (
+                      <div className="mt-3 space-y-2">
+                        {openingPreviews.map((preview) => (
+                          <div key={preview.downstreamId} className="flex flex-wrap items-center justify-between gap-3 border-t border-border-subtle pt-3 text-xs first:border-0 first:pt-0">
+                            <div>
+                              <p className="font-medium text-text">{preview.name}</p>
+                              {preview.error ? (
+                                <p className="text-coral">{preview.error}</p>
+                              ) : (
+                                <p className="text-muted">{preview.users} 个账号 · 合计 {formatRmb(preview.totalRmb)}（私域 {formatRmb(preview.privateRmb)} / 公共 {formatRmb(preview.publicRmb)}）</p>
+                              )}
+                            </div>
+                            {!preview.error && (
+                              preview.applied ? (
+                                <Badge variant="mint">已初始化</Badge>
+                              ) : (
+                                <Button size="sm" variant="outline" disabled={openingBusy === preview.downstreamId} onClick={() => applyOpening(preview.downstreamId)}>
+                                  {openingBusy === preview.downstreamId ? "写入中…" : "确认生成期初充值"}
+                                </Button>
+                              )
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </CardContent>

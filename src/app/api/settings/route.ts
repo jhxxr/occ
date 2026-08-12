@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { getUsdCnyRate } from "@/lib/sync";
 import {
@@ -7,32 +8,40 @@ import {
   publicSub2ProxyUrl,
 } from "@/lib/sub2/settings";
 
+const settingsSchema = z
+  .object({
+    usdCny: z.number().positive().max(100).optional(),
+    sub2ProxyUrl: z.string().max(2_000).optional(),
+  })
+  .strict();
+
 export async function GET() {
-  const [usdCny, all] = await Promise.all([
+  const [usdCny, proxy] = await Promise.all([
     getUsdCnyRate(),
-    prisma.appSetting.findMany(),
+    prisma.appSetting.findUnique({ where: { key: SUB2_PROXY_SETTING_KEY } }),
   ]);
-  const map = Object.fromEntries(all.map((s) => [s.key, s.value]));
-  const sub2ProxyUrl = publicSub2ProxyUrl(map[SUB2_PROXY_SETTING_KEY]);
-  delete map[SUB2_PROXY_SETTING_KEY];
+  const sub2ProxyUrl = publicSub2ProxyUrl(proxy?.value);
   return NextResponse.json({
     data: {
       usdCny,
       sub2ProxyUrl,
       sub2ProxyConfigured: !!sub2ProxyUrl,
-      ...map,
     },
   });
 }
 
 export async function PUT(req: NextRequest) {
   try {
-    const body = await req.json();
-    const proxyUrl = body.sub2ProxyUrl;
-    if (proxyUrl !== undefined && proxyUrl !== null) {
-      if (typeof proxyUrl !== "string") {
-        return NextResponse.json({ error: "代理地址格式不正确" }, { status: 400 });
-      }
+    const parsed = settingsSchema.safeParse(await req.json());
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: parsed.error.issues[0]?.message || "设置参数不合法" },
+        { status: 400 },
+      );
+    }
+
+    const proxyUrl = parsed.data.sub2ProxyUrl;
+    if (proxyUrl !== undefined) {
       const value = proxyUrl.trim();
       if (!value) {
         await prisma.appSetting.deleteMany({
@@ -50,20 +59,11 @@ export async function PUT(req: NextRequest) {
       }
     }
 
-    const entries = Object.entries(body).filter(
-      ([k]) =>
-        typeof k === "string" &&
-        k !== "id" &&
-        k !== "sub2ProxyUrl" &&
-        k !== "sub2ProxyConfigured",
-    ) as [string, unknown][];
-
-    for (const [key, value] of entries) {
-      if (value == null) continue;
+    if (parsed.data.usdCny !== undefined) {
       await prisma.appSetting.upsert({
-        where: { key },
-        create: { key, value: String(value) },
-        update: { value: String(value) },
+        where: { key: "usdCny" },
+        create: { key: "usdCny", value: String(parsed.data.usdCny) },
+        update: { value: String(parsed.data.usdCny) },
       });
     }
 

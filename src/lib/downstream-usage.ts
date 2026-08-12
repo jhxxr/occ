@@ -95,8 +95,8 @@ export async function syncDownstreamUsage(
 
   const fallback = recentDayRange(opts.days ?? 7);
   const startDay = assertDay(opts.startDay || fallback.startDay, "startDay");
-  const endDay = assertDay(opts.endDay || fallback.endDay, "endDay");
-  if (endDay < startDay) {
+  const requestedEndDay = assertDay(opts.endDay || fallback.endDay, "endDay");
+  if (requestedEndDay < startDay) {
     return {
       id: siteId,
       name: site.name,
@@ -116,6 +116,35 @@ export async function syncDownstreamUsage(
 
 
       error: "结束日期不能早于开始日期",
+    };
+  }
+
+  // 区间不能越过今天。报表页发的是整个自然周/月（当月就是 1 号到月底），
+  // 而 /api/log/stat 对未来日期照样返回 0，于是这些天会被当成「已同步且
+  // 完整」落库：覆盖天数被撑满、missingDays 归零，真实缺口反而被藏住，
+  // 趋势图也会拖出一条一直到月底的零线。
+  const today = shanghaiDay();
+  const endDay = requestedEndDay > today ? today : requestedEndDay;
+  if (endDay < startDay) {
+    return {
+      id: siteId,
+      name: site.name,
+      success: false,
+      days: 0,
+      groupRows: 0,
+      revenueRmb: 0,
+      privateRevenueRmb: 0,
+      publicRevenueRmb: 0,
+      grossRevenueRmb: 0,
+      excludedRmb: 0,
+      excludeResolved: false,
+      privateResolved: false,
+      source: "none",
+      complete: false,
+      failedDays: [],
+
+
+      error: "开始日期晚于今天，没有可同步的数据",
     };
   }
 
@@ -245,7 +274,10 @@ export async function syncDownstreamUsage(
       grossRevenueRmb: grossRmb,
       quotaPerUnit,
       requests: row.requests,
-      excludeResolved,
+      // 逐日判定，不能用站点级的汇总值覆盖：NewAPI 的逐账号聚合是滞后的，
+      // 当天经常拿不到，这时整站消费会原样记成付费收入。用汇总值盖上去
+      // 等于给这一行盖章「测试号已剔除」，警告不触发、徽章还是绿的。
+      excludeResolved: excludeResolved && row.excludeResolved,
       privateResolved: privateResolved && row.privateResolved,
       source: usage.totalSource,
       complete: !usage.failedDays.includes(row.day),
@@ -382,9 +414,15 @@ export async function syncDownstreamModelUsage(
 
   const fallback = recentDayRange(opts.days ?? 7);
   const startDay = assertDay(opts.startDay || fallback.startDay, "startDay");
-  const endDay = assertDay(opts.endDay || fallback.endDay, "endDay");
-  if (endDay < startDay) {
+  const requestedEndDay = assertDay(opts.endDay || fallback.endDay, "endDay");
+  if (requestedEndDay < startDay) {
     return { success: false, synced: 0, error: "结束日期不能早于开始日期" };
+  }
+  // 同上：不扫未来日期，否则白翻一遍日志再写一堆零行
+  const endDay =
+    requestedEndDay > shanghaiDay() ? shanghaiDay() : requestedEndDay;
+  if (endDay < startDay) {
+    return { success: false, synced: 0, error: "开始日期晚于今天，没有可同步的数据" };
   }
 
   let excludeUserIds: number[] = [];

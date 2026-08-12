@@ -469,7 +469,12 @@ export async function buildFinancialReport(
           : "none";
 
   // ——— A 实测法收入：下游日志真实扣费 ———
-  const totalRows = downstreamDaily.filter((r) => r.scope === "TOTAL");
+  // 未来日期的行一律不参与统计。旧版本同步会把整个自然月（含未发生的日子）
+  // 写成零行且标记完整，这些行会把「覆盖天数」撑满，让真实缺口显示成
+  // missingDays=0、周期数据完整。这里按今天截断，兜住存量脏数据。
+  const totalRows = downstreamDaily.filter(
+    (r) => r.scope === "TOTAL" && r.day <= today,
+  );
   const revenueByDay = new Map<string, number>();
   const grossByDay = new Map<string, number>();
   const privateByDay = new Map<string, number>();

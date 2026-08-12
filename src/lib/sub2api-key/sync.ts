@@ -5,6 +5,7 @@ import { fetchSub2ApiKeyUsage } from "@/lib/sub2api-key/client";
 import type { Sub2ApiKeyUsage } from "@/lib/sub2api-key/client";
 import { isSub2ApiKeyType } from "@/lib/provider-kinds";
 import { selectSharedAccountBalance } from "@/lib/sub2api-key/aggregate";
+import { SyncBusyError, withSyncLock } from "@/lib/sync-lock";
 
 export function boundKeyFingerprint(secret: string): string {
   return createHash("sha256").update(secret.trim()).digest("hex");
@@ -149,6 +150,13 @@ export async function addSub2ApiKeyBoundKey(
 }
 
 export async function syncSub2ApiKeyBoundKey(providerId: string, keyId: string) {
+  // 单 Key 的“立即同步”同样会推进累计基线；与供应商全量同步共用一把锁。
+  return withSyncLock("upstream", providerId, () =>
+    runSub2ApiKeyBoundKeySync(providerId, keyId),
+  );
+}
+
+async function runSub2ApiKeyBoundKeySync(providerId: string, keyId: string) {
   const provider = await loadSub2ApiKeyProvider(providerId);
   const key = await prisma.upstreamBoundKey.findFirst({
     where: { id: keyId, providerId, removedAt: null },
@@ -215,6 +223,35 @@ export async function refreshSub2ApiKeyProviderAggregate(providerId: string) {
 }
 
 export async function syncSub2ApiKeyProvider(providerId: string) {
+  // 这条路径既能从「全量同步」进来，也能从上游用量页单独触发。两边重叠会
+  // 各自推进 Key 基线并各写一条成本快照。锁是可重入的，外层已经持有时直通。
+  try {
+    return await withSyncLock("upstream", providerId, () =>
+      runSub2ApiKeyProviderSync(providerId),
+    );
+  } catch (e) {
+    if (!(e instanceof SyncBusyError)) throw e;
+    const provider = await prisma.upstreamProvider.findUnique({
+      where: { id: providerId },
+      select: { lastBalance: true, lastConsumed: true, lastBusinessConsumed: true },
+    });
+    return {
+      success: false as const,
+      error: "上一轮同步还没跑完，本次已跳过（避免重复记账）",
+      keysTotal: 0,
+      keys: 0,
+      succeeded: 0,
+      failed: 0,
+      billableKeys: 0,
+      businessDelta: 0,
+      balance: provider?.lastBalance ?? 0,
+      consumed: provider?.lastConsumed ?? 0,
+      business: provider?.lastBusinessConsumed ?? 0,
+    };
+  }
+}
+
+async function runSub2ApiKeyProviderSync(providerId: string) {
   const provider = await loadSub2ApiKeyProvider(providerId);
   const keys = await prisma.upstreamBoundKey.findMany({
     where: { providerId, status: "active", removedAt: null },

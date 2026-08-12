@@ -10,6 +10,7 @@
 
 import { prisma } from "@/lib/db";
 import { listKeys, fetchKeyUsageStats } from "@/lib/sub2/client";
+import { withSyncLock } from "@/lib/sync-lock";
 
 export interface KeyCostSyncResult {
   keys: number;
@@ -29,6 +30,16 @@ export interface KeyCostSyncResult {
 const MAX_KEY_PAGES = 20;
 
 export async function syncSub2ApiKeys(
+  providerId: string,
+): Promise<KeyCostSyncResult> {
+  // 这个函数会推进每条 Key 的累计消费基线。它不只从全量同步进入，
+  // 管理页和使用记录页也会调用；锁必须放在这里才能覆盖所有入口。
+  return withSyncLock("upstream", providerId, () =>
+    runSub2ApiKeysSync(providerId),
+  );
+}
+
+async function runSub2ApiKeysSync(
   providerId: string,
 ): Promise<KeyCostSyncResult> {
   const provider = await prisma.upstreamProvider.findUnique({

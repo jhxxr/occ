@@ -30,6 +30,7 @@ import {
   buildProviderShares,
   calculateProfit,
 } from "@/lib/profit";
+import { SyncBusyError, withSyncLock } from "@/lib/sync-lock";
 
 export interface SyncResultItem {
   id: string;
@@ -88,6 +89,49 @@ export async function syncSelfHostedProvider(
   id: string,
   opts: { usageDays?: number } = {},
 ): Promise<SyncResultItem> {
+  return guardConcurrentSync("upstream", id, "self-hosted", () =>
+    runSelfHostedProviderSync(id, opts),
+  );
+}
+
+/**
+ * 抢不到同步锁时给调用方一个正常的结果，而不是抛异常 ——
+ * 「正在同步中」是预期内的状态，不该让整轮全量同步中断。
+ */
+async function guardConcurrentSync(
+  scope: "upstream" | "downstream",
+  id: string,
+  kind: SyncResultItem["kind"],
+  run: () => Promise<SyncResultItem>,
+): Promise<SyncResultItem> {
+  try {
+    return await withSyncLock(scope, id, run);
+  } catch (e) {
+    if (!(e instanceof SyncBusyError)) throw e;
+    const row =
+      scope === "upstream"
+        ? await prisma.upstreamProvider.findUnique({
+            where: { id },
+            select: { name: true },
+          })
+        : await prisma.downstreamSite.findUnique({
+            where: { id },
+            select: { name: true },
+          });
+    return {
+      id,
+      name: row?.name ?? "?",
+      kind,
+      success: false,
+      error: "上一轮同步还没跑完，本次已跳过（避免重复记账）",
+    };
+  }
+}
+
+async function runSelfHostedProviderSync(
+  id: string,
+  opts: { usageDays?: number } = {},
+): Promise<SyncResultItem> {
   const provider = await prisma.upstreamProvider.findUnique({ where: { id } });
   if (!provider) {
     return { id, name: "?", kind: "self-hosted", success: false, error: "Not found" };
@@ -129,6 +173,12 @@ export async function syncSelfHostedProvider(
 }
 
 export async function syncUpstreamProvider(id: string): Promise<SyncResultItem> {
+  return guardConcurrentSync("upstream", id, "upstream", () =>
+    runUpstreamProviderSync(id),
+  );
+}
+
+async function runUpstreamProviderSync(id: string): Promise<SyncResultItem> {
   const provider = await prisma.upstreamProvider.findUnique({ where: { id } });
   if (!provider) {
     return { id, name: "?", kind: "upstream", success: false, error: "Not found" };
@@ -283,8 +333,22 @@ export async function syncUpstreamProvider(id: string): Promise<SyncResultItem> 
     }
   }
 
-  await prisma.$transaction([
-    prisma.snapshotLog.create({
+  // 成本落账要求基线仍是本轮开始时读到的那个值。同步锁之外再加这一层：
+  // 锁有 TTL、也可能被接管，而「同一笔上游消耗记了两次成本」在账面上完全
+  // 看不出来 —— 只会让毛利凭空少一块，且永远查不出原因。
+  const recorded = await prisma.$transaction(async (tx) => {
+    const claimed = await tx.upstreamProvider.updateMany({
+      where: { id, lastConsumed: provider.lastConsumed },
+      data: {
+        ...tokenPatch,
+        lastBalance: result.balance,
+        lastConsumed: result.consumed,
+        lastSyncAt: new Date(),
+        lastError,
+      },
+    });
+    if (claimed.count !== 1) return false;
+    await tx.snapshotLog.create({
       data: {
         upstreamId: id,
         balance: result.balance,
@@ -297,18 +361,19 @@ export async function syncUpstreamProvider(id: string): Promise<SyncResultItem> 
           businessDeltaUsd: effectiveDelta,
         }).slice(0, 4000),
       },
-    }),
-    prisma.upstreamProvider.update({
-      where: { id },
-      data: {
-        ...tokenPatch,
-        lastBalance: result.balance,
-        lastConsumed: result.consumed,
-        lastSyncAt: new Date(),
-        lastError,
-      },
-    }),
-  ]);
+    });
+    return true;
+  });
+
+  if (!recorded) {
+    return {
+      id,
+      name: provider.name,
+      kind: "upstream",
+      success: false,
+      error: "基线已被另一轮同步改写，本轮未记账（避免成本重复计入）",
+    };
+  }
 
   return {
     id,
@@ -324,6 +389,12 @@ export async function syncUpstreamProvider(id: string): Promise<SyncResultItem> 
 }
 
 export async function syncDownstreamSite(id: string): Promise<SyncResultItem> {
+  return guardConcurrentSync("downstream", id, "downstream", () =>
+    runDownstreamSiteSync(id),
+  );
+}
+
+async function runDownstreamSiteSync(id: string): Promise<SyncResultItem> {
   const site = await prisma.downstreamSite.findUnique({ where: { id } });
   if (!site) {
     return { id, name: "?", kind: "downstream", success: false, error: "Not found" };

@@ -22,9 +22,13 @@ else
 fi
 
 echo "[orbit] syncing database schema..."
+# Deliberately do not pass --accept-data-loss. Additive upgrades can still be
+# applied automatically, but an older image whose schema would drop newer
+# tables or columns must fail closed instead of destroying data during a
+# rollback. Restore a matching database backup before rolling back the image.
 # shellcheck disable=SC2086
 $drop_priv node /app/node_modules/prisma/build/index.js db push \
-  --schema=/app/prisma/schema.prisma --skip-generate --accept-data-loss
+  --schema=/app/prisma/schema.prisma --skip-generate
 
 echo "[orbit] starting application..."
 # shellcheck disable=SC2086

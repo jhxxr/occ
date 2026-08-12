@@ -8,7 +8,6 @@ import {
   loadSub2Provider,
   fetchKeyUsageStats,
 } from "@/lib/sub2/client";
-import { syncSub2ApiKeys } from "@/lib/sub2/sync-keys";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -36,8 +35,6 @@ export async function GET(req: NextRequest, ctx: Ctx) {
       const groups = await listGroups(id);
       return NextResponse.json({ data: { groups } });
     }
-
-    await syncSub2ApiKeys(id).catch(() => null);
 
     const [groups, remoteKeys, localKeys] = await Promise.all([
       listGroups(id),

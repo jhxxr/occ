@@ -61,7 +61,9 @@ docker compose pull
 docker compose up -d
 ```
 
-The bind mount at `./data` persists application data, so backing up the deployment directory captures both configuration and data. The entrypoint runs `prisma db push` before starting Next.js and exits if schema synchronization fails.
+The bind mount at `./data` persists application data, so backing up the deployment directory captures both configuration and data. The entrypoint runs `prisma db push` before starting Next.js and exits if schema synchronization fails. It intentionally does **not** accept destructive schema changes: if an image rollback would remove tables or columns created by a newer release, startup stops and leaves the database untouched.
+
+Before changing versions, stop the service and copy `./data` to a dated backup. Rolling the application image back does not roll the database schema back; use a database backup made by the target version when a downgrade requires an older schema.
 
 If the container cannot write to `./data`, check `docker compose logs orbit` for a permission error and adjust ownership on the host directory to match the container user.
 
@@ -78,9 +80,9 @@ After the upgrade:
 
 ## Operations
 
-- Back up the deployment directory before changing image versions; archiving `occ/` captures `compose.yml`, `.env`, and `./data` together.
+- Stop the service and back up the deployment directory before changing image versions; archiving `occ/` captures `compose.yml`, `.env`, and `./data` together.
 - Moving a deployment is a directory copy plus `docker compose up -d` on the new host.
 - Run a single writable application instance per SQLite database.
 - Put a TLS-enabled reverse proxy in front of port 3000 before public exposure.
-- Pin a SHA or version tag for production; do not depend on a mutable tag for rollbacks.
+- Pin a SHA or version tag for production. For rollback, restore the matching database backup as well as the image when the schema changed between versions.
 - Review `docker compose logs orbit` after each upgrade to confirm migrations and startup succeeded.

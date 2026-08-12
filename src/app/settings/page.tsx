@@ -44,6 +44,10 @@ export default function SettingsPage() {
   const [usdCny, setUsdCny] = useState("7.2");
   const [sub2ProxyUrl, setSub2ProxyUrl] = useState("");
   const [sub2ProxyConfigured, setSub2ProxyConfigured] = useState(false);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [settingsLoadError, setSettingsLoadError] = useState<string | null>(null);
+  const [usdCnyDirty, setUsdCnyDirty] = useState(false);
+  const [sub2ProxyDirty, setSub2ProxyDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -56,16 +60,30 @@ export default function SettingsPage() {
   const [copied, setCopied] = useState(false);
   const [extError, setExtError] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetch("/api/settings")
-      .then((r) => r.json())
-      .then((j) => {
-        if (j.data?.usdCny != null) setUsdCny(String(j.data.usdCny));
-        if (j.data?.sub2ProxyUrl) setSub2ProxyUrl(String(j.data.sub2ProxyUrl));
-        setSub2ProxyConfigured(!!j.data?.sub2ProxyConfigured);
-      })
-      .catch(() => {});
+  const loadSettings = useCallback(async () => {
+    setSettingsLoaded(false);
+    setSettingsLoadError(null);
+    try {
+      const res = await fetch("/api/settings", { cache: "no-store" });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "加载设置失败");
+      if (json.data?.usdCny == null) throw new Error("汇率设置缺失");
+      setUsdCny(String(json.data.usdCny));
+      setSub2ProxyUrl(String(json.data.sub2ProxyUrl || ""));
+      setSub2ProxyConfigured(!!json.data.sub2ProxyConfigured);
+      setUsdCnyDirty(false);
+      setSub2ProxyDirty(false);
+      setSettingsLoaded(true);
+    } catch (error) {
+      setSettingsLoadError(
+        error instanceof Error ? error.message : "加载设置失败",
+      );
+    }
   }, []);
+
+  useEffect(() => {
+    void Promise.resolve().then(loadSettings);
+  }, [loadSettings]);
 
   const loadTokens = useCallback(async () => {
     try {
@@ -84,6 +102,7 @@ export default function SettingsPage() {
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
+    if (!settingsLoaded) return;
     setSaving(true);
     setMsg(null);
     try {
@@ -91,13 +110,15 @@ export default function SettingsPage() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          usdCny: Number(usdCny),
-          sub2ProxyUrl,
+          ...(usdCnyDirty ? { usdCny: Number(usdCny) } : {}),
+          ...(sub2ProxyDirty ? { sub2ProxyUrl } : {}),
         }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "保存失败");
       setSub2ProxyConfigured(!!sub2ProxyUrl.trim());
+      setUsdCnyDirty(false);
+      setSub2ProxyDirty(false);
       setMsg("设置已保存");
     } catch (err) {
       setMsg(err instanceof Error ? err.message : "保存失败");
@@ -183,7 +204,11 @@ export default function SettingsPage() {
                   step="0.01"
                   min="0.01"
                   value={usdCny}
-                  onChange={(e) => setUsdCny(e.target.value)}
+                  disabled={!settingsLoaded}
+                  onChange={(e) => {
+                    setUsdCny(e.target.value);
+                    setUsdCnyDirty(true);
+                  }}
                 />
                 <p className="text-xs text-muted leading-relaxed">
                   界面统一显示人民币。上游优先用各站「购入成本」；仅当下游选择「面值×汇率」时使用此备用折算率。你的自营站 1:1
@@ -197,7 +222,11 @@ export default function SettingsPage() {
                   type="text"
                   autoComplete="off"
                   value={sub2ProxyUrl}
-                  onChange={(e) => setSub2ProxyUrl(e.target.value)}
+                  disabled={!settingsLoaded}
+                  onChange={(e) => {
+                    setSub2ProxyUrl(e.target.value);
+                    setSub2ProxyDirty(true);
+                  }}
                   placeholder="socks5://user:password@127.0.0.1:1080"
                 />
                 <p className="text-xs text-muted leading-relaxed">
@@ -208,8 +237,23 @@ export default function SettingsPage() {
                   {sub2ProxyConfigured && " 已保存的账号密码会脱敏显示；清空后保存即可停用代理。"}
                 </p>
               </div>
+              {settingsLoadError && (
+                <div className="flex items-center gap-3 text-xs text-coral">
+                  <span>{settingsLoadError}，现有设置不会被覆盖。</span>
+                  <Button type="button" size="sm" variant="secondary" onClick={loadSettings}>
+                    重试
+                  </Button>
+                </div>
+              )}
               {msg && <p className="text-xs text-secondary">{msg}</p>}
-              <Button type="submit" disabled={saving}>
+              <Button
+                type="submit"
+                disabled={
+                  saving ||
+                  !settingsLoaded ||
+                  (!usdCnyDirty && !sub2ProxyDirty)
+                }
+              >
                 {saving ? "保存中…" : "保存设置"}
               </Button>
             </form>

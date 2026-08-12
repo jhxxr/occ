@@ -73,35 +73,42 @@ async function fetchJson(
       }
 
       const controller = new AbortController();
+      // 超时必须一直armed到响应体读完为止。只盖到响应头的话，一个先回
+      // 200、再把 body 吊住的上游会永远停在 res.text()，而同主机的请求
+      // 是串行的，于是后面每一条都跟着永久堵死。
       const timer = setTimeout(() => controller.abort(), timeoutMs);
-      let res: Response;
       try {
-        res = await fetchSub2(url, { ...rest, signal: controller.signal }, proxyUrl);
+        const res = await fetchSub2(
+          url,
+          { ...rest, signal: controller.signal },
+          proxyUrl,
+        );
+
+        // 429 / 503：退避后重试，并让同主机的后续请求一起等
+        if ((res.status === 429 || res.status === 503) && attempt < retries) {
+          const retryAfter = Number(res.headers.get("retry-after"));
+          const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
+            ? Math.min(retryAfter * 1000, 60_000)
+            : RATE_LIMIT_COOLDOWN_MS * Math.pow(2, attempt);
+          const cur = hostGate.get(host);
+          if (cur) cur.blockedUntil = Date.now() + waitMs;
+          await sleep(waitMs);
+          continue;
+        }
+
+        const text = await res.text();
+        clearTimeout(timer);
+        let data: unknown = null;
+        try {
+          data = text ? JSON.parse(text) : null;
+        } catch {
+          data = text;
+        }
+        await sleep(MIN_REQUEST_GAP_MS);
+        return { ok: res.ok, status: res.status, data, text };
       } finally {
         clearTimeout(timer);
       }
-
-      // 429 / 503：退避后重试，并让同主机的后续请求一起等
-      if ((res.status === 429 || res.status === 503) && attempt < retries) {
-        const retryAfter = Number(res.headers.get("retry-after"));
-        const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
-          ? Math.min(retryAfter * 1000, 60_000)
-          : RATE_LIMIT_COOLDOWN_MS * Math.pow(2, attempt);
-        const cur = hostGate.get(host);
-        if (cur) cur.blockedUntil = Date.now() + waitMs;
-        await sleep(waitMs);
-        continue;
-      }
-
-      const text = await res.text();
-      let data: unknown = null;
-      try {
-        data = text ? JSON.parse(text) : null;
-      } catch {
-        data = text;
-      }
-      await sleep(MIN_REQUEST_GAP_MS);
-      return { ok: res.ok, status: res.status, data, text };
     }
   });
 

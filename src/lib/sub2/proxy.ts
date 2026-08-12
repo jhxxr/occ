@@ -53,20 +53,35 @@ function getProxyAgent(proxyUrl: string): ProxyAgent {
   return agent;
 }
 
+/**
+ * 调用方没给取消信号时的兜底超时。
+ *
+ * 半死的上游（TCP 接得下、迟迟不回）会让请求永远挂着：连接不释放，
+ * 排在它后面的同主机请求全部堵死，只能重启容器。所以任何一条出网请求
+ * 都必须有超时。调用方自带 signal 时原样沿用——它可能故意用了更长的
+ * 超时（翻日志能到分钟级），在这里再叠一层反而会把正常操作打断。
+ */
+const FALLBACK_TIMEOUT_MS = 30_000;
+
+function withFallbackTimeout(signal: RequestInit["signal"]): AbortSignal {
+  return signal ?? AbortSignal.timeout(FALLBACK_TIMEOUT_MS);
+}
+
 /** Server-only fetch used for Sub2API requests that need a configured proxy. */
 export async function fetchSub2(
   url: string,
   init: RequestInit,
   proxyUrl?: string | null,
 ): Promise<Response> {
-  if (!proxyUrl) return fetch(url, init);
+  const signal = withFallbackTimeout(init.signal);
+  if (!proxyUrl) return fetch(url, { ...init, signal });
 
   const { default: nodeFetch } = await import("node-fetch");
   return nodeFetch(url, {
     method: init.method,
     headers: init.headers as Record<string, string> | undefined,
     body: init.body as never,
-    signal: init.signal,
+    signal,
     agent: getProxyAgent(proxyUrl),
   }) as unknown as Response;
 }

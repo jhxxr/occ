@@ -222,8 +222,8 @@ export interface DownstreamDailyUsageResult {
   totals: DownstreamDailyRow[];
   /** 分组归因，接口不支持时为空 */
   groups: DownstreamGroupDailyRow[];
-  /** log-stat = 逐日日志求和；data-export = 数据看板聚合 */
-  totalSource: "log-stat" | "data-export" | "none";
+  /** log-stat = 逐日日志求和；db-logs = 直连 NewAPI 库；data-export = 数据看板聚合 */
+  totalSource: "log-stat" | "db-logs" | "data-export" | "none";
   /** 是否拿到了整段区间 */
   complete: boolean;
   /** 拉取失败的日期 */

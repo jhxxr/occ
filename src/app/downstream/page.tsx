@@ -16,6 +16,8 @@ import {
   ExternalLink,
   Users,
   X,
+  Database,
+  Unplug,
 } from "lucide-react";
 
 interface Site {
@@ -33,6 +35,13 @@ interface Site {
   lastRevenue: number | null;
   lastSyncAt: string | null;
   lastError: string | null;
+  dbBound?: boolean;
+  dbDsnMasked?: string | null;
+  dbHost?: string | null;
+  dbName?: string | null;
+  dbLastTestAt?: string | null;
+  dbLastTestOk?: boolean | null;
+  dbLastTestError?: string | null;
 }
 
 const emptyForm = {
@@ -44,15 +53,22 @@ const emptyForm = {
   revenueCurrency: "CNY",
   enabled: true,
   notes: "",
+  dbDsn: "",
+  /** When editing: user clicked 清除绑定 */
+  clearDb: false,
 };
 
 export default function DownstreamPage() {
   const [list, setList] = useState<Site[]>([]);
   const [form, setForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingBound, setEditingBound] = useState(false);
+  const [editingMasked, setEditingMasked] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testMsg, setTestMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function load() {
@@ -67,13 +83,18 @@ export default function DownstreamPage() {
 
   function startCreate() {
     setEditingId(null);
+    setEditingBound(false);
+    setEditingMasked(null);
     setForm(emptyForm);
     setError(null);
+    setTestMsg(null);
     setShowForm(true);
   }
 
   function startEdit(s: Site) {
     setEditingId(s.id);
+    setEditingBound(Boolean(s.dbBound));
+    setEditingMasked(s.dbDsnMasked || null);
     setForm({
       name: s.name,
       baseUrl: s.baseUrl,
@@ -83,15 +104,21 @@ export default function DownstreamPage() {
       revenueCurrency: s.revenueCurrency === "USD" ? "USD" : "CNY",
       enabled: s.enabled,
       notes: s.notes || "",
+      dbDsn: "",
+      clearDb: false,
     });
     setError(null);
+    setTestMsg(null);
     setShowForm(true);
   }
 
   function resetForm() {
     setEditingId(null);
+    setEditingBound(false);
+    setEditingMasked(null);
     setForm(emptyForm);
     setError(null);
+    setTestMsg(null);
     setShowForm(false);
   }
 
@@ -112,6 +139,12 @@ export default function DownstreamPage() {
           revenueCurrency: form.revenueCurrency,
         };
         if (form.adminKey.trim()) payload.adminKey = form.adminKey.trim();
+        if (form.clearDb) {
+          payload.dbDsn = "";
+        } else if (form.dbDsn.trim()) {
+          payload.dbDsn = form.dbDsn.trim();
+        }
+        // omit dbDsn → keep existing binding
         const res = await fetch("/api/downstream", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -121,15 +154,21 @@ export default function DownstreamPage() {
         if (!res.ok) throw new Error(json.error || "更新失败");
       } else {
         if (!form.adminKey.trim()) throw new Error("请填写访问令牌");
+        const payload: Record<string, unknown> = {
+          name: form.name,
+          baseUrl: form.baseUrl,
+          adminKey: form.adminKey.trim(),
+          adminUserId: Number(form.adminUserId) || 1,
+          quotaPerDollar: Number(form.quotaPerDollar) || 500000,
+          revenueCurrency: form.revenueCurrency,
+          enabled: form.enabled,
+          notes: form.notes || null,
+        };
+        if (form.dbDsn.trim()) payload.dbDsn = form.dbDsn.trim();
         const res = await fetch("/api/downstream", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ...form,
-            adminUserId: Number(form.adminUserId) || 1,
-            quotaPerDollar: Number(form.quotaPerDollar) || 500000,
-            notes: form.notes || null,
-          }),
+          body: JSON.stringify(payload),
         });
         const json = await res.json();
         if (!res.ok) throw new Error(json.error || "创建失败");
@@ -163,11 +202,93 @@ export default function DownstreamPage() {
     }
   }
 
+  async function testDbConnection() {
+    setTesting(true);
+    setTestMsg(null);
+    setError(null);
+    try {
+      const paste = form.dbDsn.trim();
+
+      let res: Response;
+      if (paste) {
+        // Prefer paste (create form or overwrite-before-save)
+        const url = editingId
+          ? `/api/downstream/${editingId}/db/test`
+          : "/api/downstream/db/test";
+        res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ dbDsn: paste }),
+        });
+      } else if (editingId && editingBound && !form.clearDb) {
+        res = await fetch(`/api/downstream/${editingId}/db/test`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+      } else {
+        throw new Error("请先填写 DSN");
+      }
+
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "测连失败");
+      if (!json.success) {
+        setTestMsg(null);
+        throw new Error(json.error || "连接失败");
+      }
+      const d = json.data || {};
+      setTestMsg(
+        `连接成功 · ${d.host || "?"}/${d.database || "?"} · ${d.latencyMs ?? "?"}ms` +
+          (d.persisted ? "" : "（未写入状态；保存绑定后再测可记录结果）"),
+      );
+      if (d.persisted) await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "测连失败");
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  async function testSavedOnCard(id: string) {
+    setBusyId(id);
+    setError(null);
+    try {
+      const res = await fetch(`/api/downstream/${id}/db/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const json = await res.json().catch(() => ({}));
+      // Always refresh so dbLastTest* badges update on soft failures (HTTP 200 + success:false)
+      await load();
+      if (!res.ok) throw new Error(json.error || "测连失败");
+      if (!json.success) throw new Error(json.error || "连接失败");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "测连失败");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   function formatRevenue(s: Site) {
     if (s.lastRevenue == null) return "—";
-    // 已按站点币种落库；USD 模式在展示时不再乘汇率（同步层已处理成可对比口径时）
-    // 这里统一人民币符号展示数值
     return formatRmb(s.lastRevenue);
+  }
+
+  function dbBadge(s: Site) {
+    if (!s.dbBound) return null;
+    if (s.dbLastTestOk === false) {
+      return (
+        <Badge variant="amber" title={s.dbLastTestError || "测连失败"}>
+          数据库·异常
+        </Badge>
+      );
+    }
+    return (
+      <Badge variant="mint" title={s.dbDsnMasked || undefined}>
+        数据库·已绑定
+      </Badge>
+    );
   }
 
   return (
@@ -192,7 +313,12 @@ export default function DownstreamPage() {
         )}
       </div>
 
-      {/* Compact create / edit drawer */}
+      {error && !showForm && (
+        <p className="text-xs text-coral" role="alert">
+          {error}
+        </p>
+      )}
+
       {showForm && (
         <Card className="border-cyan/25">
           <CardHeader className="flex flex-row items-center justify-between py-3 px-4">
@@ -291,6 +417,100 @@ export default function DownstreamPage() {
                   }
                 />
               </div>
+
+              {/* NewAPI database binding */}
+              <div className="space-y-2 sm:col-span-2 lg:col-span-3 rounded-lg border border-border/60 bg-surface-2/40 p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Database className="h-3.5 w-3.5 text-cyan" />
+                  <Label htmlFor="dbDsn" className="!mb-0">
+                    NewAPI 数据库 DSN
+                    <span className="ml-1 font-normal text-muted">（可选）</span>
+                  </Label>
+                  {editingBound && !form.clearDb && (
+                    <Badge variant="mint">已绑定</Badge>
+                  )}
+                  {form.clearDb && (
+                    <Badge variant="amber">将在保存后解除绑定</Badge>
+                  )}
+                </div>
+                <p className="text-[11px] leading-relaxed text-muted">
+                  与 NewAPI 的{" "}
+                  <code className="text-secondary">SQL_DSN</code>{" "}
+                  相同，例如{" "}
+                  <code className="text-secondary">
+                    user:pass@tcp(host:3306)/dbname
+                  </code>
+                  。建议只读账号；跨公网请在 DSN 加{" "}
+                  <code className="text-secondary">?tls=true</code>
+                  。本期仅保存与测连（同步仍走 API）；除 TLS 外多数 query
+                  参数测连时忽略。
+                </p>
+                {editingBound && editingMasked && !form.clearDb && !form.dbDsn && (
+                  <p className="text-xs font-data text-secondary">
+                    当前：{editingMasked}
+                  </p>
+                )}
+                <Input
+                  id="dbDsn"
+                  type="password"
+                  autoComplete="off"
+                  value={form.dbDsn}
+                  disabled={form.clearDb}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      dbDsn: e.target.value,
+                      clearDb: false,
+                    })
+                  }
+                  placeholder={
+                    editingBound && !form.clearDb
+                      ? "留空=不改；填写新 DSN 覆盖"
+                      : "user:pass@tcp(host:3306)/dbname"
+                  }
+                />
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={testing || form.clearDb}
+                    onClick={() => void testDbConnection()}
+                  >
+                    <Database
+                      className={`h-3.5 w-3.5 ${testing ? "animate-pulse" : ""}`}
+                    />
+                    {testing ? "测试中…" : "测试连接"}
+                  </Button>
+                  {editingId && editingBound && !form.clearDb && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={() =>
+                        setForm({ ...form, clearDb: true, dbDsn: "" })
+                      }
+                    >
+                      <Unplug className="h-3.5 w-3.5" />
+                      清除绑定
+                    </Button>
+                  )}
+                  {form.clearDb && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setForm({ ...form, clearDb: false })}
+                    >
+                      撤销清除
+                    </Button>
+                  )}
+                </div>
+                {testMsg && (
+                  <p className="text-xs text-mint">{testMsg}</p>
+                )}
+              </div>
+
               <div className="space-y-1 sm:col-span-2 lg:col-span-3">
                 <Label htmlFor="notes">备注</Label>
                 <Textarea
@@ -310,7 +530,9 @@ export default function DownstreamPage() {
                 启用同步
               </label>
               {error && (
-                <p className="text-xs text-coral sm:col-span-2">{error}</p>
+                <p className="text-xs text-coral sm:col-span-2 lg:col-span-3">
+                  {error}
+                </p>
               )}
               <div className="flex gap-2 sm:col-span-2 lg:col-span-3">
                 <Button type="submit" size="sm" disabled={saving}>
@@ -330,7 +552,6 @@ export default function DownstreamPage() {
         </Card>
       )}
 
-      {/* Site cards — primary workspace */}
       {list.length === 0 && !showForm ? (
         <Card>
           <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
@@ -363,6 +584,7 @@ export default function DownstreamPage() {
                         ? "收入·面值×汇率"
                         : "收入·人民币1:1"}
                     </Badge>
+                    {dbBadge(s)}
                     {(s.excludeCount ?? 0) > 0 && (
                       <Badge variant="amber">
                         剔除 {s.excludeCount} 号
@@ -370,6 +592,18 @@ export default function DownstreamPage() {
                     )}
                   </div>
                   <p className="truncate text-xs text-muted">{s.baseUrl}</p>
+                  {s.dbBound && (s.dbHost || s.dbName) && (
+                    <p className="truncate text-xs font-data text-secondary">
+                      DB {s.dbHost || "?"}
+                      {s.dbName ? ` / ${s.dbName}` : ""}
+                      {s.dbLastTestAt
+                        ? ` · 测连 ${new Date(s.dbLastTestAt).toLocaleString("zh-CN")}`
+                        : " · 尚未测连"}
+                      {s.dbLastTestOk === false && s.dbLastTestError ? (
+                        <span className="text-coral"> · {s.dbLastTestError}</span>
+                      ) : null}
+                    </p>
+                  )}
                   <div className="flex flex-wrap gap-4 text-sm">
                     <div>
                       <div className="text-xs text-muted">近窗消耗</div>
@@ -413,6 +647,18 @@ export default function DownstreamPage() {
                     <Users className="h-3.5 w-3.5" />
                     收入账号
                   </Link>
+                  {s.dbBound && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busyId === s.id}
+                      title="测试已绑定数据库"
+                      onClick={() => void testSavedOnCard(s.id)}
+                    >
+                      <Database className="h-3.5 w-3.5" />
+                      测库
+                    </Button>
+                  )}
                   <Button
                     size="sm"
                     variant="secondary"

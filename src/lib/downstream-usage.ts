@@ -13,13 +13,12 @@
  */
 
 import { prisma } from "@/lib/db";
-import { decryptSecret } from "@/lib/crypto";
 import {
-  fetchDownstreamDailyUsage,
-  fetchDownstreamModelDaily,
-  fetchDownstreamTopups,
-  listDownstreamUsers,
-} from "@/lib/adapters";
+  fetchDownstreamDailyUsageForSite,
+  fetchDownstreamModelDailyForSite,
+  fetchDownstreamTopupsForSite,
+  resolveDownstreamUsernames,
+} from "@/lib/downstream-fetch";
 import { syncManagedCreditLedger } from "@/lib/downstream-credit-ledger";
 import { addDays, assertDay, shanghaiDay } from "@/lib/reporting-period";
 
@@ -148,71 +147,17 @@ export async function syncDownstreamUsage(
     };
   }
 
-  const adminKey = decryptSecret(site.adminKey);
   const quotaPerUnit = site.quotaPerDollar || DEFAULT_QUOTA_PER_UNIT;
-  const input = {
-    baseUrl: site.baseUrl,
-    adminKey,
-    adminUserId: site.adminUserId ?? 1,
-    quotaPerDollar: quotaPerUnit,
-  };
 
-  // 排除名单存的是用户 id，但逐账号消费按 username 聚合，得先换成名字
-  let excludeUserIds: number[] = [];
-  try {
-    const parsed = JSON.parse(site.excludeUserIds || "[]");
-    if (Array.isArray(parsed)) {
-      excludeUserIds = parsed.map(Number).filter((n) => Number.isFinite(n));
-    }
-  } catch {
-    excludeUserIds = [];
-  }
+  // 排除/私域名单是用户 id；逐账号消费按 username 聚合，先解析名字（绑库走 DB）
+  const {
+    excludeUsernames,
+    privateUsernames,
+    excludeNamesResolved,
+    privateNamesResolved,
+  } = await resolveDownstreamUsernames(site);
 
-  // 私域名单同理
-  let privateUserIds: number[] = [];
-  try {
-    const parsed = JSON.parse(site.privateUserIds || "[]");
-    if (Array.isArray(parsed)) {
-      privateUserIds = parsed.map(Number).filter((n) => Number.isFinite(n));
-    }
-  } catch {
-    privateUserIds = [];
-  }
-
-  let excludeUsernames: string[] = [];
-  let privateUsernames: string[] = [];
-  let excludeNamesResolved = excludeUserIds.length === 0;
-  let privateNamesResolved = privateUserIds.length === 0;
-  if (excludeUserIds.length || privateUserIds.length) {
-    const users = await listDownstreamUsers({ ...input, excludeUserIds });
-    if (users.success) {
-      const wantedExclude = new Set(excludeUserIds);
-      // 超管永远算测试号，不进私域
-      const excludeIdSet = new Set(
-        users.users
-          .filter((u) => wantedExclude.has(u.id) || u.role >= 100)
-          .map((u) => u.id),
-      );
-      excludeUsernames = users.users
-        .filter((u) => excludeIdSet.has(u.id))
-        .map((u) => u.username)
-        .filter(Boolean);
-      excludeNamesResolved =
-        excludeUserIds.length === 0 || excludeUsernames.length > 0;
-
-      // 排除优先：同时在两个名单里的算测试号
-      const wantedPrivate = new Set(privateUserIds);
-      privateUsernames = users.users
-        .filter((u) => wantedPrivate.has(u.id) && !excludeIdSet.has(u.id))
-        .map((u) => u.username)
-        .filter(Boolean);
-      privateNamesResolved =
-        privateUserIds.length === 0 || privateUsernames.length > 0;
-    }
-  }
-
-  const usage = await fetchDownstreamDailyUsage({
-    ...input,
+  const usage = await fetchDownstreamDailyUsageForSite(site, {
     startDay,
     endDay,
     excludeUsernames,
@@ -425,57 +370,21 @@ export async function syncDownstreamModelUsage(
     return { success: false, synced: 0, error: "开始日期晚于今天，没有可同步的数据" };
   }
 
-  let excludeUserIds: number[] = [];
-  let privateUserIds: number[] = [];
-  try {
-    const parsed = JSON.parse(site.excludeUserIds || "[]");
-    if (Array.isArray(parsed)) {
-      excludeUserIds = parsed.map(Number).filter((n) => Number.isFinite(n));
-    }
-  } catch {
-    excludeUserIds = [];
-  }
-  try {
-    const parsed = JSON.parse(site.privateUserIds || "[]");
-    if (Array.isArray(parsed)) {
-      privateUserIds = parsed.map(Number).filter((n) => Number.isFinite(n));
-    }
-  } catch {
-    privateUserIds = [];
+  const {
+    excludeUsernames,
+    privateUsernames,
+    usersResult,
+  } = await resolveDownstreamUsernames(site);
+  if (!usersResult.success) {
+    return {
+      success: false,
+      synced: 0,
+      error: usersResult.error || "拿不到用户列表",
+    };
   }
 
-  // id → username：逐条日志按用户名聚合，得先换成名字
-  const usersRes = await listDownstreamUsers({
-    baseUrl: site.baseUrl,
-    adminKey: decryptSecret(site.adminKey),
-    adminUserId: site.adminUserId ?? 1,
-    quotaPerDollar: site.quotaPerDollar ?? 500_000,
-  });
-  if (!usersRes.success) {
-    return { success: false, synced: 0, error: usersRes.error || "拿不到用户列表" };
-  }
-
-  // 超管跟测试号一样不算收入，也就不进模型口径
-  const excludeIdSet = new Set(
-    usersRes.users
-      .filter((u) => excludeUserIds.includes(u.id) || u.role >= 100)
-      .map((u) => u.id),
-  );
-  const excludeUsernames = usersRes.users
-    .filter((u) => excludeIdSet.has(u.id))
-    .map((u) => u.username)
-    .filter(Boolean);
-  // 排除优先：同时在两个名单里的算测试号
-  const privateUsernames = usersRes.users
-    .filter((u) => privateUserIds.includes(u.id) && !excludeIdSet.has(u.id))
-    .map((u) => u.username)
-    .filter(Boolean);
-
-  // 拉模型日用量
-  const result = await fetchDownstreamModelDaily({
-    baseUrl: site.baseUrl,
-    adminKey: decryptSecret(site.adminKey),
-    adminUserId: site.adminUserId ?? 1,
+  // 拉模型日用量（绑库时一次 SQL 聚合，不再翻 /api/log）
+  const result = await fetchDownstreamModelDailyForSite(site, {
     startDay,
     endDay,
     excludeUsernames,
@@ -585,12 +494,7 @@ export async function syncDownstreamTopups(
     };
   }
 
-  const fetched = await fetchDownstreamTopups({
-    baseUrl: site.baseUrl,
-    adminKey: decryptSecret(site.adminKey),
-    adminUserId: site.adminUserId ?? 1,
-    quotaPerDollar: site.quotaPerDollar || DEFAULT_QUOTA_PER_UNIT,
-  });
+  const fetched = await fetchDownstreamTopupsForSite(site);
   const now = new Date();
 
   if (!fetched.success) {

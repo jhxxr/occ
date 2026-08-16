@@ -1,10 +1,8 @@
 import { createHash } from "crypto";
 import { prisma } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
-import {
-  createDownstreamRedemptions,
-  fetchDownstreamRedemptions,
-} from "@/lib/adapters";
+import { createDownstreamRedemptions } from "@/lib/adapters";
+import { fetchDownstreamRedemptionsForSite } from "@/lib/downstream-fetch";
 
 function keyPreview(key: string): string {
   if (key.length <= 8) return key;
@@ -18,12 +16,7 @@ function keyHash(key: string): string {
 export async function syncDownstreamRedemptions(downstreamId: string) {
   const site = await prisma.downstreamSite.findUnique({ where: { id: downstreamId } });
   if (!site) throw new Error("站点不存在");
-  const result = await fetchDownstreamRedemptions({
-    baseUrl: site.baseUrl,
-    adminKey: decryptSecret(site.adminKey),
-    adminUserId: site.adminUserId,
-    quotaPerDollar: site.quotaPerDollar,
-  });
+  const result = await fetchDownstreamRedemptionsForSite(site);
   if (!result.success || !result.complete) {
     await prisma.downstreamSite.update({
       where: { id: downstreamId },

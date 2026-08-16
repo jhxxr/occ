@@ -1,6 +1,8 @@
 import { prisma } from "@/lib/db";
-import { decryptSecret } from "@/lib/crypto";
-import { fetchDownstreamDailyUserUsage, listDownstreamUsers } from "@/lib/adapters";
+import {
+  fetchDownstreamDailyUserUsageForSite,
+  listDownstreamUsersForSite,
+} from "@/lib/downstream-fetch";
 import { shanghaiDay } from "@/lib/reporting-period";
 
 const TRANSACTION_TIMEOUT_MS = 10 * 60 * 1000;
@@ -73,12 +75,7 @@ export async function syncManagedCreditLedger(
     return { success: true, allocations: 0, recognizedRmb: 0, bonusQuota: 0 };
   }
 
-  const users = await listDownstreamUsers({
-    baseUrl: site.baseUrl,
-    adminKey: decryptSecret(site.adminKey),
-    adminUserId: site.adminUserId,
-    quotaPerDollar: site.quotaPerDollar,
-  });
+  const users = await listDownstreamUsersForSite(site);
   if (!users.success || !users.complete) {
     return {
       success: false,
@@ -105,10 +102,7 @@ export async function syncManagedCreditLedger(
     return { success: true, allocations: 0, recognizedRmb: 0, bonusQuota: 0 };
   }
 
-  const usage = await fetchDownstreamDailyUserUsage({
-    baseUrl: site.baseUrl,
-    adminKey: decryptSecret(site.adminKey),
-    adminUserId: site.adminUserId,
+  const usage = await fetchDownstreamDailyUserUsageForSite(site, {
     startDay: replayStartDay,
     endDay,
   });

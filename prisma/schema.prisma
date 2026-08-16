@@ -348,6 +348,14 @@ model DownstreamSite {
   redemptionSyncError       String?   @db.Text
   /// 管理充值启用时间；在此之前的消费沿用历史面值口径
   rechargeLedgerEnabledAt   DateTime?
+  /// NewAPI 主库只读 DSN（Go 格式，AES 加密）。有值 = 已绑定；同步优先读库，失败回退 Admin API。
+  dbDsn                     String?   @db.Text
+  dbLastTestAt              DateTime?
+  dbLastTestOk              Boolean?
+  dbLastTestError           String?   @db.Text
+  /// 测连成功后缓存，仅供展示
+  dbHost                    String?   @db.VarChar(255)
+  dbName                    String?   @db.VarChar(200)
   createdAt                 DateTime  @default(now())
   updatedAt                 DateTime  @updatedAt
 

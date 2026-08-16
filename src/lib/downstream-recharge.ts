@@ -1,15 +1,5 @@
 import { prisma } from "@/lib/db";
-import { decryptSecret } from "@/lib/crypto";
-import { listDownstreamUsers } from "@/lib/adapters";
-
-function parseIds(value: string): Set<number> {
-  try {
-    const parsed = JSON.parse(value || "[]");
-    return new Set(Array.isArray(parsed) ? parsed.map(Number).filter(Number.isFinite) : []);
-  } catch {
-    return new Set();
-  }
-}
+import { listDownstreamUsersForSite } from "@/lib/downstream-fetch";
 
 /**
  * Refresh the complete downstream balance snapshot used by prepaid liability.
@@ -19,16 +9,7 @@ export async function syncDownstreamUserBalances(siteId: string) {
   const site = await prisma.downstreamSite.findUnique({ where: { id: siteId } });
   if (!site) throw new Error("站点不存在");
   const observedAt = new Date();
-  const excludeUserIds = [...parseIds(site.excludeUserIds)];
-  const privateUserIds = [...parseIds(site.privateUserIds)];
-  const result = await listDownstreamUsers({
-    baseUrl: site.baseUrl,
-    adminKey: decryptSecret(site.adminKey),
-    adminUserId: site.adminUserId,
-    quotaPerDollar: site.quotaPerDollar,
-    excludeUserIds,
-    privateUserIds,
-  });
+  const result = await listDownstreamUsersForSite(site);
   if (!result.success || !result.complete) {
     const error = result.error || `用户列表不完整（${result.scanned}/${result.total || "?"}）`;
     await prisma.downstreamSite.update({

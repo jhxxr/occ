@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { encryptSecret, maskSecret, decryptSecret } from "@/lib/crypto";
+import { maskGoDsn, parseGoMysqlDsn } from "@/lib/newapi-dsn";
 
 const siteSchema = z.object({
   name: z.string().min(1).max(100),
@@ -12,9 +13,11 @@ const siteSchema = z.object({
   revenueCurrency: z.enum(["CNY", "USD"]).default("CNY"),
   enabled: z.boolean().default(true),
   notes: z.string().optional().nullable(),
+  /** Optional NewAPI SQL_DSN (Go format). Empty string clears on create (no-op). */
+  dbDsn: z.string().optional().nullable(),
 });
 
-function publicSite(s: {
+type DownstreamSiteRow = {
   id: string;
   name: string;
   baseUrl: string;
@@ -29,9 +32,17 @@ function publicSite(s: {
   lastRevenue: number | null;
   lastSyncAt: Date | null;
   lastError: string | null;
+  dbDsn: string | null;
+  dbLastTestAt: Date | null;
+  dbLastTestOk: boolean | null;
+  dbLastTestError: string | null;
+  dbHost: string | null;
+  dbName: string | null;
   createdAt: Date;
   updatedAt: Date;
-}) {
+};
+
+function publicSite(s: DownstreamSiteRow) {
   let exclude: number[] = [];
   try {
     const p = JSON.parse(s.excludeUserIds || "[]");
@@ -39,20 +50,73 @@ function publicSite(s: {
   } catch {
     /* ignore */
   }
+
+  const dbBound = Boolean(s.dbDsn);
+  let dbDsnMasked: string | null = null;
+  if (dbBound && s.dbDsn) {
+    const plain = decryptSecret(s.dbDsn);
+    dbDsnMasked = plain ? maskGoDsn(plain) : "••••（已绑定）";
+  }
+
+  // Strip encrypted secrets from the spread
+  const {
+    adminKey: _ak,
+    dbDsn: _dsn,
+    ...rest
+  } = s;
+
   return {
-    ...s,
+    ...rest,
     adminKey: maskSecret(decryptSecret(s.adminKey)),
     adminKeySet: true,
     excludeUserIds: exclude,
     excludeCount: exclude.length,
+    dbBound,
+    dbDsnMasked,
+    dbHost: s.dbHost,
+    dbName: s.dbName,
+    dbLastTestAt: s.dbLastTestAt,
+    dbLastTestOk: s.dbLastTestOk,
+    dbLastTestError: s.dbLastTestError,
   };
+}
+
+/** Validate optional DSN paste; empty = no bind. Throws Chinese Error. */
+function normalizeIncomingDsn(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "string") {
+    throw new Error("dbDsn 必须是字符串");
+  }
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.includes("•")) {
+    // bullet = masked placeholder from UI; treat as "no change" if caller mishandled
+    return trimmed.includes("•") ? undefined : null;
+  }
+  // Validate format before encrypting
+  parseGoMysqlDsn(trimmed);
+  return trimmed;
 }
 
 export async function GET() {
   const sites = await prisma.downstreamSite.findMany({
     orderBy: { createdAt: "asc" },
   });
-  return NextResponse.json({ data: sites.map(publicSite) });
+  return NextResponse.json({ data: sites.map((s) => publicSite(s as DownstreamSiteRow)) });
+}
+
+function isClientInputError(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  const msg = e.message;
+  return (
+    msg.includes("DSN") ||
+    msg.includes("dbDsn") ||
+    msg.includes("数据库") ||
+    msg.includes("用户名") ||
+    msg.includes("主机") ||
+    msg.includes("端口") ||
+    msg.includes("mysql://")
+  );
 }
 
 export async function POST(req: NextRequest) {
@@ -66,6 +130,20 @@ export async function POST(req: NextRequest) {
       );
     }
     const data = parsed.data;
+
+    let dbDsnEnc: string | null = null;
+    let dbHost: string | null = null;
+    let dbName: string | null = null;
+    if (data.dbDsn != null && String(data.dbDsn).trim() && !String(data.dbDsn).includes("•")) {
+      const plain = normalizeIncomingDsn(data.dbDsn);
+      if (plain) {
+        const parts = parseGoMysqlDsn(plain);
+        dbDsnEnc = encryptSecret(plain);
+        dbHost = parts.host;
+        dbName = parts.database;
+      }
+    }
+
     const created = await prisma.downstreamSite.create({
       data: {
         name: data.name,
@@ -76,13 +154,17 @@ export async function POST(req: NextRequest) {
         revenueCurrency: data.revenueCurrency,
         enabled: data.enabled,
         notes: data.notes ?? null,
+        dbDsn: dbDsnEnc,
+        dbHost,
+        dbName,
       },
     });
-    return NextResponse.json({ data: publicSite(created) });
+    return NextResponse.json({ data: publicSite(created as DownstreamSiteRow) });
   } catch (e) {
+    const status = isClientInputError(e) ? 400 : 500;
     return NextResponse.json(
       { error: e instanceof Error ? e.message : "Create failed" },
-      { status: 500 },
+      { status },
     );
   }
 }
@@ -119,15 +201,40 @@ export async function PUT(req: NextRequest) {
       updates.adminKey = encryptSecret(body.adminKey);
     }
 
+    // dbDsn: omitted = no change; "" / null = unbind; non-empty = rebind
+    if (Object.prototype.hasOwnProperty.call(body, "dbDsn")) {
+      const plain = normalizeIncomingDsn(body.dbDsn);
+      if (plain === undefined) {
+        // masked placeholder — ignore
+      } else if (plain === null) {
+        updates.dbDsn = null;
+        updates.dbHost = null;
+        updates.dbName = null;
+        updates.dbLastTestAt = null;
+        updates.dbLastTestOk = null;
+        updates.dbLastTestError = null;
+      } else {
+        const parts = parseGoMysqlDsn(plain);
+        updates.dbDsn = encryptSecret(plain);
+        updates.dbHost = parts.host;
+        updates.dbName = parts.database;
+        // New DSN invalidates prior test status
+        updates.dbLastTestAt = null;
+        updates.dbLastTestOk = null;
+        updates.dbLastTestError = null;
+      }
+    }
+
     const updated = await prisma.downstreamSite.update({
       where: { id },
       data: updates,
     });
-    return NextResponse.json({ data: publicSite(updated) });
+    return NextResponse.json({ data: publicSite(updated as DownstreamSiteRow) });
   } catch (e) {
+    const status = isClientInputError(e) ? 400 : 500;
     return NextResponse.json(
       { error: e instanceof Error ? e.message : "Update failed" },
-      { status: 500 },
+      { status },
     );
   }
 }

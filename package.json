@@ -22,6 +22,7 @@
     "date-fns": "^4.4.0",
     "dotenv": "^17.4.2",
     "lucide-react": "^1.27.0",
+    "mysql2": "^3.23.3",
     "next": "16.2.12",
     "node-fetch": "^3.3.2",
     "proxy-agent": "^6.5.0",

@@ -5,6 +5,7 @@
 ## 功能
 
 - **凭证管理**：多站点配置，API Key AES-256-GCM 加密存储
+- **下游库绑定**：可选粘贴 NewAPI 同款 `SQL_DSN`（只读账号），加密保存并测连；已绑定时同步优先直连库拉用户/消费/充值/兑换码，失败自动回退 Admin API
 - **数据同步**：手动/全量拉取余额、消耗、充值流水、下游按日消费
 - **收益核算**：周/月服务毛利，收入只认下游日志实测扣费（见下文）
 - **成本台账**：买号/订阅按记账日或有效期摊销，账号被风控可压缩结算
@@ -212,7 +213,9 @@ scripts/
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET/POST/PUT/DELETE | `/api/providers` | 上游 CRUD |
-| GET/POST/PUT/DELETE | `/api/downstream` | 下游 CRUD |
+| GET/POST/PUT/DELETE | `/api/downstream` | 下游 CRUD（可选 `dbDsn` Go 格式，加密存储） |
+| POST | `/api/downstream/db/test` | 粘贴 DSN 测连（不落库） |
+| POST | `/api/downstream/[id]/db/test` | 测已绑定 DSN 并写状态；body 可带未保存 `dbDsn` 只返回结果 |
 | POST | `/api/sync` | `{ target: "all" \| "upstream" \| "downstream", id? }` |
 | POST | `/api/downstream/usage-sync` | 拉取下游按日真实消费 + 分组倍率 |
 | GET | `/api/financial-report` | 周/月收益报表（`period=week\|month`、`offset`、或 `startDay`+`endDay`） |
@@ -252,5 +255,6 @@ Authorization: Bearer oct_...
 
 - 前置 TLS 反向代理，`AUTH_PASSWORD` 用强密码。
 - 上游站点地址（`baseUrl`）由你自行填写，服务端会直接请求该地址，未对内网地址做限制。不要填入不受信任的地址。
+- 下游「数据库 DSN」同理：测连会对你填写的 host:port 发起 MySQL 连接（短连接 `SELECT 1`），可触达内网。务必使用**只读**账号；跨公网建议 `?tls=true`。不要把写权限账号或不受信任的地址绑进来。
 - 扩展 token 长期有效且无速率限制，不用时在设置中禁用或删除。
 - 登录接口没有失败次数限制，公网部署建议在反向代理层加限流。

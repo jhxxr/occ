@@ -1,10 +1,13 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatRmb, cn } from "@/lib/utils";
+import type { CapitalPlanEstimate } from "@/lib/capital-plan";
 import {
   Wallet,
   TrendingDown,
   TrendingUp,
   Sparkles,
+  PiggyBank,
+  Landmark,
   type LucideIcon,
 } from "lucide-react";
 
@@ -71,6 +74,73 @@ function MetricCard({
   );
 }
 
+function capitalPlanHints(plan?: CapitalPlanEstimate | null): {
+  investValue: string;
+  investHint: string;
+  investTone: MetricCardProps["tone"];
+  revenueValue: string;
+  revenueHint: string;
+} {
+  if (!plan) {
+    return {
+      investValue: "—",
+      investHint: "同步用户余额后可估算",
+      investTone: "default",
+      revenueValue: "—",
+      revenueHint: "预收余额消费完后的确认收入",
+    };
+  }
+  if (!plan.balanceComplete) {
+    return {
+      investValue: "未同步",
+      investHint: plan.reason || "请先同步下游用户余额",
+      investTone: "amber",
+      revenueValue: "未同步",
+      revenueHint: "用户余额快照不完整，不能按 ¥0.00 解读",
+    };
+  }
+  if (!plan.estimable) {
+    const bonusNote =
+      plan.bonusRemainingRmb > 0
+        ? `已扣赠送 ${formatRmb(plan.bonusRemainingRmb)} · `
+        : "";
+    return {
+      investValue: "—",
+      investHint: plan.reason || "暂无法估算",
+      investTone: "default",
+      revenueValue: formatRmb(plan.estimatedRevenueRmb),
+      revenueHint: `${bonusNote}付费余额 ${formatRmb(plan.estimatedRevenueRmb)} · ${plan.reason || "缺近期消费"}`,
+    };
+  }
+
+  const rateLabel =
+    plan.upstreamCostRate != null
+      ? `上游成本率 ${(plan.upstreamCostRate * 100).toFixed(1)}%`
+      : "按本月实测成本结构";
+  const invest =
+    plan.additionalUpstreamInvestRmb == null
+      ? null
+      : plan.additionalUpstreamInvestRmb;
+  const covered = plan.covered === true;
+  const bonusNote =
+    plan.bonusRemainingRmb > 0
+      ? `已扣赠送 ${formatRmb(plan.bonusRemainingRmb)} · `
+      : "";
+
+  return {
+    investValue: invest == null ? "—" : formatRmb(invest),
+    investHint: covered
+      ? `上游余额已覆盖 · 所需 ${formatRmb(plan.requiredUpstreamCostRmb)} · ${rateLabel}`
+      : `所需上游 ${formatRmb(plan.requiredUpstreamCostRmb)} − 已有 ${formatRmb(plan.upstreamBalanceRmb)} · ${rateLabel}`,
+    investTone: covered ? "mint" : invest && invest > 0 ? "coral" : "default",
+    revenueValue: formatRmb(plan.estimatedRevenueRmb),
+    revenueHint:
+      !plan.profitEstimable || plan.estimatedProfitRmb == null
+        ? `${bonusNote}当前付费余额 · ${plan.profitReason || rateLabel}`
+        : `${bonusNote}兑现后预估毛利 ${formatRmb(plan.estimatedProfitRmb)} · 预估毛利率 ${plan.marginRate == null ? "—" : `${(plan.marginRate * 100).toFixed(1)}%`}`,
+  };
+}
+
 export function MetricsRow({
   metrics,
 }: {
@@ -90,6 +160,9 @@ export function MetricsRow({
     issuedCreditRmb?: number;
     grossConsumptionRmb?: number;
     excludedRevenueRmb?: number;
+    prepaidBalanceRmb?: number;
+    prepaidBalanceComplete?: boolean;
+    capitalPlan?: CapitalPlanEstimate | null;
   };
 }) {
   const profitTone =
@@ -110,9 +183,10 @@ export function MetricsRow({
     : "尚未同步使用记录，回退为同步快照估算";
 
   const operating = metrics.operatingCostRmb ?? 0;
+  const planHints = capitalPlanHints(metrics.capitalPlan);
 
   return (
-    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
       <MetricCard
         label="本月服务毛利"
         value={formatRmb(metrics.monthProfitRmb)}
@@ -154,6 +228,20 @@ export function MetricsRow({
         hint="按各站购入成本折算的人民币"
         icon={Wallet}
         tone="cyan"
+      />
+      <MetricCard
+        label="还需上游投入"
+        value={planHints.investValue}
+        hint={planHints.investHint}
+        icon={Landmark}
+        tone={planHints.investTone}
+      />
+      <MetricCard
+        label="预收预估收入"
+        value={planHints.revenueValue}
+        hint={planHints.revenueHint}
+        icon={PiggyBank}
+        tone="violet"
       />
     </div>
   );

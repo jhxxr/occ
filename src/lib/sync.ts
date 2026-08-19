@@ -1,7 +1,8 @@
 import { prisma } from "@/lib/db";
 import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { getSub2ProxyUrl } from "@/lib/sub2/settings";
-import { fetchDownstreamStats, fetchUpstreamBalance } from "@/lib/adapters";
+import { fetchUpstreamBalance } from "@/lib/adapters";
+import { fetchDownstreamStatsForSite } from "@/lib/downstream-fetch";
 import { syncSub2ApiKeys } from "@/lib/sub2/sync-keys";
 import { syncSub2ApiKeyProvider } from "@/lib/sub2api-key/sync";
 import { detectRechargeOnSync } from "@/lib/recharge";
@@ -20,7 +21,13 @@ import {
 import { syncDownstreamUserBalances } from "@/lib/downstream-recharge";
 import { syncDownstreamRedemptions } from "@/lib/downstream-redemption";
 import { summarizeCosts } from "@/lib/operating-cost";
-import { monthPeriod, addDays, shanghaiDay, startOfMonthDay } from "@/lib/reporting-period";
+import {
+  monthPeriod,
+  addDays,
+  elapsedPeriod,
+  shanghaiDay,
+  startOfMonthDay,
+} from "@/lib/reporting-period";
 import {
   syncSelfHostedMeta,
   syncSelfHostedGroupUsage,
@@ -31,6 +38,14 @@ import {
   calculateProfit,
 } from "@/lib/profit";
 import { SyncBusyError, withSyncLock } from "@/lib/sync-lock";
+import {
+  summarizeBonusRemaining,
+  summarizePrepaidLiability,
+} from "@/lib/prepaid";
+import {
+  estimatePrepaidFulfillment,
+  type CapitalPlanEstimate,
+} from "@/lib/capital-plan";
 
 export interface SyncResultItem {
   id: string;
@@ -400,25 +415,8 @@ async function runDownstreamSiteSync(id: string): Promise<SyncResultItem> {
     return { id, name: "?", kind: "downstream", success: false, error: "Not found" };
   }
 
-  const adminKey = decryptSecret(site.adminKey);
-  let excludeUserIds: number[] = [];
-  try {
-    const parsed = JSON.parse(site.excludeUserIds || "[]");
-    if (Array.isArray(parsed)) {
-      excludeUserIds = parsed.map(Number).filter((n) => Number.isFinite(n));
-    }
-  } catch {
-    excludeUserIds = [];
-  }
-
-  const result = await fetchDownstreamStats({
-    baseUrl: site.baseUrl,
-    adminKey,
-    adminUserId: site.adminUserId ?? 1,
-    quotaPerDollar: site.quotaPerDollar ?? 500000,
-    excludeUserIds,
-    revenueCurrency: site.revenueCurrency === "USD" ? "USD" : "CNY",
-  });
+  // Bound DSN → read overview from NewAPI MySQL; otherwise Admin HTTP.
+  const result = await fetchDownstreamStatsForSite(site);
 
   if (!result.success) {
     await prisma.downstreamSite.update({
@@ -588,6 +586,9 @@ export async function getDashboardData() {
   const usageMonthCost = usageMonthAgg._sum.costRmb ?? 0;
   const usageMonthRequests = usageMonthAgg._sum.requests ?? 0;
   const hasUsageCost = (usageMonthAgg._count as number) > 0 || usageDailies.length > 0;
+  const hasUpstreamCostData =
+    (usageMonthAgg._count as number) > 0 ||
+    monthCosts.some((snap) => (snap.costRmb || 0) > 0);
 
   // 成本口径与收益报表保持一致：按「站点 × 日」取精确用量，
   // 只有那天该站点没有 Key 级日志时才补快照估算。
@@ -658,6 +659,7 @@ export async function getDashboardData() {
   const costEntries = await prisma.operatingCostEntry.findMany({
     where: { status: { not: "void" } },
   });
+  const elapsedMonth = elapsedPeriod(monthPeriod(todayDay), todayDay)!;
   const monthCostSummary = summarizeCosts(
     costEntries.map((e) => ({
       id: e.id,
@@ -672,7 +674,7 @@ export async function getDashboardData() {
       providerId: e.providerId,
       accountId: e.accountId,
     })),
-    monthPeriod(todayDay),
+    elapsedMonth,
   );
   const operatingCostRmb = monthCostSummary.totalRmb;
 
@@ -865,6 +867,176 @@ export async function getDashboardData() {
     },
   );
 
+  // 当前预收余额（用户未消费额度）→ 结合本月毛利结构，估算兑现还需上游投入
+  const enabledSites = sites.filter((s) => s.enabled);
+  const enabledSiteIds = enabledSites.map((s) => s.id);
+  const enabledSiteIdSet = new Set(enabledSiteIds);
+  const [
+    userBalances,
+    balanceRowCounts,
+    bonusLots,
+    monthBonusAllocations,
+    monthQuotaRows,
+  ] =
+    await Promise.all([
+      prisma.downstreamUserBalance.findMany({
+        // 与收益报表一致：只认 complete=true 的快照行
+        where: { downstreamId: { in: enabledSiteIds }, complete: true },
+        select: {
+          downstreamId: true,
+          userId: true,
+          role: true,
+          quota: true,
+          observedAt: true,
+        },
+      }),
+      prisma.downstreamUserBalance.groupBy({
+        by: ["downstreamId"],
+        where: { downstreamId: { in: enabledSiteIds }, complete: true },
+        _count: { _all: true },
+      }),
+      prisma.downstreamCreditLot.findMany({
+        where: {
+          downstreamId: { in: enabledSiteIds },
+          source: { in: ["ADMIN_BONUS", "REDEEM_CODE"] },
+          remainingQuota: { gt: 0 },
+        },
+        select: {
+          downstreamId: true,
+          userId: true,
+          remainingQuota: true,
+        },
+      }),
+      // 本月已确认的赠送消费：仪表盘 revenueRmb 未扣，规划时要扣掉
+      prisma.downstreamCreditAllocation.findMany({
+        where: {
+          downstreamId: { in: enabledSiteIds },
+          day: { gte: monthStartDay, lte: todayDay },
+          source: { in: ["ADMIN_BONUS", "REDEEM_CODE"] },
+          ownership: { not: "EXCLUDED" },
+        },
+        select: {
+          downstreamId: true,
+          userId: true,
+          day: true,
+          consumedQuota: true,
+        },
+      }),
+      prisma.downstreamUsageDaily.findMany({
+        where: {
+          downstreamId: { in: enabledSiteIds },
+          scope: "TOTAL",
+          day: { gte: monthStartDay, lte: todayDay },
+        },
+        select: {
+          downstreamId: true,
+          day: true,
+          quotaPerUnit: true,
+        },
+      }),
+    ]);
+  const balanceCountBySite = new Map(
+    balanceRowCounts.map((row) => [row.downstreamId, row._count._all]),
+  );
+  const parseIdSet = (raw: string): Set<number> => {
+    try {
+      const parsed = JSON.parse(raw || "[]");
+      if (!Array.isArray(parsed)) return new Set();
+      return new Set(parsed.map(Number).filter((n) => Number.isFinite(n)));
+    } catch {
+      return new Set();
+    }
+  };
+  const ownershipBySite = new Map(
+    enabledSites.map((site) => [
+      site.id,
+      {
+        excludeUserIds: parseIdSet(site.excludeUserIds),
+        privateUserIds: parseIdSet(site.privateUserIds),
+      },
+    ]),
+  );
+  const quotaPerUnitBySite = new Map(
+    enabledSites.map((site) => [site.id, site.quotaPerDollar || 500_000]),
+  );
+  const prepaidLiability = summarizePrepaidLiability(
+    userBalances.map((balance) => ({
+      downstreamId: balance.downstreamId,
+      userId: balance.userId,
+      role: balance.role,
+      quota: balance.quota,
+      quotaPerUnit: quotaPerUnitBySite.get(balance.downstreamId) || 500_000,
+      observedAt: balance.observedAt,
+    })),
+    ownershipBySite,
+  );
+
+  const userSnapshotBySite = new Map<
+    string,
+    Map<number, { role: number; quota: number }>
+  >();
+  for (const balance of userBalances) {
+    let byUser = userSnapshotBySite.get(balance.downstreamId);
+    if (!byUser) {
+      byUser = new Map();
+      userSnapshotBySite.set(balance.downstreamId, byUser);
+    }
+    byUser.set(balance.userId, {
+      role: balance.role,
+      quota: balance.quota,
+    });
+  }
+  const bonusRemaining = summarizeBonusRemaining(bonusLots, ownershipBySite, {
+    quotaPerUnitBySite,
+    userSnapshotBySite,
+    enabledSiteIds: enabledSiteIdSet,
+  });
+
+  const quotaPerUnitBySiteDay = new Map(
+    monthQuotaRows.map((row) => [
+      `${row.downstreamId}\u0000${row.day}`,
+      row.quotaPerUnit || quotaPerUnitBySite.get(row.downstreamId) || 500_000,
+    ]),
+  );
+  const monthBonusConsumedRmb = monthBonusAllocations.reduce((sum, row) => {
+    const user = userSnapshotBySite
+      .get(row.downstreamId)
+      ?.get(row.userId);
+    if (user && user.role >= 100) return sum;
+    const qpu =
+      quotaPerUnitBySiteDay.get(`${row.downstreamId}\u0000${row.day}`) ||
+      quotaPerUnitBySite.get(row.downstreamId) ||
+      500_000;
+    return sum + Math.max(0, row.consumedQuota) / qpu;
+  }, 0);
+  // 与收益报表对齐：付费收入 = 下游 revenue − 已确认赠送消费
+  const paidRevenueRmb = Math.max(0, totalRevenueRmb - monthBonusConsumedRmb);
+
+  const balanceComplete =
+    enabledSites.length === 0 ||
+    enabledSites.every((site) => {
+      const rows = balanceCountBySite.get(site.id) || 0;
+      return !!site.balanceLastSyncAt && !site.balanceSyncError && rows > 0;
+    });
+  const capitalPlan: CapitalPlanEstimate = estimatePrepaidFulfillment({
+    prepaidRmb: prepaidLiability.totalRmb,
+    privatePrepaidRmb: prepaidLiability.privateRmb,
+    publicPrepaidRmb: prepaidLiability.publicRmb,
+    bonusRemainingRmb: bonusRemaining.totalRmb,
+    privateBonusRemainingRmb: bonusRemaining.privateRmb,
+    publicBonusRemainingRmb: bonusRemaining.publicRmb,
+    balanceComplete,
+    recent: {
+      // 没有本月消费数据时不要用 0 收入硬估成本率
+      revenueRmb: hasUsageRevenue ? paidRevenueRmb : 0,
+      grossConsumptionRmb: hasUsageRevenue ? grossConsumptionRmb : 0,
+      upstreamCostRmb: businessCostRmb,
+      upstreamCostAvailable: hasUpstreamCostData,
+      operatingCostRmb,
+    },
+    upstreamBalanceRmb: monthSummary.totalUpstreamBalanceRmb,
+  });
+
   return {
     usdCny,
     metrics: {
@@ -889,6 +1061,11 @@ export async function getDashboardData() {
       grossConsumptionRmb,
       /** 测试号烧掉的额度，已从收入剔除 */
       excludedRevenueRmb,
+      /** 当前付费用户未消费余额（预收负债） */
+      prepaidBalanceRmb: prepaidLiability.totalRmb,
+      prepaidBalanceComplete: balanceComplete,
+      /** 兑现当前预收：预估收入 / 还需上游投入 */
+      capitalPlan,
     },
     providers: providers.map((p) => ({
       id: p.id,

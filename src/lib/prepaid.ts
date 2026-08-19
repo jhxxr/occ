@@ -7,6 +7,29 @@ export interface PrepaidBalanceInput {
   observedAt: Date;
 }
 
+export interface BonusRemainingInput {
+  downstreamId: string;
+  userId: number;
+  remainingQuota: number;
+}
+
+export interface BonusRemainingSummary {
+  totalRmb: number;
+  privateRmb: number;
+  publicRmb: number;
+}
+
+export type PrepaidUserOwnership = "EXCLUDED" | "PRIVATE" | "PUBLIC";
+
+export function classifyPrepaidUser(
+  userId: number,
+  role: number,
+  ownership: PrepaidOwnership,
+): PrepaidUserOwnership {
+  if (role >= 100 || ownership.excludeUserIds.has(userId)) return "EXCLUDED";
+  return ownership.privateUserIds.has(userId) ? "PRIVATE" : "PUBLIC";
+}
+
 export interface PrepaidLiability {
   totalRmb: number;
   privateRmb: number;
@@ -14,6 +37,87 @@ export interface PrepaidLiability {
   excludedRmb: number;
   users: number;
   observedAt: Date | null;
+}
+
+/**
+ * 赠送/兑换码剩余额度折 RMB。
+ * 排除名单与 role≥100 与预收负债同一套规则；admin 角色用余额快照推断。
+ */
+export function summarizeBonusRemaining(
+  lots: BonusRemainingInput[],
+  ownershipBySite: Map<string, PrepaidOwnership>,
+  opts: {
+    quotaPerUnitBySite: Map<string, number>;
+    /**
+     * 完整的当前用户余额快照。传入后，已删除用户会被跳过，且每个用户的赠送
+     * 剩余最多只能扣到他自己的当前余额，不能串到同归属的其他用户。
+     */
+    userSnapshotBySite?: Map<
+      string,
+      Map<number, { role: number; quota: number }>
+    >;
+    enabledSiteIds?: Set<string>;
+  },
+): BonusRemainingSummary {
+  const remainingByUser = new Map<
+    string,
+    {
+      downstreamId: string;
+      userId: number;
+      ownership: Exclude<PrepaidUserOwnership, "EXCLUDED">;
+      remainingQuota: number;
+      currentQuota: number | null;
+    }
+  >();
+
+  for (const lot of lots) {
+    if (opts.enabledSiteIds && !opts.enabledSiteIds.has(lot.downstreamId)) continue;
+    const ownership = ownershipBySite.get(lot.downstreamId);
+    const qpu = opts.quotaPerUnitBySite.get(lot.downstreamId) || 0;
+    if (!ownership || !(qpu > 0)) continue;
+
+    const siteSnapshot = opts.userSnapshotBySite?.get(lot.downstreamId);
+    const userSnapshot = siteSnapshot?.get(lot.userId);
+    if (opts.userSnapshotBySite && !userSnapshot) continue;
+
+    const userOwnership = classifyPrepaidUser(
+      lot.userId,
+      userSnapshot?.role ?? 0,
+      ownership,
+    );
+    if (userOwnership === "EXCLUDED") continue;
+
+    const key = `${lot.downstreamId}\u0000${lot.userId}`;
+    const current = remainingByUser.get(key) || {
+      downstreamId: lot.downstreamId,
+      userId: lot.userId,
+      ownership: userOwnership,
+      remainingQuota: 0,
+      currentQuota: userSnapshot ? Math.max(0, userSnapshot.quota) : null,
+    };
+    current.remainingQuota += Math.max(0, lot.remainingQuota);
+    remainingByUser.set(key, current);
+  }
+
+  let privateRmb = 0;
+  let publicRmb = 0;
+  for (const user of remainingByUser.values()) {
+    const qpu = opts.quotaPerUnitBySite.get(user.downstreamId) || 0;
+    const remainingQuota =
+      user.currentQuota == null
+        ? user.remainingQuota
+        : Math.min(user.remainingQuota, user.currentQuota);
+    const amount = remainingQuota / qpu;
+    if (user.ownership === "PRIVATE") privateRmb += amount;
+    else publicRmb += amount;
+  }
+  privateRmb = round2(privateRmb);
+  publicRmb = round2(publicRmb);
+  return {
+    privateRmb,
+    publicRmb,
+    totalRmb: round2(privateRmb + publicRmb),
+  };
 }
 
 export function summarizePrepaidLiability(
@@ -30,12 +134,17 @@ export function summarizePrepaidLiability(
     if (!ownership || !balance.quotaPerUnit) continue;
     const amount = Math.max(0, balance.quota) / balance.quotaPerUnit;
     if (!observedAt || balance.observedAt < observedAt) observedAt = balance.observedAt;
-    if (balance.role >= 100 || ownership.excludeUserIds.has(balance.userId)) {
+    const userOwnership = classifyPrepaidUser(
+      balance.userId,
+      balance.role,
+      ownership,
+    );
+    if (userOwnership === "EXCLUDED") {
       excludedRmb += amount;
       continue;
     }
     users++;
-    if (ownership.privateUserIds.has(balance.userId)) privateRmb += amount;
+    if (userOwnership === "PRIVATE") privateRmb += amount;
     else publicRmb += amount;
   }
   privateRmb = round2(privateRmb);

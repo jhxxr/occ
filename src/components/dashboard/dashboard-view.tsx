@@ -15,6 +15,7 @@ import {
 import { TrendChart, SharePie } from "@/components/dashboard/charts";
 import { AlertsBanner } from "@/components/dashboard/alerts-banner";
 import { formatRmb } from "@/lib/utils";
+import type { CapitalPlanEstimate } from "@/lib/capital-plan";
 
 interface DashboardPayload {
   usdCny: number;
@@ -34,6 +35,9 @@ interface DashboardPayload {
     issuedCreditRmb?: number;
     grossConsumptionRmb?: number;
     excludedRevenueRmb?: number;
+    prepaidBalanceRmb?: number;
+    prepaidBalanceComplete?: boolean;
+    capitalPlan?: CapitalPlanEstimate | null;
   };
   providers: ProviderCardData[];
   selfHosted: SelfHostedCardData[];

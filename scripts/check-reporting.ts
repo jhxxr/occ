@@ -13,6 +13,7 @@ import {
   addDays,
   customPeriod,
   elapsedDays,
+  elapsedPeriod,
   enumerateDays,
   inclusiveDays,
   monthPeriod,
@@ -40,7 +41,13 @@ import {
   MAX_TOKEN_TTL_DAYS,
 } from "../src/lib/extension-token.ts";
 import { allocateOwnershipCosts } from "../src/lib/cost-allocation.ts";
-import { summarizePrepaid, summarizePrepaidLiability } from "../src/lib/prepaid.ts";
+import {
+  classifyPrepaidUser,
+  summarizeBonusRemaining,
+  summarizePrepaid,
+  summarizePrepaidLiability,
+} from "../src/lib/prepaid.ts";
+import { estimatePrepaidFulfillment } from "../src/lib/capital-plan.ts";
 import {
   __resetGiftIssuanceLimit,
   checkGiftIssuanceAllowed,
@@ -123,6 +130,15 @@ check("已过天数只算到今天", () => {
   assert.equal(elapsedDays(july, "2026-06-20"), 0);
 });
 
+check("当前周期只截取到今天，未来周期没有已发生区间", () => {
+  const august = monthPeriod("2026-08-15");
+  const elapsed = elapsedPeriod(august, "2026-08-19");
+  assert.equal(elapsed?.startDay, "2026-08-01");
+  assert.equal(elapsed?.endDay, "2026-08-19");
+  assert.equal(elapsed?.days, 19);
+  assert.equal(elapsedPeriod(august, "2026-07-31"), null);
+});
+
 console.log("成本摊销");
 
 const july = monthPeriod("2026-07-15");
@@ -158,6 +174,26 @@ check("期间成本按天直线摊销", () => {
   const inWeek = allocateCostEntry(entry, week);
   assert.equal(inWeek?.overlapDays, 5);
   assert.equal(inWeek?.allocatedRmb, 50);
+});
+
+check("当前月成本只摊到今天，不混入未来日期", () => {
+  const elapsed = elapsedPeriod(monthPeriod("2026-08-15"), "2026-08-10");
+  assert.ok(elapsed);
+  const summary = summarizeCosts(
+    [
+      {
+        id: "month-to-date",
+        name: "月度订阅",
+        amountRmb: 310,
+        mode: "PERIOD",
+        startDay: "2026-08-01",
+        plannedEndDay: "2026-08-31",
+        status: "active",
+      },
+    ],
+    elapsed,
+  );
+  assert.equal(summary.totalRmb, 100);
 });
 
 check("跨月期间成本按重叠比例分摊", () => {
@@ -560,6 +596,273 @@ check("当前余额只认未消费 quota，不会叠加期初已发放额度", (
   assert.equal(liability.privateRmb, 50);
   assert.equal(liability.excludedRmb, 100);
   assert.equal(liability.users, 1);
+});
+
+console.log("\n预收款履约资金估算");
+
+check("按近期成本率估算还需上游投入与预估收入", () => {
+  // 近期：付费收入 100，全站消费 100，上游 40，额外 10
+  // 上游成本率 0.4，额外 0.1
+  // 当前预收 200，已有上游余额 30
+  // 所需上游 80，还需投入 50；预估收入 200；预估毛利 100
+  const plan = estimatePrepaidFulfillment({
+    prepaidRmb: 200,
+    privatePrepaidRmb: 120,
+    publicPrepaidRmb: 80,
+    balanceComplete: true,
+    recent: {
+      revenueRmb: 100,
+      grossConsumptionRmb: 100,
+      upstreamCostRmb: 40,
+      upstreamCostAvailable: true,
+      operatingCostRmb: 10,
+    },
+    upstreamBalanceRmb: 30,
+  });
+  assert.equal(plan.estimable, true);
+  assert.equal(plan.balanceRmb, 200);
+  assert.equal(plan.estimatedRevenueRmb, 200);
+  assert.equal(plan.privateEstimatedRevenueRmb, 120);
+  assert.equal(plan.publicEstimatedRevenueRmb, 80);
+  assert.equal(plan.upstreamCostRate, 0.4);
+  assert.equal(plan.operatingCostRate, 0.1);
+  assert.equal(plan.requiredUpstreamCostRmb, 80);
+  assert.equal(plan.requiredOperatingCostRmb, 20);
+  assert.equal(plan.additionalUpstreamInvestRmb, 50);
+  assert.equal(plan.estimatedProfitRmb, 100);
+  assert.equal(plan.covered, false);
+});
+
+check("上游余额已覆盖时还需投入为 0", () => {
+  const plan = estimatePrepaidFulfillment({
+    prepaidRmb: 100,
+    balanceComplete: true,
+    recent: {
+      revenueRmb: 100,
+      upstreamCostRmb: 40,
+      upstreamCostAvailable: true,
+      operatingCostRmb: 0,
+    },
+    upstreamBalanceRmb: 50,
+  });
+  assert.equal(plan.requiredUpstreamCostRmb, 40);
+  assert.equal(plan.additionalUpstreamInvestRmb, 0);
+  assert.equal(plan.covered, true);
+  assert.equal(plan.estimatedProfitRmb, 60);
+});
+
+check("赠送剩余不计入预估收入，但仍计入所需上游", () => {
+  // 余额 200（含赠送 50）→ 预估收入 150
+  // 全站消费 120 / 上游 48 → 上游成本率 0.4 → 所需上游 200×0.4=80
+  // 付费收入 100 / 额外 10 → 额外率 0.1 → 只摊付费收入 150×0.1=15
+  // 已有上游 20 → 还需 60；预估毛利 150-80-15=55
+  const plan = estimatePrepaidFulfillment({
+    prepaidRmb: 200,
+    privatePrepaidRmb: 120,
+    publicPrepaidRmb: 80,
+    bonusRemainingRmb: 50,
+    privateBonusRemainingRmb: 30,
+    publicBonusRemainingRmb: 20,
+    balanceComplete: true,
+    recent: {
+      revenueRmb: 100,
+      grossConsumptionRmb: 120,
+      upstreamCostRmb: 48,
+      upstreamCostAvailable: true,
+      operatingCostRmb: 10,
+    },
+    upstreamBalanceRmb: 20,
+  });
+  assert.equal(plan.balanceRmb, 200);
+  assert.equal(plan.bonusRemainingRmb, 50);
+  assert.equal(plan.estimatedRevenueRmb, 150);
+  assert.equal(plan.privateEstimatedRevenueRmb, 90);
+  assert.equal(plan.publicEstimatedRevenueRmb, 60);
+  assert.equal(plan.upstreamCostRate, 0.4);
+  assert.equal(plan.requiredUpstreamCostRmb, 80);
+  assert.equal(plan.requiredOperatingCostRmb, 15);
+  assert.equal(plan.additionalUpstreamInvestRmb, 60);
+  assert.equal(plan.estimatedProfitRmb, 55);
+  assert.equal(plan.marginRate, 0.366667);
+});
+
+check("上游成本率优先用全站消费作分母", () => {
+  // 付费收入 50，全站消费 100，上游 40 → 上游率 0.4（不是 0.8）
+  const plan = estimatePrepaidFulfillment({
+    prepaidRmb: 100,
+    balanceComplete: true,
+    recent: {
+      revenueRmb: 50,
+      grossConsumptionRmb: 100,
+      upstreamCostRmb: 40,
+      upstreamCostAvailable: true,
+      operatingCostRmb: 5,
+    },
+    upstreamBalanceRmb: 0,
+  });
+  assert.equal(plan.upstreamCostRate, 0.4);
+  assert.equal(plan.operatingCostRate, 0.1);
+  assert.equal(plan.requiredUpstreamCostRmb, 40);
+  assert.equal(plan.requiredOperatingCostRmb, 10);
+});
+
+check("赠送剩余汇总排除测试号与管理员", () => {
+  const userSnapshotBySite = new Map([
+    ["site-a", new Map([
+      [1, { role: 1, quota: 25_000_000 }],
+      [2, { role: 1, quota: 10_000_000 }],
+      [3, { role: 100, quota: 99_000_000 }],
+      [4, { role: 1, quota: 5_000_000 }],
+    ])],
+  ]);
+  const summary = summarizeBonusRemaining(
+    [
+      { downstreamId: "site-a", userId: 1, remainingQuota: 25_000_000 }, // 私域 50
+      { downstreamId: "site-a", userId: 2, remainingQuota: 10_000_000 }, // 排除
+      { downstreamId: "site-a", userId: 3, remainingQuota: 99_000_000 }, // admin
+      { downstreamId: "site-a", userId: 4, remainingQuota: 5_000_000 }, // 公共 10
+    ],
+    new Map([
+      [
+        "site-a",
+        {
+          excludeUserIds: new Set([2]),
+          privateUserIds: new Set([1]),
+        },
+      ],
+    ]),
+    {
+      quotaPerUnitBySite: new Map([["site-a", 500_000]]),
+      userSnapshotBySite,
+      enabledSiteIds: new Set(["site-a"]),
+    },
+  );
+  assert.equal(summary.privateRmb, 50);
+  assert.equal(summary.publicRmb, 10);
+  assert.equal(summary.totalRmb, 60);
+});
+
+check("赠送剩余只扣当前用户自己的余额，失效用户不会串扣", () => {
+  const summary = summarizeBonusRemaining(
+    [
+      { downstreamId: "site-a", userId: 1, remainingQuota: 25_000_000 },
+      { downstreamId: "site-a", userId: 9, remainingQuota: 99_000_000 },
+    ],
+    new Map([
+      [
+        "site-a",
+        {
+          excludeUserIds: new Set<number>(),
+          privateUserIds: new Set([1]),
+        },
+      ],
+    ]),
+    {
+      quotaPerUnitBySite: new Map([["site-a", 500_000]]),
+      userSnapshotBySite: new Map([
+        ["site-a", new Map([[1, { role: 1, quota: 5_000_000 }]])],
+      ]),
+    },
+  );
+  assert.equal(summary.privateRmb, 10);
+  assert.equal(summary.publicRmb, 0);
+  assert.equal(summary.totalRmb, 10);
+});
+
+check("管理员在赠送消费台账中统一归为排除账号", () => {
+  const ownership = {
+    excludeUserIds: new Set<number>(),
+    privateUserIds: new Set([3]),
+  };
+  assert.equal(classifyPrepaidUser(3, 100, ownership), "EXCLUDED");
+  assert.equal(classifyPrepaidUser(3, 1, ownership), "PRIVATE");
+});
+
+check("余额快照不完整或没有近期消费时不瞎估", () => {
+  const incomplete = estimatePrepaidFulfillment({
+    prepaidRmb: 100,
+    balanceComplete: false,
+    recent: {
+      revenueRmb: 100,
+      upstreamCostRmb: 40,
+      upstreamCostAvailable: true,
+    },
+    upstreamBalanceRmb: 10,
+  });
+  assert.equal(incomplete.estimable, false);
+  assert.equal(incomplete.additionalUpstreamInvestRmb, null);
+  assert.ok(incomplete.reason);
+
+  const noBurn = estimatePrepaidFulfillment({
+    prepaidRmb: 100,
+    balanceComplete: true,
+    recent: {
+      revenueRmb: 0,
+      grossConsumptionRmb: 0,
+      upstreamCostRmb: 0,
+      upstreamCostAvailable: true,
+    },
+    upstreamBalanceRmb: 10,
+  });
+  assert.equal(noBurn.estimable, false);
+  assert.equal(noBurn.estimatedRevenueRmb, 100);
+  assert.equal(noBurn.additionalUpstreamInvestRmb, null);
+});
+
+check("成本数据缺失时不能用 0 成本伪装成无需投入", () => {
+  const plan = estimatePrepaidFulfillment({
+    prepaidRmb: 100,
+    balanceComplete: true,
+    recent: {
+      revenueRmb: 100,
+      grossConsumptionRmb: 100,
+      upstreamCostRmb: 0,
+      upstreamCostAvailable: false,
+    },
+    upstreamBalanceRmb: 0,
+  });
+  assert.equal(plan.estimable, false);
+  assert.equal(plan.requiredUpstreamCostRmb, null);
+  assert.equal(plan.additionalUpstreamInvestRmb, null);
+  assert.equal(plan.estimatedRevenueRmb, 100);
+  assert.match(plan.reason || "", /成本数据未同步/);
+});
+
+check("成本率取较大消费分母并保留足够精度", () => {
+  const plan = estimatePrepaidFulfillment({
+    prepaidRmb: 100,
+    balanceComplete: true,
+    recent: {
+      revenueRmb: 100,
+      grossConsumptionRmb: 80,
+      upstreamCostRmb: 33.333,
+      upstreamCostAvailable: true,
+      operatingCostRmb: 0,
+    },
+    upstreamBalanceRmb: 0,
+  });
+  assert.equal(plan.upstreamCostRate, 0.3333);
+  assert.equal(plan.requiredUpstreamCostRmb, 33.33);
+});
+
+check("只有赠送消费且存在额外成本时不伪造预估毛利", () => {
+  const plan = estimatePrepaidFulfillment({
+    prepaidRmb: 100,
+    balanceComplete: true,
+    recent: {
+      revenueRmb: 0,
+      grossConsumptionRmb: 100,
+      upstreamCostRmb: 40,
+      upstreamCostAvailable: true,
+      operatingCostRmb: 10,
+    },
+    upstreamBalanceRmb: 0,
+  });
+  assert.equal(plan.estimable, true);
+  assert.equal(plan.requiredUpstreamCostRmb, 40);
+  assert.equal(plan.profitEstimable, false);
+  assert.equal(plan.estimatedProfitRmb, null);
+  assert.ok(plan.profitReason);
 });
 
 console.log("\n图表按日分桶（回归：时区错位会吞掉今天）");

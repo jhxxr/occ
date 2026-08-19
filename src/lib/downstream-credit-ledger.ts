@@ -4,10 +4,12 @@ import {
   listDownstreamUsersForSite,
 } from "@/lib/downstream-fetch";
 import { shanghaiDay } from "@/lib/reporting-period";
+import {
+  classifyPrepaidUser,
+  type PrepaidUserOwnership,
+} from "@/lib/prepaid";
 
 const TRANSACTION_TIMEOUT_MS = 10 * 60 * 1000;
-
-type Ownership = "EXCLUDED" | "PRIVATE" | "PUBLIC";
 
 function parseIds(value: string): Set<number> {
   try {
@@ -20,15 +22,6 @@ function parseIds(value: string): Set<number> {
   } catch {
     return new Set();
   }
-}
-
-function ownershipForUser(
-  userId: number,
-  excluded: Set<number>,
-  privateUsers: Set<number>,
-): Ownership {
-  if (excluded.has(userId)) return "EXCLUDED";
-  return privateUsers.has(userId) ? "PRIVATE" : "PUBLIC";
 }
 
 /**
@@ -94,10 +87,10 @@ export async function syncManagedCreditLedger(
     shanghaiDay(giftLots[0]!.occurredAt),
   );
   const today = shanghaiDay();
-  const replayEnd = new Date(`${today}T00:00:00+08:00`);
-  replayEnd.setUTCDate(replayEnd.getUTCDate() - 1);
   const replayStartDay = startDay;
-  const endDay = shanghaiDay(replayEnd);
+  // 当前余额快照包含今天已经发生的消费，赠送台账也必须重放到今天。
+  // 今日数据即使仍在增长，下次同步会整段重放，不会把部分日数据永久冻结。
+  const endDay = today;
   if (endDay < replayStartDay) {
     return { success: true, allocations: 0, recognizedRmb: 0, bonusQuota: 0 };
   }
@@ -116,7 +109,12 @@ export async function syncManagedCreditLedger(
     };
   }
 
-  const userIdByName = new Map(users.users.map((user) => [user.username, user.id]));
+  const userByName = new Map(
+    users.users.map((user) => [
+      user.username,
+      { id: user.id, role: user.role },
+    ]),
+  );
   const excluded = parseIds(site.excludeUserIds);
   const privateUsers = parseIds(site.privateUserIds);
   const rows = usage.rows
@@ -161,7 +159,7 @@ export async function syncManagedCreditLedger(
             userId: number;
             lotId: string;
             day: string;
-            ownership: Ownership;
+            ownership: PrepaidUserOwnership;
             consumedQuota: number;
             recognizedRmb: number;
             source: string;
@@ -171,10 +169,14 @@ export async function syncManagedCreditLedger(
         let bonusQuota = 0;
 
         for (const row of rows) {
-          const userId = userIdByName.get(row.username);
-          if (!userId) continue;
+          const user = userByName.get(row.username);
+          if (!user) continue;
+          const userId = user.id;
           let remainingUsage = row.quota;
-          const ownership = ownershipForUser(userId, excluded, privateUsers);
+          const ownership = classifyPrepaidUser(userId, user.role, {
+            excludeUserIds: excluded,
+            privateUserIds: privateUsers,
+          });
           for (const lot of lotsByUser.get(userId) || []) {
             if (!(remainingUsage > 0)) break;
             if (row.day < shanghaiDay(lot.occurredAt)) continue;

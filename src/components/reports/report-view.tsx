@@ -122,6 +122,31 @@ interface ReportPayload {
     downstreamIssuedRmb: number;
     upstreamRechargePaidRmb: number;
   };
+  capitalPlan: {
+    balanceRmb: number;
+    privateBalanceRmb: number;
+    publicBalanceRmb: number;
+    bonusRemainingRmb: number;
+    privateBonusRemainingRmb: number;
+    publicBonusRemainingRmb: number;
+    estimatedRevenueRmb: number;
+    privateEstimatedRevenueRmb: number;
+    publicEstimatedRevenueRmb: number;
+    upstreamCostRate: number | null;
+    operatingCostRate: number | null;
+    marginRate: number | null;
+    requiredUpstreamCostRmb: number | null;
+    requiredOperatingCostRmb: number | null;
+    upstreamBalanceRmb: number;
+    additionalUpstreamInvestRmb: number | null;
+    estimatedProfitRmb: number | null;
+    profitEstimable: boolean;
+    profitReason: string | null;
+    covered: boolean | null;
+    estimable: boolean;
+    balanceComplete: boolean;
+    reason: string | null;
+  };
   coverage: {
     measuredComplete: boolean;
     costComplete: boolean;
@@ -495,6 +520,84 @@ export function ReportView() {
                   余额快照：{new Date(data.prepaid.current.observedAt).toLocaleString("zh-CN")} · 覆盖 {data.prepaid.balanceSites.reduce((sum, site) => sum + site.snapshotRows, 0)} 个账号
                 </p>
               )}
+              <div className="rounded-[var(--r-md)] border border-border-subtle bg-surface p-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-medium text-text">预收款履约估算</p>
+                    <p className="text-xs text-muted">
+                      用本期实测成本结构，把当前用户余额换算成预估收入与还需上游投入；不计入服务毛利。
+                    </p>
+                  </div>
+                  {data.capitalPlan.estimable && data.capitalPlan.upstreamCostRate != null && (
+                    <Badge variant="default">
+                      上游成本率 {(data.capitalPlan.upstreamCostRate * 100).toFixed(1)}%
+                      {data.capitalPlan.marginRate != null
+                        ? ` · 预估毛利率 ${(data.capitalPlan.marginRate * 100).toFixed(1)}%`
+                        : ""}
+                    </Badge>
+                  )}
+                </div>
+                {!data.capitalPlan.balanceComplete ? (
+                  <p className="mt-3 text-xs text-warn">{data.capitalPlan.reason || "暂无法估算"}</p>
+                ) : (
+                  <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                    <div>
+                      <p className="text-xs text-muted">预估收入</p>
+                      <p className="font-data text-lg text-violet">{formatRmb(data.capitalPlan.estimatedRevenueRmb)}</p>
+                      <p className="text-[11px] text-muted">
+                        私域 {formatRmb(data.capitalPlan.privateEstimatedRevenueRmb)} · 公共 {formatRmb(data.capitalPlan.publicEstimatedRevenueRmb)}
+                        {data.capitalPlan.bonusRemainingRmb > 0
+                          ? ` · 已扣赠送剩余 ${formatRmb(data.capitalPlan.bonusRemainingRmb)}`
+                          : ""}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted">还需上游投入</p>
+                      <p className={cn(
+                        "font-data text-lg",
+                        data.capitalPlan.estimable
+                          ? data.capitalPlan.covered
+                            ? "text-mint"
+                            : "text-coral"
+                          : "text-muted",
+                      )}>
+                        {data.capitalPlan.estimable
+                          ? formatRmb(data.capitalPlan.additionalUpstreamInvestRmb)
+                          : "—"}
+                      </p>
+                      <p className="text-[11px] text-muted">
+                        {data.capitalPlan.estimable
+                          ? `所需 ${formatRmb(data.capitalPlan.requiredUpstreamCostRmb)} − 已有上游 ${formatRmb(data.capitalPlan.upstreamBalanceRmb)}${data.capitalPlan.bonusRemainingRmb > 0 ? " · 含赠送余额也会烧的上游" : ""}`
+                          : data.capitalPlan.reason || "暂无法估算"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted">预估毛利</p>
+                      <p className={cn(
+                        "font-data text-lg",
+                        data.capitalPlan.profitEstimable
+                          ? (data.capitalPlan.estimatedProfitRmb ?? 0) >= 0
+                            ? "text-mint"
+                            : "text-coral"
+                          : "text-muted",
+                      )}>
+                        {data.capitalPlan.profitEstimable
+                          ? formatRmb(data.capitalPlan.estimatedProfitRmb)
+                          : "—"}
+                      </p>
+                      <p className="text-[11px] text-muted">
+                        {!data.capitalPlan.profitEstimable
+                          ? data.capitalPlan.profitReason || "暂无法估算"
+                          : data.capitalPlan.marginRate != null
+                            ? `预估毛利率 ${(data.capitalPlan.marginRate * 100).toFixed(1)}% · 另计额外成本 ${formatRmb(data.capitalPlan.requiredOperatingCostRmb)}`
+                            : data.capitalPlan.covered
+                              ? "上游余额已覆盖所需成本"
+                              : `另计额外成本 ${formatRmb(data.capitalPlan.requiredOperatingCostRmb)}`}
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
               {showPrepaid && (
                 <div className="space-y-4 border-t border-border-subtle pt-4">
                   <div className="grid gap-4 text-sm sm:grid-cols-3">

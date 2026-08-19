@@ -24,6 +24,7 @@ import { getUsdCnyRate } from "@/lib/sync";
 import {
   addDays,
   elapsedDays,
+  elapsedPeriod,
   enumerateDays,
   monthPeriod,
   shanghaiDay,
@@ -37,10 +38,15 @@ import {
 import { orphanCostForPeriod } from "@/lib/orphan-channels";
 import { allocateOwnershipCosts } from "@/lib/cost-allocation";
 import {
+  summarizeBonusRemaining,
   summarizePrepaid,
   summarizePrepaidLiability,
   type PrepaidTotals,
 } from "@/lib/prepaid";
+import {
+  estimatePrepaidFulfillment,
+  type CapitalPlanEstimate,
+} from "@/lib/capital-plan";
 
 const DEFAULT_QUOTA_PER_UNIT = 500_000;
 
@@ -245,6 +251,11 @@ export interface FinancialReport {
     /** 本周期上游充值实付（现金流，不是成本） */
     upstreamRechargePaidRmb: number;
   };
+  /**
+   * 用当前预收余额 + 本期实测成本结构，估算兑现预收还需投多少上游、能确认多少收入。
+   * 规划口径，不计入服务毛利。
+   */
+  capitalPlan: CapitalPlanEstimate;
   coverage: {
     measuredComplete: boolean;
     costComplete: boolean;
@@ -384,6 +395,38 @@ export async function buildFinancialReport(
     [...relayProviders, ...selfHostedProviders].map((p) => [p.id, p.name]),
   );
   const warnings: string[] = [];
+  const enabledSites = sites.filter((site) => site.enabled);
+  const enabledSiteIdSet = new Set(enabledSites.map((site) => site.id));
+  const ownershipBySite = new Map(
+    sites.map((site) => [
+      site.id,
+      {
+        excludeUserIds: parseUserIds(site.excludeUserIds),
+        privateUserIds: parseUserIds(site.privateUserIds),
+      },
+    ]),
+  );
+  const quotaPerUnitBySite = new Map(
+    sites.map((site) => [
+      site.id,
+      site.quotaPerDollar || DEFAULT_QUOTA_PER_UNIT,
+    ]),
+  );
+  const userSnapshotBySite = new Map<
+    string,
+    Map<number, { role: number; quota: number }>
+  >();
+  for (const balance of downstreamBalances) {
+    let byUser = userSnapshotBySite.get(balance.downstreamId);
+    if (!byUser) {
+      byUser = new Map();
+      userSnapshotBySite.set(balance.downstreamId, byUser);
+    }
+    byUser.set(balance.userId, {
+      role: balance.role,
+      quota: balance.quota,
+    });
+  }
 
   // ——— 上游成本：Key 级日聚合优先，缺日再用快照估算 ———
   const billableUsage = usageDailies.filter(
@@ -507,6 +550,12 @@ export async function buildFinancialReport(
   for (const allocation of creditAllocations) {
     if (allocation.ownership === "EXCLUDED") continue;
     if (allocation.source !== "ADMIN_BONUS" && allocation.source !== "REDEEM_CODE") continue;
+    // 旧 allocation 可能是在管理员角色尚未纳入赠送台账时生成的；
+    // 当前仍是管理员的用户不能再次从已经排除管理员的付费收入里扣减。
+    const allocationUser = userSnapshotBySite
+      .get(allocation.downstreamId)
+      ?.get(allocation.userId);
+    if (allocationUser && allocationUser.role >= 100) continue;
     const key = `${allocation.downstreamId}|${allocation.day}`;
     const current = allocationBySiteDay.get(key) || {
       bonusRmb: 0,
@@ -580,7 +629,6 @@ export async function buildFinancialReport(
   const publicRevenueRmb = round2(measuredRevenueRmb - privateRevenueRmb);
 
   const expectedDays = elapsedDays(period, today);
-  const enabledSites = sites.filter((s) => s.enabled);
   let sitesMissingDays = 0;
   let sitesUnresolvedExclude = 0;
   let sitesUnresolvedPrivate = 0;
@@ -674,24 +722,27 @@ export async function buildFinancialReport(
   byKey.sort((a, b) => b.costRmb - a.costRmb);
 
   // ——— 额外成本台账 ———
-  const costSummary = summarizeCosts(
-    costEntries.map(
-      (e): CostEntryInput => ({
-        id: e.id,
-        name: e.name,
-        amountRmb: Number(e.amountRmb),
-        mode: e.mode,
-        startDay: e.startDay,
-        plannedEndDay: e.plannedEndDay,
-        actualEndDay: e.actualEndDay,
-        status: e.status,
-        category: e.category,
-        providerId: e.providerId,
-        accountId: e.accountId,
-      }),
-    ),
-    period,
+  const costInputs = costEntries.map(
+    (e): CostEntryInput => ({
+      id: e.id,
+      name: e.name,
+      amountRmb: Number(e.amountRmb),
+      mode: e.mode,
+      startDay: e.startDay,
+      plannedEndDay: e.plannedEndDay,
+      actualEndDay: e.actualEndDay,
+      status: e.status,
+      category: e.category,
+      providerId: e.providerId,
+      accountId: e.accountId,
+    }),
   );
+  // 收入与上游成本只到今天；额外成本也必须截到同一天，不能拿整月未来摊销
+  // 去除以月初至今收入。
+  const realizedPeriod = elapsedPeriod(period, today);
+  const costSummary = realizedPeriod
+    ? summarizeCosts(costInputs, realizedPeriod)
+    : summarizeCosts([], period);
 
   // ——— 逐日序列 ———
   // 旧渠道：渠道从 NewAPI 删掉后上游成本对不上了，用你补录的金额补进成本。
@@ -853,38 +904,36 @@ export async function buildFinancialReport(
       return sum + (site.revenueCurrency === "USD" ? rev * usdCny : rev);
     }, 0),
   );
-  const bonusRemainingQuota = bonusLots.reduce((sum, lot) => sum + Math.max(0, lot.remainingQuota), 0);
-  const bonusConsumedQuota = creditAllocations
-    .filter((allocation) => allocation.source === "ADMIN_BONUS" || allocation.source === "REDEEM_CODE")
-    .reduce((sum, allocation) => sum + allocation.consumedQuota, 0);
-  if (bonusRemainingQuota > 0 || bonusConsumedQuota > 0) {
+  const bonusRemaining = summarizeBonusRemaining(bonusLots, ownershipBySite, {
+    quotaPerUnitBySite,
+    userSnapshotBySite,
+    enabledSiteIds: enabledSiteIdSet,
+  });
+  const bonusConsumedRmb = round2(
+    [...allocationBySiteDay.values()].reduce(
+      (sum, allocation) => sum + allocation.bonusRmb,
+      0,
+    ),
+  );
+  if (bonusRemaining.totalRmb > 0 || bonusConsumedRmb > 0) {
     warnings.push(
-      `赠送额度：本期已消费 ${round2(bonusConsumedQuota / DEFAULT_QUOTA_PER_UNIT)} 面值，当前剩余 ${round2(bonusRemainingQuota / DEFAULT_QUOTA_PER_UNIT)} 面值；消费收入按 0 确认`,
+      `赠送额度：本期已消费 ${bonusConsumedRmb} 面值，当前剩余 ${bonusRemaining.totalRmb} 面值；消费收入按 0 确认`,
     );
   }
 
   const prepaidLiability = summarizePrepaidLiability(
     downstreamBalances
-      .filter((balance) => sites.some((site) => site.id === balance.downstreamId && site.enabled))
+      .filter((balance) => enabledSiteIdSet.has(balance.downstreamId))
       .map((balance) => ({
         downstreamId: balance.downstreamId,
         userId: balance.userId,
         role: balance.role,
         quota: balance.quota,
         quotaPerUnit:
-          sites.find((site) => site.id === balance.downstreamId)?.quotaPerDollar ||
-          DEFAULT_QUOTA_PER_UNIT,
+          quotaPerUnitBySite.get(balance.downstreamId) || DEFAULT_QUOTA_PER_UNIT,
         observedAt: balance.observedAt,
       })),
-    new Map(
-      sites.map((site) => [
-        site.id,
-        {
-          excludeUserIds: parseUserIds(site.excludeUserIds),
-          privateUserIds: parseUserIds(site.privateUserIds),
-        },
-      ]),
-    ),
+    ownershipBySite,
   );
   const prepaid = summarizePrepaid(
     [
@@ -906,15 +955,7 @@ export async function buildFinancialReport(
         frozen: true,
       })),
     ],
-    new Map(
-      sites.map((site) => [
-        site.id,
-        {
-          excludeUserIds: parseUserIds(site.excludeUserIds),
-          privateUserIds: parseUserIds(site.privateUserIds),
-        },
-      ]),
-    ),
+    ownershipBySite,
     {
       period: { start: periodStart, end: periodEnd },
       month: currentMonth,
@@ -998,6 +1039,33 @@ export async function buildFinancialReport(
       balanceIncompleteSites: balanceIncompleteSites.length,
       balanceSites,
     },
+    capitalPlan: estimatePrepaidFulfillment({
+      prepaidRmb: prepaidLiability.totalRmb,
+      privatePrepaidRmb: prepaidLiability.privateRmb,
+      publicPrepaidRmb: prepaidLiability.publicRmb,
+      bonusRemainingRmb: bonusRemaining.totalRmb,
+      privateBonusRemainingRmb: bonusRemaining.privateRmb,
+      publicBonusRemainingRmb: bonusRemaining.publicRmb,
+      balanceComplete: balanceIncompleteSites.length === 0,
+      recent: {
+        // 付费收入（已扣赠送确认）；全站消费作上游成本率分母更贴近烧量
+        revenueRmb: measuredRevenueRmb,
+        grossConsumptionRmb,
+        upstreamCostRmb,
+        upstreamCostAvailable: costSource !== "none",
+        // 额外成本只取台账摊销，不含 orphan 旧渠道（那是历史补录，不代表未来结构）
+        operatingCostRmb: costSummary.totalRmb,
+      },
+      upstreamBalanceRmb: round2(
+        relayProviders
+          .filter((p) => p.enabled)
+          .reduce(
+            (sum, p) =>
+              sum + (p.lastBalance != null ? p.lastBalance * p.discountRate : 0),
+            0,
+          ),
+      ),
+    }),
     daily,
     bySite,
     byProvider,

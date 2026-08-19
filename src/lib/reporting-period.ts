@@ -233,3 +233,16 @@ export function elapsedDays(period: ReportingPeriod, today = shanghaiDay()): num
   const end = today < period.endDay ? today : period.endDay;
   return inclusiveDays(period.startDay, end);
 }
+
+/**
+ * 周期中已经实际发生的部分。当前周/月会截到今天，历史周期保持完整，
+ * 尚未开始的未来周期返回 null。
+ */
+export function elapsedPeriod(
+  period: ReportingPeriod,
+  today = shanghaiDay(),
+): ReportingPeriod | null {
+  if (today < period.startDay) return null;
+  const endDay = today < period.endDay ? today : period.endDay;
+  return makePeriod(period.kind, period.startDay, endDay);
+}

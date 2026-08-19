@@ -9,12 +9,14 @@ import {
   fetchDownstreamDailyUserUsage,
   fetchDownstreamModelDaily,
   fetchDownstreamRedemptions,
+  fetchDownstreamStats,
   fetchDownstreamTopups,
   listDownstreamUsers,
 } from "@/lib/adapters";
 import type {
   DownstreamDailyUsageResult,
   DownstreamDailyUserUsageResult,
+  DownstreamFetchResult,
   DownstreamModelDailyResult,
   DownstreamRedemptionResult,
   DownstreamTopupResult,
@@ -25,6 +27,7 @@ import {
   dbFetchDailyUserUsage,
   dbFetchModelDaily,
   dbFetchRedemptions,
+  dbFetchStats,
   dbFetchTopups,
   dbListUsers,
   detectNewApiTables,
@@ -40,6 +43,7 @@ export type DownstreamSiteFetch = {
   excludeUserIds?: string | null;
   privateUserIds?: string | null;
   dbDsn?: string | null;
+  revenueCurrency?: string | null;
 };
 
 function parseIdList(value: string | null | undefined): number[] {
@@ -144,6 +148,36 @@ export async function listDownstreamUsersForSite(
     }
   }
   return listDownstreamUsers(input);
+}
+
+/** Overview snapshot numbers: DB first when bound. */
+export async function fetchDownstreamStatsForSite(
+  site: DownstreamSiteFetch,
+): Promise<DownstreamFetchResult> {
+  const dsn = plainDsn(site);
+  const input = {
+    ...httpInput(site),
+    revenueCurrency:
+      site.revenueCurrency === "USD" ? ("USD" as const) : ("CNY" as const),
+  };
+  if (dsn) {
+    try {
+      return await withNewApiDb(dsn, async (conn) => {
+        const tables = await detectNewApiTables(conn);
+        if (!tables.users && !tables.logs) {
+          throw new Error("库中无 users / logs 表");
+        }
+        return dbFetchStats(conn, {
+          quotaPerDollar: input.quotaPerDollar,
+          excludeUserIds: input.excludeUserIds,
+          revenueCurrency: input.revenueCurrency,
+        });
+      });
+    } catch {
+      /* fall through */
+    }
+  }
+  return fetchDownstreamStats(input);
 }
 
 export async function fetchDownstreamDailyUsageForSite(

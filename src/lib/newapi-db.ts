@@ -18,6 +18,7 @@ import type {
   DownstreamDailyRow,
   DownstreamDailyUsageResult,
   DownstreamDailyUserUsageResult,
+  DownstreamFetchResult,
   DownstreamGroupDailyRow,
   DownstreamModelDailyResult,
   DownstreamRedemptionResult,
@@ -183,6 +184,113 @@ async function columnSet(
   return new Set(
     (rows || []).map((r) => String((r as { name?: string }).name || "").toLowerCase()),
   );
+}
+
+/**
+ * Site overview numbers (same meaning as HTTP fetchDownstreamStats):
+ * - consumed: last 30d consume logs (type=2) as face-value units
+ * - revenue: issued credit of non-admin / non-excluded users as face-value units
+ */
+export async function dbFetchStats(
+  conn: mysql.Connection,
+  opts: {
+    quotaPerDollar?: number;
+    excludeUserIds?: number[];
+    revenueCurrency?: "CNY" | "USD";
+  } = {},
+): Promise<DownstreamFetchResult> {
+  const quotaPerDollar = opts.quotaPerDollar || DEFAULT_QUOTA_PER_DOLLAR;
+  const excludeSet = new Set(
+    (opts.excludeUserIds || []).map(Number).filter((n) => Number.isFinite(n)),
+  );
+  const revenueCurrency = opts.revenueCurrency === "USD" ? "USD" : "CNY";
+
+  const tables = await detectNewApiTables(conn);
+  if (!tables.users && !tables.logs) {
+    return {
+      success: false,
+      consumed: 0,
+      revenue: 0,
+      revenueCurrency,
+      error: "库中无 users / logs 表",
+    };
+  }
+
+  let consumed = 0;
+  let revenue = 0;
+  let usersSummary: Record<string, unknown> | null = null;
+  let logsSummary: Record<string, unknown> | null = null;
+
+  if (tables.logs) {
+    const now = Math.floor(Date.now() / 1000);
+    const start = now - 30 * 24 * 3600;
+    const [rows] = await conn.query<RowDataPacket[]>(
+      `SELECT COALESCE(SUM(quota), 0) AS quota, COUNT(*) AS requests
+       FROM logs
+       WHERE type = ? AND created_at >= ? AND created_at <= ?`,
+      [LOG_TYPE_CONSUME, start, now],
+    );
+    const quota = Number(rows?.[0]?.quota) || 0;
+    const requests = Number(rows?.[0]?.requests) || 0;
+    consumed = quotaToUsd(quota, quotaPerDollar);
+    logsSummary = { windowDays: 30, quota, requests, consumed };
+  }
+
+  if (tables.users) {
+    const users = await dbListUsers(conn, {
+      quotaPerDollar,
+      excludeUserIds: [...excludeSet],
+    });
+    if (!users.success) {
+      return {
+        success: false,
+        consumed,
+        revenue: 0,
+        revenueCurrency,
+        error: users.error || "读取 users 失败",
+      };
+    }
+    let issuedQuota = 0;
+    let usedQuota = 0;
+    let countedUsers = 0;
+    let excludedUsers = 0;
+    let excludedIssued = 0;
+    for (const u of users.users) {
+      const issued = (Number(u.quota) || 0) + (Number(u.used_quota) || 0);
+      if (u.excluded || u.role >= 100) {
+        excludedUsers++;
+        excludedIssued += issued;
+        continue;
+      }
+      issuedQuota += issued;
+      usedQuota += Number(u.used_quota) || 0;
+      countedUsers++;
+    }
+    revenue = quotaToUsd(issuedQuota, quotaPerDollar);
+    if (consumed === 0 && usedQuota > 0) {
+      consumed = quotaToUsd(usedQuota, quotaPerDollar);
+    }
+    usersSummary = {
+      issuedQuota,
+      usedQuota,
+      countedUsers,
+      excludedUsers,
+      excludedIssuedQuota: excludedIssued,
+      excludeUserIds: [...excludeSet],
+    };
+  }
+
+  return {
+    success: true,
+    consumed,
+    revenue,
+    revenueCurrency,
+    raw: {
+      source: "db",
+      logs: logsSummary,
+      users_summary: usersSummary,
+    },
+  };
 }
 
 export async function dbListUsers(

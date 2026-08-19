@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { decryptSecret } from "@/lib/crypto";
-import { listDownstreamUsers } from "@/lib/adapters";
+import { listDownstreamUsersForSite } from "@/lib/downstream-fetch";
 import { syncDownstreamSite } from "@/lib/sync";
 
 type Ctx = { params: Promise<{ id: string }> };
@@ -38,14 +37,8 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
     }
     const excludeUserIds = parseExclude(site.excludeUserIds);
     const privateUserIds = parseExclude(site.privateUserIds);
-    const result = await listDownstreamUsers({
-      baseUrl: site.baseUrl,
-      adminKey: decryptSecret(site.adminKey),
-      adminUserId: site.adminUserId ?? 1,
-      quotaPerDollar: site.quotaPerDollar ?? 500000,
-      excludeUserIds,
-      privateUserIds,
-    });
+    // Bound DSN → users from MySQL; otherwise Admin HTTP.
+    const result = await listDownstreamUsersForSite(site);
     if (!result.success) {
       return NextResponse.json({ error: result.error }, { status: 400 });
     }

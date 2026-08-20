@@ -40,6 +40,10 @@ import {
 } from "@/lib/profit";
 import { SyncBusyError, withSyncLock } from "@/lib/sync-lock";
 import {
+  resolveConsumedBaseline,
+  shouldSkipAccountFallback,
+} from "@/lib/upstream-baseline";
+import {
   summarizeBonusRemaining,
   summarizePrepaidLiability,
 } from "@/lib/prepaid";
@@ -284,23 +288,38 @@ async function runUpstreamProviderSync(id: string): Promise<SyncResultItem> {
     };
   }
 
-  // 账号级增量（NewAPI 或未做 Key 归因时）
+  // 账号级增量（NewAPI 或未做 Key 归因时）。
+  // 基线推进规则见 upstream-baseline.ts —— 那里解释了「查不到」为什么不能当 0。
   const prevBalance = provider.lastBalance;
-  const prevConsumed = provider.lastConsumed ?? result.consumed;
-  const accountDelta = Math.max(0, result.consumed - prevConsumed);
   const isFirst = provider.lastConsumed == null && provider.lastSyncAt == null;
-  let effectiveDelta = isFirst ? 0 : accountDelta;
+  const baseline = resolveConsumedBaseline({
+    reported: result.consumed,
+    reportedUnknown: result.consumedUnknown,
+    previous: provider.lastConsumed,
+    isFirstSync: isFirst,
+  });
+  const consumedUnknown = baseline.unknown;
+  const consumedForBaseline = baseline.baseline;
+  let effectiveDelta = baseline.delta;
   let costRmb = effectiveDelta * provider.discountRate;
   let billableKeys: number | undefined;
   let businessCostRmb: number | undefined;
-  let costNote = "account";
-  let lastError: string | null = null;
+  let costNote = consumedUnknown ? "account-unknown" : "account";
+  let lastError: string | null = consumedUnknown
+    ? "本轮没读到累计消费（上游接口失败），已保留原基线并计 0 增量；成本可能偏低，建议稍后重新同步"
+    : null;
   let rechargeDetected: { detected: boolean; creditGained?: number } = {
     detected: false,
   };
 
-  // 同步时顺带检测充值（仅在已有基线时；不额外请求，无风控压力）
-  if (!isFirst && prevBalance != null && provider.lastConsumed != null) {
+  // 同步时顺带检测充值（仅在已有基线时；不额外请求，无风控压力）。
+  // 读数缺失时跳过：拿 0 去和旧值比会被当成「余额没变但消费清零」的怪事。
+  if (
+    !isFirst &&
+    !consumedUnknown &&
+    prevBalance != null &&
+    provider.lastConsumed != null
+  ) {
     try {
       rechargeDetected = await detectRechargeOnSync(
         id,
@@ -346,6 +365,25 @@ async function runUpstreamProviderSync(id: string): Promise<SyncResultItem> {
       const msg = e instanceof Error ? e.message : String(e);
       costNote = "keys-fallback";
       lastError = `Key 用量同步失败，已回退整号消耗：${msg.slice(0, 120)}`;
+
+      // 回退到整号消耗是有风险的：账号级累计和「计入中转的 Key 实际扣费」
+      // 根本不是同一个量（账号里通常还有不计成本的 Key）。判定规则见
+      // upstream-baseline.ts 的 shouldSkipAccountFallback。
+      const guard = shouldSkipAccountFallback({
+        delta: effectiveDelta,
+        reported: result.consumed,
+        previous: provider.lastConsumed,
+        consumedUnknown,
+      });
+      if (guard.skip) {
+        effectiveDelta = 0;
+        costRmb = 0;
+        costNote = "keys-fallback-skipped";
+        lastError =
+          guard.reason === "baseline-reset"
+            ? `Key 用量同步失败，且整号累计基线疑似被重置（增量 ${result.consumed.toFixed(4)} 等于全部历史累计），本轮未记成本以免虚增；请重新同步：${msg.slice(0, 80)}`
+            : `Key 用量同步失败，且本轮没读到整号累计消费，本轮未记成本；请重新同步：${msg.slice(0, 80)}`;
+      }
     }
   }
 
@@ -358,7 +396,8 @@ async function runUpstreamProviderSync(id: string): Promise<SyncResultItem> {
       data: {
         ...tokenPatch,
         lastBalance: result.balance,
-        lastConsumed: result.consumed,
+        // 读数缺失时写回旧基线，绝不用 0 覆盖
+        lastConsumed: consumedForBaseline,
         lastSyncAt: new Date(),
         lastError,
       },
@@ -368,7 +407,7 @@ async function runUpstreamProviderSync(id: string): Promise<SyncResultItem> {
       data: {
         upstreamId: id,
         balance: result.balance,
-        consumed: result.consumed,
+        consumed: consumedForBaseline,
         deltaConsumed: effectiveDelta,
         costRmb,
         raw: JSON.stringify({
@@ -397,7 +436,8 @@ async function runUpstreamProviderSync(id: string): Promise<SyncResultItem> {
     kind: "upstream",
     success: true,
     balance: result.balance,
-    consumed: result.consumed,
+    // 对外报的是落库的那个值，跟基线一致，避免界面显示 0 而库里是旧值
+    consumed: consumedForBaseline,
     tokenRefreshed,
     businessCostRmb,
     billableKeys,

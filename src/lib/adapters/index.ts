@@ -359,7 +359,9 @@ async function fetchSub2ProfileAndStats(
   let lastError = "Sub2API 未返回可用资料";
   let profileRaw: unknown = null;
   let balance: number | null = null;
+  // 累计消费读数。拿不到时**绝不能**当成 0 —— 见 consumedUnknown 的说明。
   let consumed = 0;
+  let consumedUnknown = true;
 
   for (const path of profilePaths) {
     try {
@@ -421,16 +423,28 @@ async function fetchSub2ProfileAndStats(
         stats.total_cost,
         stats.TotalActualCost,
       );
-      if (spent != null) consumed = spent;
+      if (spent != null) {
+        consumed = spent;
+        consumedUnknown = false;
+      }
     }
   } catch {
-    // non-fatal
+    // 拿不到就保持 consumedUnknown=true：余额还是有效的，这一轮只是不知道累计消费。
+    // 以前这里默默留着 consumed=0 并照常返回 success，调用方就把基线覆盖成 0，
+    // 下一轮整段累计被当成新增消费记一次成本。
   }
 
   if (balance == null) {
-    return { success: false, balance: 0, consumed: 0, error: lastError, raw: profileRaw };
+    return {
+      success: false,
+      balance: 0,
+      consumed: 0,
+      consumedUnknown: true,
+      error: lastError,
+      raw: profileRaw,
+    };
   }
-  return { success: true, balance, consumed, raw: profileRaw };
+  return { success: true, balance, consumed, consumedUnknown, raw: profileRaw };
 }
 
 /**

@@ -35,6 +35,10 @@ import {
   RATE_LIMIT_TUNING as RL,
 } from "../src/lib/rate-limit.ts";
 import {
+  resolveConsumedBaseline,
+  shouldSkipAccountFallback,
+} from "../src/lib/upstream-baseline.ts";
+import {
   readJson,
   summarizeSyncJob,
   syncProgressLabel,
@@ -1378,6 +1382,93 @@ check("同步结果汇总与进度文案", () => {
   );
   assert.equal(syncProgressLabel({ ...base, done: 3 }), "同步中 3/9");
   assert.equal(syncProgressLabel(null), "同步中…");
+});
+
+
+console.log("\n上游累计消费基线（回归：2026-08-20 的 ¥39.50 幻影成本）");
+
+check("读不到累计消费时保留原基线并计 0 增量", () => {
+  // 这是幻影成本的第一步：stats 接口失败，consumed 停在 0 却照常算成功
+  const kept = resolveConsumedBaseline({
+    reported: 0,
+    reportedUnknown: true,
+    previous: 37.9413677575,
+    isFirstSync: false,
+  });
+  assert.equal(kept.baseline, 37.9413677575, "基线不能被 0 覆盖");
+  assert.equal(kept.delta, 0);
+  assert.equal(kept.unknown, true);
+
+  // 还没有基线时也不会凭空造出一个
+  assert.deepEqual(
+    resolveConsumedBaseline({ reported: 0, reportedUnknown: true, previous: null, isFirstSync: true }),
+    { baseline: 0, delta: 0, unknown: true },
+  );
+});
+
+check("正常读数照常推进基线；首次同步不把历史累计计成本", () => {
+  const grew = resolveConsumedBaseline({ reported: 38.5, previous: 37.9, isFirstSync: false });
+  assert.equal(grew.baseline, 38.5);
+  assert.ok(Math.abs(grew.delta - 0.6) < 1e-9);
+
+  // 首次只建基线
+  assert.deepEqual(
+    resolveConsumedBaseline({ reported: 37.94, previous: null, isFirstSync: true }),
+    { baseline: 37.94, delta: 0, unknown: false },
+  );
+
+  // 上游自己重置了计数：增量不能是负数
+  assert.equal(
+    resolveConsumedBaseline({ reported: 5, previous: 37.94, isFirstSync: false }).delta,
+    0,
+  );
+});
+
+check("整号回退遇到被清零的基线时放弃记账", () => {
+  // 幻影成本的第二步：基线是 0，读回 37.94，差额恰好等于全部历史累计
+  const reset = shouldSkipAccountFallback({
+    delta: 37.9413677575,
+    reported: 37.9413677575,
+    previous: 0,
+    consumedUnknown: false,
+  });
+  assert.equal(reset.skip, true);
+  assert.equal(reset.reason, "baseline-reset");
+
+  // 本轮没读到累计消费，同样不能拿它当成本
+  const unknown = shouldSkipAccountFallback({
+    delta: 0,
+    reported: 0,
+    previous: 37.94,
+    consumedUnknown: true,
+  });
+  assert.equal(unknown.skip, true);
+  assert.equal(unknown.reason, "unknown-reading");
+});
+
+check("正常的整号增量仍然照记，不被守卫误伤", () => {
+  // 真实增长：基线非 0，增量远小于累计
+  const normal = shouldSkipAccountFallback({
+    delta: 0.6,
+    reported: 38.5,
+    previous: 37.9,
+    consumedUnknown: false,
+  });
+  assert.equal(normal.skip, false);
+  assert.equal(normal.reason, null);
+
+  // 第一次同步（基线 0、增量 0）不该被当成基线重置
+  assert.equal(
+    shouldSkipAccountFallback({ delta: 0, reported: 37.94, previous: 0, consumedUnknown: false }).skip,
+    false,
+  );
+
+  // 基线本来就是 0 且真的只花了这么多（增量=累计）会被保守跳过，
+  // 代价是成本偏低而不是虚增 —— 这是刻意的取舍
+  assert.equal(
+    shouldSkipAccountFallback({ delta: 1.5, reported: 1.5, previous: 0, consumedUnknown: false }).reason,
+    "baseline-reset",
+  );
 });
 
 console.log(`\n全部通过：${passed} 项`);

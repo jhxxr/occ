@@ -15,6 +15,13 @@ export interface UpstreamFetchResult {
   balance: number;
   /** Cumulative used/consumed in USD (0 if unknown) */
   consumed: number;
+  /**
+   * true = 这一轮**没拿到**累计消费读数（接口失败/字段缺失），`consumed` 只是占位。
+   *
+   * 「查不到」和「花了 0」必须能区分开：调用方拿它当基线，把 0 当成真值写回去，
+   * 下一轮就会把整段历史累计当成新增消费再记一次成本（凭空多出一大笔钱）。
+   */
+  consumedUnknown?: boolean;
   /** Human-readable error if success=false */
   error?: string;
   raw?: unknown;

@@ -9,7 +9,7 @@
  * - 统计只纳入 track=true 的分组/账号
  */
 
-import { prisma } from "@/lib/db";
+import { prisma, parallelUpsert } from "@/lib/db";
 import { decryptSecret } from "@/lib/crypto";
 import { summarizeCosts } from "@/lib/operating-cost";
 import { monthPeriod, shanghaiDay } from "@/lib/reporting-period";
@@ -57,96 +57,105 @@ export async function syncSelfHostedMeta(providerId: string) {
     usageSummary.map((u) => [u.group_id, u]),
   );
 
-  for (const g of groups) {
-    const u = usageByGroup.get(g.id);
-    const existing = await prisma.selfHostedGroup.findUnique({
-      where: {
-        providerId_remoteGroupId: {
+  // 分组与账号带用户手填字段（sellRate / track / purchaseCostRmb / notes），
+  // 不能删了重建，只能 upsert。逐行 await 在远端库上实测 ~692ms/行，
+  // 11 个分组 + 25 个账号就是二十多秒 —— 改成有界并发（~29ms/行）。
+  const existingGroups = await prisma.selfHostedGroup.findMany({
+    where: { providerId },
+    select: { id: true, remoteGroupId: true, sellRate: true },
+  });
+  const existingGroupByRemote = new Map(
+    existingGroups.map((row) => [row.remoteGroupId, row]),
+  );
+  const syncAt = new Date();
+
+  await parallelUpsert([
+    ...groups.map((g) => () => {
+      const u = usageByGroup.get(g.id);
+      // 默认 sellRate：若远端有 rate_multiplier 且看起来像卖出倍率就用，否则保留已有/0.4
+      const remoteRate = Number(g.rate_multiplier ?? 1);
+      return prisma.selfHostedGroup.upsert({
+        where: {
+          providerId_remoteGroupId: {
+            providerId,
+            remoteGroupId: g.id,
+          },
+        },
+        create: {
           providerId,
           remoteGroupId: g.id,
+          name: g.name,
+          description: g.description || null,
+          platform: g.platform || "",
+          sellRate: remoteRate > 0 && remoteRate !== 1 ? remoteRate : 0.4,
+          track: false,
+          status: g.status || "active",
+          lastOfficialCost: u?.total_cost ?? 0,
+          todayOfficialCost: u?.today_cost ?? 0,
+          lastSyncAt: syncAt,
         },
-      },
-    });
-
-    // 默认 sellRate：若远端有 rate_multiplier 且看起来像卖出倍率就用，否则保留已有/0.4
-    const remoteRate = Number(g.rate_multiplier ?? 1);
-    await prisma.selfHostedGroup.upsert({
-      where: {
-        providerId_remoteGroupId: {
-          providerId,
-          remoteGroupId: g.id,
+        update: {
+          name: g.name,
+          description: g.description || null,
+          platform: g.platform || "",
+          status: g.status || "active",
+          lastOfficialCost: u?.total_cost ?? 0,
+          todayOfficialCost: u?.today_cost ?? 0,
+          lastSyncAt: syncAt,
+          // 不覆盖用户已设的 sellRate / track
         },
-      },
-      create: {
-        providerId,
-        remoteGroupId: g.id,
-        name: g.name,
-        description: g.description || null,
-        platform: g.platform || "",
-        sellRate: remoteRate > 0 && remoteRate !== 1 ? remoteRate : 0.4,
-        track: false,
-        status: g.status || "active",
-        lastOfficialCost: u?.total_cost ?? 0,
-        todayOfficialCost: u?.today_cost ?? 0,
-        lastSyncAt: new Date(),
-      },
-      update: {
-        name: g.name,
-        description: g.description || null,
-        platform: g.platform || "",
-        status: g.status || "active",
-        lastOfficialCost: u?.total_cost ?? 0,
-        todayOfficialCost: u?.today_cost ?? 0,
-        lastSyncAt: new Date(),
-        // 不覆盖用户已设的 sellRate / track
-      },
-    });
-
-    // 若新建时 remote rate 为 1，保持 create 默认 0.4；已存在不改 sellRate
-    if (existing && !existing.sellRate) {
-      await prisma.selfHostedGroup.update({
-        where: { id: existing.id },
-        data: { sellRate: 0.4 },
       });
-    }
-  }
-
-  for (const a of accounts) {
-    const gids = a.group_ids || a.groups?.map((g) => g.id) || [];
-    const gnames =
-      a.groups?.map((g) => g.name).filter(Boolean).join(", ") || "";
-    await prisma.selfHostedAccount.upsert({
-      where: {
-        providerId_remoteAccountId: {
+    }),
+    ...accounts.map((a) => () => {
+      const gids = a.group_ids || a.groups?.map((g) => g.id) || [];
+      const gnames =
+        a.groups?.map((g) => g.name).filter(Boolean).join(", ") || "";
+      return prisma.selfHostedAccount.upsert({
+        where: {
+          providerId_remoteAccountId: {
+            providerId,
+            remoteAccountId: a.id,
+          },
+        },
+        create: {
           providerId,
           remoteAccountId: a.id,
+          name: a.name,
+          platform: a.platform || "",
+          accountType: a.type || "",
+          status: a.status || "active",
+          purchaseCostRmb: 0,
+          track: false,
+          groupIds: JSON.stringify(gids),
+          groupNames: gnames,
+          lastUsedAt: a.last_used_at ? new Date(a.last_used_at) : null,
+          extra: a.extra ? JSON.stringify(a.extra).slice(0, 4000) : null,
         },
-      },
-      create: {
-        providerId,
-        remoteAccountId: a.id,
-        name: a.name,
-        platform: a.platform || "",
-        accountType: a.type || "",
-        status: a.status || "active",
-        purchaseCostRmb: 0,
-        track: false,
-        groupIds: JSON.stringify(gids),
-        groupNames: gnames,
-        lastUsedAt: a.last_used_at ? new Date(a.last_used_at) : null,
-        extra: a.extra ? JSON.stringify(a.extra).slice(0, 4000) : null,
-      },
-      update: {
-        name: a.name,
-        platform: a.platform || "",
-        accountType: a.type || "",
-        status: a.status || "active",
-        groupIds: JSON.stringify(gids),
-        groupNames: gnames,
-        lastUsedAt: a.last_used_at ? new Date(a.last_used_at) : null,
-        extra: a.extra ? JSON.stringify(a.extra).slice(0, 4000) : null,
-        // 不覆盖 purchaseCostRmb / track / notes
-      },
+        update: {
+          name: a.name,
+          platform: a.platform || "",
+          accountType: a.type || "",
+          status: a.status || "active",
+          groupIds: JSON.stringify(gids),
+          groupNames: gnames,
+          lastUsedAt: a.last_used_at ? new Date(a.last_used_at) : null,
+          extra: a.extra ? JSON.stringify(a.extra).slice(0, 4000) : null,
+          // 不覆盖 purchaseCostRmb / track / notes
+        },
+      });
+    }),
+  ]);
+
+  // 若新建时 remote rate 为 1，保持 create 默认 0.4；已存在不改 sellRate。
+  // 只修补历史上 sellRate 落成 0 的行，判定用的是本轮开始前读到的快照。
+  const rateFixIds = groups
+    .map((g) => existingGroupByRemote.get(g.id))
+    .filter((row) => row && !row.sellRate)
+    .map((row) => row!.id);
+  if (rateFixIds.length) {
+    await prisma.selfHostedGroup.updateMany({
+      where: { id: { in: rateFixIds } },
+      data: { sellRate: 0.4 },
     });
   }
 
@@ -241,83 +250,80 @@ export async function syncSelfHostedGroupUsage(
       if (page === maxPages) truncated = true;
     }
 
-    for (const [day, b] of dayBucket) {
+    // 倍率按行冻结：已入账的日行沿用当时的倍率，只有新行才用当前值。
+    // 否则改一次分组倍率就会把所有历史报表重算一遍（会改写历史）。
+    // 原来是每天先 findUnique 再 upsert —— 一天两次往返；改成整批一次取回。
+    const writableDays = [...dayBucket].filter(([day]) => {
       // 截断时最老那天的数据是残缺的：写回去会把原本完整的合计改小。
       // 宁可保留旧值 —— 少一次更新不会错账，写入半天的数据会。
       const partial = truncated && day === oldestSeen;
-      if (partial) {
-        partialDays++;
-        continue;
-      }
-      // 倍率按行冻结：已入账的日行沿用当时的倍率，只有新行才用当前值。
-      // 否则改一次分组倍率就会把所有历史报表重算一遍（会改写历史）。
-      const existing = await prisma.selfHostedGroupDaily.findUnique({
-        where: {
-          providerId_remoteGroupId_day: {
-            providerId,
-            remoteGroupId: g.remoteGroupId,
-            day,
-          },
-        },
-        select: { sellRateUsed: true },
-      });
-      const frozen = existing && existing.sellRateUsed > 0;
-      const rate = frozen ? existing.sellRateUsed : g.sellRate;
-      // 迁移前的行没有倍率快照，这次补上当前值并标成 legacy（只会发生一次）
-      const rateSource = existing && !frozen ? "legacy" : "group";
+      if (partial) partialDays++;
+      return !partial;
+    });
+    const existingDaily = await prisma.selfHostedGroupDaily.findMany({
+      where: {
+        providerId,
+        remoteGroupId: g.remoteGroupId,
+        day: { in: writableDays.map(([day]) => day) },
+      },
+      select: { day: true, sellRateUsed: true },
+    });
+    const existingDailyByDay = new Map(
+      existingDaily.map((row) => [row.day, row]),
+    );
 
-      await prisma.selfHostedGroupDaily.upsert({
-        where: {
-          providerId_remoteGroupId_day: {
+    const dailyRows = writableDays.map(([day, b]) => {
+      const existing = existingDailyByDay.get(day);
+      const frozen = !!(existing && existing.sellRateUsed > 0);
+      const rate = frozen ? existing!.sellRateUsed : g.sellRate;
+      return {
+        providerId,
+        remoteGroupId: g.remoteGroupId,
+        groupName: g.name,
+        day,
+        requests: b.requests,
+        officialCost: b.official,
+        actualCost: b.actual,
+        totalTokens: b.tokens,
+        // 用量本身会被重新拉取修正，但折算用的倍率保持首次入账时的值
+        sellRevenueRmb: b.official * rate,
+        sellRateUsed: rate,
+        // 迁移前的行没有倍率快照，这次补上当前值并标成 legacy（只会发生一次）
+        sellRateSource: existing && !frozen ? "legacy" : "group",
+        track: true,
+      };
+    });
+
+    if (dailyRows.length) {
+      await prisma.$transaction([
+        prisma.selfHostedGroupDaily.deleteMany({
+          where: {
             providerId,
             remoteGroupId: g.remoteGroupId,
-            day,
+            day: { in: dailyRows.map((row) => row.day) },
           },
-        },
-        create: {
-          providerId,
-          remoteGroupId: g.remoteGroupId,
-          groupName: g.name,
-          day,
-          requests: b.requests,
-          officialCost: b.official,
-          actualCost: b.actual,
-          totalTokens: b.tokens,
-          sellRevenueRmb: b.official * rate,
-          sellRateUsed: rate,
-          sellRateSource: "group",
-          track: true,
-        },
-        update: {
-          groupName: g.name,
-          requests: b.requests,
-          officialCost: b.official,
-          actualCost: b.actual,
-          totalTokens: b.tokens,
-          // 用量本身会被重新拉取修正，但折算用的倍率保持首次入账时的值
-          sellRevenueRmb: b.official * rate,
-          sellRateUsed: rate,
-          sellRateSource: rateSource,
-          track: true,
-        },
-      });
+        }),
+        prisma.selfHostedGroupDaily.createMany({ data: dailyRows }),
+      ]);
     }
 
     // 刷新分组累计
-    const sum = await prisma.selfHostedGroupDaily.aggregate({
-      where: { providerId, remoteGroupId: g.remoteGroupId },
-      _sum: { officialCost: true, requests: true },
-    });
     const today = dayStr();
-    const todayRow = await prisma.selfHostedGroupDaily.findUnique({
-      where: {
-        providerId_remoteGroupId_day: {
-          providerId,
-          remoteGroupId: g.remoteGroupId,
-          day: today,
+    const [sum, todayRow] = await Promise.all([
+      prisma.selfHostedGroupDaily.aggregate({
+        where: { providerId, remoteGroupId: g.remoteGroupId },
+        _sum: { officialCost: true, requests: true },
+      }),
+      prisma.selfHostedGroupDaily.findUnique({
+        where: {
+          providerId_remoteGroupId_day: {
+            providerId,
+            remoteGroupId: g.remoteGroupId,
+            day: today,
+          },
         },
-      },
-    });
+      }),
+    ]);
     await prisma.selfHostedGroup.update({
       where: { id: g.id },
       data: {

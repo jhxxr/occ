@@ -1,11 +1,14 @@
 /**
  * Read-only access to a bound NewAPI MySQL (same SQL_DSN as the site).
- * Short-lived connections only — no global pool across downstream sites.
+ * Connections are short-lived; within one sync they are shared through
+ * `withNewApiDbSession` instead of being reopened per query. No global pool
+ * is kept across downstream sites.
  *
  * Tables (GORM defaults): users, logs, quota_data, top_ups, redemptions.
  * Consume logs: type = 2. Timestamps are unix seconds.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { RowDataPacket } from "mysql2";
 import mysql from "mysql2/promise";
 import {
@@ -108,6 +111,48 @@ function normalizeTopupSource(row: {
   return { source: "UNKNOWN", sourceRaw };
 }
 
+/**
+ * 一次同步内共用一条 NewAPI 连接。
+ *
+ * `withNewApiDb` 的原始契约是「每次调用自开自闭」，于是一次下游同步会
+ * 连开 8 条连接（概览、逐日、逐账号、模型、充值、兑换码、用户列表…）。
+ * 库在远端时握手实测 230–860ms，光这一项就是几秒纯开销，而这些调用本来
+ * 就都在同一个同步里、打的是同一个库。
+ *
+ * 会话只在显式包了 `withNewApiDbSession` 的范围内生效；没包的调用（管理页
+ * 单点测连之类）行为完全不变，仍然自开自闭。
+ *
+ * 出错时把连接关掉并从会话里摘除：一条报了错的连接状态不可信，不能让它
+ * 拖累后面的调用。每个调用各自 try/catch 回退 HTTP 的语义因此保持不变。
+ */
+interface NewApiDbSession {
+  connections: Map<string, mysql.Connection>;
+}
+
+const dbSession = new AsyncLocalStorage<NewApiDbSession>();
+
+/** 同一条连接上的表探测结果只查一次 */
+const tableCache = new WeakMap<mysql.Connection, NewApiDbTables>();
+
+export async function withNewApiDbSession<T>(fn: () => Promise<T>): Promise<T> {
+  // 已在会话里就直接放行，避免嵌套时提前关掉外层还要用的连接
+  if (dbSession.getStore()) return fn();
+
+  const session: NewApiDbSession = { connections: new Map() };
+  try {
+    return await dbSession.run(session, fn);
+  } finally {
+    for (const conn of session.connections.values()) {
+      try {
+        await conn.end();
+      } catch {
+        /* ignore */
+      }
+    }
+    session.connections.clear();
+  }
+}
+
 async function createConnection(plainDsn: string): Promise<mysql.Connection> {
   const parsed = parseGoMysqlDsn(plainDsn);
   const ssl = sslOptionFromParams(parsed.params);
@@ -127,32 +172,59 @@ async function createConnection(plainDsn: string): Promise<mysql.Connection> {
 /**
  * Open one connection, run work, always close.
  * `plainDsn` must already be decrypted.
+ *
+ * 在 `withNewApiDbSession` 范围内时复用会话连接，由会话统一关闭。
  */
 export async function withNewApiDb<T>(
   plainDsn: string,
   fn: (conn: mysql.Connection) => Promise<T>,
 ): Promise<T> {
-  let conn: mysql.Connection | null = null;
+  const session = dbSession.getStore();
+  if (!session) {
+    let conn: mysql.Connection | null = null;
+    try {
+      conn = await createConnection(plainDsn);
+      return await fn(conn);
+    } catch (e) {
+      throw new Error(humanizeMysqlError(e));
+    } finally {
+      if (conn) {
+        try {
+          await conn.end();
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+
+  let conn = session.connections.get(plainDsn);
   try {
-    conn = await createConnection(plainDsn);
+    if (!conn) {
+      conn = await createConnection(plainDsn);
+      session.connections.set(plainDsn, conn);
+    }
     return await fn(conn);
   } catch (e) {
-    const msg = humanizeMysqlError(e);
-    throw new Error(msg);
-  } finally {
     if (conn) {
+      session.connections.delete(plainDsn);
+      tableCache.delete(conn);
       try {
         await conn.end();
       } catch {
         /* ignore */
       }
     }
+    throw new Error(humanizeMysqlError(e));
   }
 }
 
 export async function detectNewApiTables(
   conn: mysql.Connection,
 ): Promise<NewApiDbTables> {
+  const cached = tableCache.get(conn);
+  if (cached) return cached;
+
   const [rows] = await conn.query<RowDataPacket[]>(
     `SELECT TABLE_NAME AS name
      FROM INFORMATION_SCHEMA.TABLES
@@ -162,13 +234,15 @@ export async function detectNewApiTables(
   const names = new Set(
     (rows || []).map((r) => String((r as { name?: string }).name || "").toLowerCase()),
   );
-  return {
+  const tables: NewApiDbTables = {
     users: names.has("users"),
     logs: names.has("logs"),
     quota_data: names.has("quota_data"),
     top_ups: names.has("top_ups"),
     redemptions: names.has("redemptions"),
   };
+  tableCache.set(conn, tables);
+  return tables;
 }
 
 async function columnSet(

@@ -3,6 +3,12 @@
 import { RefreshCw } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { Button } from "@/components/ui/button";
+import {
+  runSyncJob,
+  summarizeSyncJob,
+  syncProgressLabel,
+  type SyncJobView,
+} from "@/lib/sync-client";
 import { cn } from "@/lib/utils";
 
 interface TopBarProps {
@@ -27,29 +33,18 @@ export function TopBar({
   statusLine,
 }: TopBarProps) {
   const [syncing, setSyncing] = useState(false);
+  const [job, setJob] = useState<SyncJobView | null>(null);
   const [message, setMessage] = useState<SyncMessage | null>(null);
 
   async function handleSync() {
     setSyncing(true);
     setMessage(null);
+    setJob(null);
 
     try {
-      const response = await fetch("/api/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target: "all" }),
-      });
-      const json = await response.json();
-      if (!response.ok) throw new Error(json.error || "同步失败");
-
-      const summary = json.summary;
-      const hasFailures = Number(summary?.fail) > 0;
-      setMessage({
-        text: summary
-          ? `同步完成：${summary.ok} 成功 / ${summary.fail} 失败`
-          : "同步完成",
-        tone: hasFailures ? "error" : "success",
-      });
+      // 同步是后台任务：这里只起任务 + 轮询进度，不会让一个请求挂几分钟
+      const finished = await runSyncJob({ target: "all", onProgress: setJob });
+      setMessage(summarizeSyncJob(finished));
       onSynced?.();
     } catch (error) {
       setMessage({
@@ -58,6 +53,7 @@ export function TopBar({
       });
     } finally {
       setSyncing(false);
+      setJob(null);
     }
   }
 
@@ -102,7 +98,7 @@ export function TopBar({
                 className={cn("h-3.5 w-3.5", syncing && "animate-spin")}
                 aria-hidden="true"
               />
-              {syncing ? "同步中…" : "全量同步"}
+              {syncing ? syncProgressLabel(job) : "全量同步"}
             </Button>
           )}
         </div>

@@ -14,6 +14,7 @@ import {
 } from "@/components/dashboard/downstream-grid";
 import { TrendChart, SharePie } from "@/components/dashboard/charts";
 import { AlertsBanner } from "@/components/dashboard/alerts-banner";
+import { SyncStatusLine } from "@/components/dashboard/sync-status-line";
 import { formatRmb } from "@/lib/utils";
 import type { CapitalPlanEstimate } from "@/lib/capital-plan";
 
@@ -157,6 +158,7 @@ export function DashboardView() {
             ? `本月收入为付费账号真实消费 · 成本来自「计入中转」Key${data.metrics.billableKeyCount ? ` ×${data.metrics.billableKeyCount}` : ""}`
             : `请先同步下游消费数据；充值与已发放额度都不算收入`
         }
+        statusLine={<SyncStatusLine />}
         onSynced={load}
       />
 

@@ -9,6 +9,7 @@ import { normalizeBaseUrl } from "@/lib/utils";
 import { fetchUpstreamBalance, sub2Login, sub2Refresh } from "@/lib/adapters";
 import { getSub2ProxyUrl } from "@/lib/sub2/settings";
 import { fetchSub2 } from "@/lib/sub2/proxy";
+import { hostOf, noteRateLimited, withHostGate } from "@/lib/http/host-gate";
 
 export class Sub2Error extends Error {
   status: number;
@@ -159,15 +160,22 @@ export async function sub2Request<T = unknown>(
     if (init.body && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
     }
-    const res = await fetchSub2(url, { ...init, headers }, await getSub2ProxyUrl());
-    const text = await res.text();
-    let data: unknown = null;
-    try {
-      data = text ? JSON.parse(text) : null;
-    } catch {
-      data = text;
-    }
-    return { res, data };
+    // 走统一闸门：翻用量日志能到几百页，这是打第三方面板最密的一条路径。
+    // 注意这里不能嵌在别的 withHostGate 里 —— 同主机是串行的，会自锁。
+    return withHostGate(url, async () => {
+      const res = await fetchSub2(url, { ...init, headers }, await getSub2ProxyUrl());
+      if (res.status === 429 || res.status === 503) {
+        noteRateLimited(hostOf(url), res.headers.get("retry-after"));
+      }
+      const text = await res.text();
+      let data: unknown = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        data = text;
+      }
+      return { res, data };
+    });
   };
 
   let { res, data } = await doFetch(accessToken);

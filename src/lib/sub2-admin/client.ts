@@ -6,6 +6,7 @@
  */
 
 import { normalizeBaseUrl } from "@/lib/utils";
+import { hostOf, noteRateLimited, withHostGate } from "@/lib/http/host-gate";
 
 export class Sub2AdminError extends Error {
   status: number;
@@ -68,37 +69,44 @@ async function adminFetch(
 ): Promise<unknown> {
   const base = normalizeBaseUrl(baseUrl);
   const url = `${base}/api/v1/admin${path.startsWith("/") ? path : `/${path}`}`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 20_000);
-  try {
-    const res = await fetch(url, {
-      ...init,
-      signal: controller.signal,
-      headers: {
-        ...adminHeaders(adminKey),
-        ...(init.headers || {}),
-      },
-    });
-    const text = await res.text();
-    let data: unknown = null;
+  // 自建站也走统一闸门：同步分组用量要按分组翻页，量不小；
+  // 定时同步挂上后不能绕过唯一的限流层。
+  return withHostGate(url, async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20_000);
     try {
-      data = text ? JSON.parse(text) : null;
-    } catch {
-      data = text;
+      const res = await fetch(url, {
+        ...init,
+        signal: controller.signal,
+        headers: {
+          ...adminHeaders(adminKey),
+          ...(init.headers || {}),
+        },
+      });
+      const text = await res.text();
+      let data: unknown = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        data = text;
+      }
+      if (!res.ok) {
+        if (res.status === 429 || res.status === 503) {
+          noteRateLimited(hostOf(url), res.headers.get("retry-after"));
+        }
+        const root = asRecord(data);
+        throw new Sub2AdminError(
+          (typeof root?.message === "string" && root.message) ||
+            `Admin API HTTP ${res.status}`,
+          res.status,
+          data,
+        );
+      }
+      return unwrap(data);
+    } finally {
+      clearTimeout(timer);
     }
-    if (!res.ok) {
-      const root = asRecord(data);
-      throw new Sub2AdminError(
-        (typeof root?.message === "string" && root.message) ||
-          `Admin API HTTP ${res.status}`,
-        res.status,
-        data,
-      );
-    }
-    return unwrap(data);
-  } finally {
-    clearTimeout(timer);
-  }
+  });
 }
 
 export interface AdminGroup {

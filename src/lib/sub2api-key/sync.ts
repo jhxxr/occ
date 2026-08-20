@@ -68,46 +68,50 @@ async function writeDailyUsage(
   discountRate: number,
   usage: Sub2ApiKeyUsage,
 ) {
-  for (const day of usage.daily) {
-    const existing = await prisma.upstreamUsageDaily.findUnique({
-      where: { providerId_remoteKeyId_day: { providerId, remoteKeyId: keyId, day: day.day } },
-    });
-    const rate = existing?.costRateRmb && existing.costRateRmb > 0
-      ? existing.costRateRmb
-      : discountRate;
-    await prisma.upstreamUsageDaily.upsert({
-      where: { providerId_remoteKeyId_day: { providerId, remoteKeyId: keyId, day: day.day } },
-      create: {
-        providerId,
-        remoteKeyId: keyId,
-        keyName,
-        day: day.day,
-        requests: day.requests,
-        actualCost: day.actualCost,
-        standardCost: day.standardCost,
-        totalTokens: day.totalTokens,
-        inputTokens: day.inputTokens,
-        outputTokens: day.outputTokens,
-        costRmb: countAsCost ? day.actualCost * rate : 0,
-        costRateRmb: rate,
-        costRateSource: "provider",
-        countAsCost,
-      },
-      update: {
-        keyName,
-        requests: day.requests,
-        actualCost: day.actualCost,
-        standardCost: day.standardCost,
-        totalTokens: day.totalTokens,
-        inputTokens: day.inputTokens,
-        outputTokens: day.outputTokens,
-        costRmb: countAsCost ? day.actualCost * rate : 0,
-        costRateRmb: rate,
-        costRateSource: existing?.costRateRmb ? existing.costRateSource : "provider",
-        countAsCost,
-      },
-    });
-  }
+  if (!usage.daily.length) return;
+
+  // 已有行的 costRateRmb 是「当时那一天真实的成本率」，不能被现在的 provider
+  // 折扣改写（折扣会变，历史成本率不能跟着漂）。所以先整段取回基线，再重建。
+  //
+  // 原来是每天先 findUnique 再 upsert —— 一天两次往返，upsert 在远端库上实测
+  // ~692ms/行。改成一次 findMany + deleteMany + createMany 后是 ~7ms/行。
+  const days = usage.daily.map((day) => day.day);
+  const existingRows = await prisma.upstreamUsageDaily.findMany({
+    where: { providerId, remoteKeyId: keyId, day: { in: days } },
+    select: { day: true, costRateRmb: true, costRateSource: true },
+  });
+  const existingByDay = new Map(existingRows.map((row) => [row.day, row]));
+
+  const rows = usage.daily.map((day) => {
+    const existing = existingByDay.get(day.day);
+    const frozen = !!(existing?.costRateRmb && existing.costRateRmb > 0);
+    const rate = frozen ? existing!.costRateRmb : discountRate;
+    return {
+      providerId,
+      remoteKeyId: keyId,
+      keyName,
+      day: day.day,
+      requests: day.requests,
+      actualCost: day.actualCost,
+      standardCost: day.standardCost,
+      totalTokens: day.totalTokens,
+      inputTokens: day.inputTokens,
+      outputTokens: day.outputTokens,
+      costRmb: countAsCost ? day.actualCost * rate : 0,
+      costRateRmb: rate,
+      // 已冻结的行沿用它原来的来源标记，新行记 provider
+      costRateSource: frozen ? existing!.costRateSource : "provider",
+      countAsCost,
+    };
+  });
+
+  // 删与建同一个事务：中间那一瞬这些天是空的，恰好被报表读到就会看见成本归零。
+  await prisma.$transaction([
+    prisma.upstreamUsageDaily.deleteMany({
+      where: { providerId, remoteKeyId: keyId, day: { in: days } },
+    }),
+    prisma.upstreamUsageDaily.createMany({ data: rows }),
+  ]);
 }
 
 export async function addSub2ApiKeyBoundKey(

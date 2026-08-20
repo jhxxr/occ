@@ -1,4 +1,5 @@
 import { normalizeBaseUrl } from "@/lib/utils";
+import { hostOf, noteRateLimited, withHostGate } from "@/lib/http/host-gate";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -90,36 +91,42 @@ export async function fetchSub2ApiKeyUsage(
   baseUrl: string,
   apiKey: string,
 ): Promise<Sub2ApiKeyUsage> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20_000);
-  try {
-    const response = await fetch(`${normalizeBaseUrl(baseUrl)}/v1/usage`, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        Accept: "application/json",
-      },
-      cache: "no-store",
-      signal: controller.signal,
-    });
-    const payload = await response.json().catch(() => null);
-    if (!response.ok) {
-      if (response.status === 401 || response.status === 403) {
-        throw new Sub2ApiKeyError("API Key 无效或无权查询用量", response.status);
+  const url = `${normalizeBaseUrl(baseUrl)}/v1/usage`;
+  // 一个上游可能绑了很多 Key，每个都要打一次 /v1/usage。走统一闸门：
+  // 同主机串行 + 最小间隔 + 429 整机退避，否则定时同步会持续裸打对方。
+  return withHostGate(url, async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20_000);
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          Accept: "application/json",
+        },
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          throw new Sub2ApiKeyError("API Key 无效或无权查询用量", response.status);
+        }
+        if (response.status === 429 || response.status === 503) {
+          noteRateLimited(hostOf(url), response.headers.get("retry-after"));
+          throw new Sub2ApiKeyError("上游请求过于频繁，请稍后重试", response.status);
+        }
+        throw new Sub2ApiKeyError(`上游用量查询失败 (HTTP ${response.status})`, response.status);
       }
-      if (response.status === 429) {
-        throw new Sub2ApiKeyError("上游请求过于频繁，请稍后重试", 429);
+      return parseSub2ApiKeyUsage(payload);
+    } catch (error) {
+      if (error instanceof Sub2ApiKeyError) throw error;
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new Sub2ApiKeyError("上游用量查询超时", 504);
       }
-      throw new Sub2ApiKeyError(`上游用量查询失败 (HTTP ${response.status})`, response.status);
+      throw new Sub2ApiKeyError("无法连接上游用量接口", 502);
+    } finally {
+      clearTimeout(timeout);
     }
-    return parseSub2ApiKeyUsage(payload);
-  } catch (error) {
-    if (error instanceof Sub2ApiKeyError) throw error;
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new Sub2ApiKeyError("上游用量查询超时", 504);
-    }
-    throw new Sub2ApiKeyError("无法连接上游用量接口", 502);
-  } finally {
-    clearTimeout(timeout);
-  }
+  });
 }

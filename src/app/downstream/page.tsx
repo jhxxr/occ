@@ -19,6 +19,7 @@ import {
   Database,
   Unplug,
 } from "lucide-react";
+import { runSyncJob } from "@/lib/sync-client";
 
 interface Site {
   id: string;
@@ -190,13 +191,14 @@ export default function DownstreamPage() {
 
   async function syncOne(id: string) {
     setBusyId(id);
+    setError(null);
     try {
-      await fetch("/api/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target: "downstream", id }),
-      });
+      const job = await runSyncJob({ target: "downstream", id });
+      const failed = job.results.find((r) => !r.success);
+      if (failed) setError(failed.error || "同步失败");
       await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "同步失败");
     } finally {
       setBusyId(null);
     }

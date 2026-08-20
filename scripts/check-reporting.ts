@@ -35,6 +35,32 @@ import {
   RATE_LIMIT_TUNING as RL,
 } from "../src/lib/rate-limit.ts";
 import {
+  readJson,
+  summarizeSyncJob,
+  syncProgressLabel,
+} from "../src/lib/sync-client.ts";
+import {
+  HOST_GATE_TUNING as HG,
+  noteRateLimited,
+  sawRateLimitSince,
+  withHostGate,
+  __resetHostGate,
+} from "../src/lib/http/host-gate.ts";
+import {
+  AUTO_SYNC_TUNING as AS,
+  backoffMs,
+  classifyFailure,
+  nextRunAt,
+  normalizeAutoSyncConfig,
+  selectDueTargets,
+  type BackoffMap,
+} from "../src/lib/auto-sync.ts";
+import {
+  SYNC_JOB_TUNING as SJ,
+  __withStaleCheck,
+  type SyncJob,
+} from "../src/lib/sync-runner.ts";
+import {
   isTokenExpired,
   resolveExpiry,
   DEFAULT_TOKEN_TTL_DAYS,
@@ -63,6 +89,7 @@ function check(name: string, fn: () => void) {
   console.log(`  ✓ ${name}`);
 }
 
+/** 节流闸门这类行为只能在真实时间轴上验证，所以要一个异步版 */
 async function checkAsync(name: string, fn: () => Promise<void>) {
   await fn();
   passed++;
@@ -1076,6 +1103,281 @@ check("签发频率达到窗口上限后返回重试时间", () => {
   assert.equal(blocked.retryAfterSec, GIFT_ISSUANCE_LIMITS.WINDOW_MS / 1000);
   assert.equal(checkGiftIssuanceAllowed(now + GIFT_ISSUANCE_LIMITS.WINDOW_MS).allowed, true);
   __resetGiftIssuanceLimit();
+});
+
+
+console.log("\n自动同步护栏");
+
+check("间隔下限与上限在归一化时收口", () => {
+  // 界面能填任何数，硬校验在服务端。比下限更密只会给上游加压。
+  assert.equal(normalizeAutoSyncConfig({ intervalMinutes: 1 }).intervalMinutes, AS.MIN_INTERVAL_MINUTES);
+  assert.equal(normalizeAutoSyncConfig({ intervalMinutes: 0 }).intervalMinutes, AS.MIN_INTERVAL_MINUTES);
+  assert.equal(normalizeAutoSyncConfig({ intervalMinutes: 99_999 }).intervalMinutes, AS.MAX_INTERVAL_MINUTES);
+  assert.equal(normalizeAutoSyncConfig({ intervalMinutes: 30 }).intervalMinutes, 30);
+  // 默认必须是关闭：升级镜像不该让容器自己开始定时打上游
+  assert.equal(normalizeAutoSyncConfig({}).enabled, false);
+  assert.equal(normalizeAutoSyncConfig({ enabled: "yes" }).enabled, false);
+  assert.equal(normalizeAutoSyncConfig({ scope: "bogus" }).scope, "all");
+});
+
+check("下一轮时刻带抖动，且抖动幅度对称", () => {
+  const now = 1_000_000;
+  const base = 60 * 60 * 1000;
+  // 抖动是为了不贴整点、重启后不踩同一时刻
+  assert.equal(nextRunAt(60, now, 0) - now, Math.round(base * (1 - AS.JITTER_RATIO)));
+  assert.equal(nextRunAt(60, now, 1) - now, Math.round(base * (1 + AS.JITTER_RATIO)));
+  // 时间戳必须是整数：小数会一路带进 new Date().toISOString()
+  assert.ok(Number.isInteger(nextRunAt(60, now, 0.37)));
+  assert.equal(nextRunAt(60, now, 0.5) - now, base);
+  // 即使传了小于下限的间隔，也按下限算
+  assert.ok(nextRunAt(1, now, 0.5) - now >= AS.MIN_INTERVAL_MINUTES * 60 * 1000 * 0.9);
+});
+
+check("错误按是否会自愈分类", () => {
+  // 凭据类不会自愈，重试只是白打对方的登录接口
+  assert.equal(classifyFailure("Sub2API 自动登录失败，请检查邮箱/密码"), "credential");
+  assert.equal(classifyFailure("API Key 无效或无权查询用量"), "credential");
+  assert.equal(classifyFailure("HTTP 401 unauthorized"), "credential");
+  assert.equal(classifyFailure("缺少 Admin API Key，请到「自建上游」补填"), "credential");
+  // 限流类：对方已经明说太快了
+  assert.equal(classifyFailure("上游请求过于频繁，请稍后重试"), "rate-limit");
+  assert.equal(classifyFailure("上游用量查询失败 (HTTP 429)"), "rate-limit");
+  assert.equal(classifyFailure("Rate limit exceeded"), "rate-limit");
+  // 其余按网络类，指数退避后还会再试
+  assert.equal(classifyFailure("无法连接上游用量接口"), "network");
+  assert.equal(classifyFailure("Request timeout"), "network");
+  assert.equal(classifyFailure(undefined), "network");
+});
+
+check("退避随连续失败递增并收在上限", () => {
+  assert.equal(backoffMs(1, "network"), AS.BACKOFF_BASE_MS);
+  assert.equal(backoffMs(2, "network"), AS.BACKOFF_BASE_MS * 2);
+  assert.equal(backoffMs(3, "network"), AS.BACKOFF_BASE_MS * 4);
+  assert.equal(backoffMs(99, "network"), AS.BACKOFF_MAX_MS);
+  // 限流类起步就 ×4
+  assert.equal(backoffMs(1, "rate-limit"), AS.BACKOFF_BASE_MS * AS.RATE_LIMIT_MULTIPLIER);
+  // 凭据类直接顶到上限：等人去改密码，别每小时撞一次
+  assert.equal(backoffMs(1, "credential"), AS.BACKOFF_MAX_MS);
+  // 任何组合都不会超过上限
+  for (const cls of ["network", "rate-limit", "credential"] as const) {
+    for (let n = 1; n < 40; n++) assert.ok(backoffMs(n, cls) <= AS.BACKOFF_MAX_MS);
+  }
+});
+
+check("退避中的目标被自动同步跳过，到点后恢复", () => {
+  const now = 2_000_000;
+  const targets = [
+    { kind: "upstream" as const, id: "a", name: "A" },
+    { kind: "upstream" as const, id: "b", name: "B" },
+    { kind: "downstream" as const, id: "c", name: "C" },
+  ];
+  const map: BackoffMap = {
+    "upstream:b": {
+      failures: 3,
+      nextAt: new Date(now + 60_000).toISOString(),
+      lastAt: new Date(now).toISOString(),
+      lastError: "登录失败",
+      failureClass: "credential",
+      name: "B",
+    },
+  };
+  const first = selectDueTargets(targets, map, now);
+  assert.deepEqual(first.due.map((t) => t.id), ["a", "c"]);
+  assert.deepEqual(first.skipped.map((s) => s.target.id), ["b"]);
+  // 退避到点后重新纳入
+  const later = selectDueTargets(targets, map, now + 61_000);
+  assert.deepEqual(later.due.map((t) => t.id), ["a", "b", "c"]);
+  assert.equal(later.skipped.length, 0);
+  // 空退避表时全部都跑
+  assert.equal(selectDueTargets(targets, {}, now).due.length, 3);
+});
+
+console.log("\n同步任务状态");
+
+const syncJobFixture = (patch: Partial<SyncJob>): SyncJob => ({
+  runId: "r1",
+  trigger: "manual",
+  scope: "全部",
+  state: "running",
+  total: 9,
+  done: 3,
+  ok: 3,
+  fail: 0,
+  startedAt: new Date(0).toISOString(),
+  heartbeatAt: new Date(0).toISOString(),
+  results: [],
+  ...patch,
+});
+
+check("心跳停摆的任务读成已中断，而不是永远显示同步中", () => {
+  const now = Date.now();
+  // 心跳还新鲜：照常是 running
+  const live = __withStaleCheck(
+    syncJobFixture({ heartbeatAt: new Date(now - 1_000).toISOString() }),
+  );
+  assert.equal(live!.state, "running");
+  // 心跳超过阈值：容器大概被重启了，不能骗用户说还在跑
+  const dead = __withStaleCheck(
+    syncJobFixture({
+      heartbeatAt: new Date(now - SJ.HEARTBEAT_STALE_MS - 1_000).toISOString(),
+    }),
+  );
+  assert.equal(dead!.state, "interrupted");
+  assert.equal(dead!.current, undefined);
+  assert.match(dead!.error!, /中断/);
+  // 已结束的任务不受心跳判定影响
+  const done = __withStaleCheck(
+    syncJobFixture({
+      state: "success",
+      heartbeatAt: new Date(now - 86_400_000).toISOString(),
+    }),
+  );
+  assert.equal(done!.state, "success");
+  assert.equal(__withStaleCheck(null), null);
+});
+
+
+console.log("\n出网节流闸门");
+
+await checkAsync("同一主机的请求串行，不同主机可以并发", async () => {
+  __resetHostGate();
+  const order: string[] = [];
+  const one = (tag: string, ms: number) =>
+    withHostGate("https://a.example/x", async () => {
+      order.push(`${tag}:start`);
+      await new Promise((r) => setTimeout(r, ms));
+      order.push(`${tag}:end`);
+    });
+  // 故意让第一个最慢：串行的话它必须先跑完
+  await Promise.all([one("A", 60), one("B", 10), one("C", 10)]);
+  assert.deepEqual(order, [
+    "A:start", "A:end", "B:start", "B:end", "C:start", "C:end",
+  ]);
+
+  // 不同主机之间不该互相等：那样一个慢站会拖垮整轮同步
+  __resetHostGate();
+  const started = Date.now();
+  await Promise.all([
+    withHostGate("https://b1.example/", () => new Promise((r) => setTimeout(r, 200))),
+    withHostGate("https://b2.example/", () => new Promise((r) => setTimeout(r, 200))),
+  ]);
+  assert.ok(Date.now() - started < 400, "不同主机应当并发");
+});
+
+await checkAsync("抛异常不会把该主机的队列永久卡死", async () => {
+  __resetHostGate();
+  await withHostGate("https://c.example/", async () => {
+    throw new Error("boom");
+  }).catch(() => undefined);
+  // 上一条炸了，后面的还得能跑 —— 否则一次超时就要重启容器
+  assert.equal(await withHostGate("https://c.example/", async () => "alive"), "alive");
+});
+
+check("限流退避优先按 Retry-After，并收在上限内", () => {
+  __resetHostGate();
+  assert.equal(noteRateLimited("d.example", "5"), 5_000);
+  // 对方给个离谱的值也不能真等那么久
+  assert.equal(noteRateLimited("d.example", "99999"), HG.MAX_COOLDOWN_MS);
+  // 没给 Retry-After 时按指数退避
+  assert.equal(noteRateLimited("d.example", null, 0), HG.RATE_LIMIT_COOLDOWN_MS);
+  assert.equal(noteRateLimited("d.example", null, 2), HG.RATE_LIMIT_COOLDOWN_MS * 4);
+  assert.equal(noteRateLimited("d.example", null, 99), HG.MAX_COOLDOWN_MS);
+});
+
+check("限流命中对调度器可见，用于整轮延后", () => {
+  __resetHostGate();
+  const before = Date.now() - 1;
+  assert.equal(sawRateLimitSince(before), false);
+  noteRateLimited("e.example", "1");
+  assert.equal(sawRateLimitSince(before), true);
+  // 只看命中之后的时间窗：更晚的起点不该被算进去
+  assert.equal(sawRateLimitSince(Date.now() + 10_000), false);
+});
+
+
+console.log("\n非 JSON 响应兜底（回归：网关 HTML 超时页）");
+
+await checkAsync("反代返回 HTML 超时页时给出可读报错，而不是 Unexpected token", async () => {
+  const html =
+    '<!DOCTYPE html><html><head><title>504 Gateway Time-out</title></head>' +
+    "<body><center><h1>504 Gateway Time-out</h1></center><hr><center>nginx</center></body></html>";
+
+  // 无条件 res.json() 时用户看到的就是这一句，完全看不出发生了什么
+  await assert.rejects(
+    () => new Response(html, { status: 504 }).json(),
+    /is not valid JSON/,
+  );
+
+  // 换成 readJson：说清是网关超时，并提示服务端可能还在跑
+  const gateway = new Response(html, {
+    status: 504,
+    headers: { "content-type": "text/html" },
+  });
+  await assert.rejects(readJson(gateway), (error: Error) => {
+    assert.match(error.message, /网关返回了非 JSON 响应（HTTP 504）/);
+    assert.match(error.message, /仍在后台处理/);
+    assert.doesNotMatch(error.message, /Unexpected token/);
+    return true;
+  });
+
+  // Cloudflare 的 524 归到同一类
+  await assert.rejects(
+    readJson(new Response(html, { status: 524, headers: { "content-type": "text/html" } })),
+    /HTTP 524/,
+  );
+
+  // 正常 JSON 不受影响
+  assert.deepEqual(
+    await readJson(
+      new Response(JSON.stringify({ data: 1 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    ),
+    { data: 1 },
+  );
+
+  // 纯文本错误按原文透出，别再包一层看不懂的话
+  await assert.rejects(
+    readJson(
+      new Response("upstream connect error", {
+        status: 502,
+        headers: { "content-type": "text/plain" },
+      }),
+    ),
+    /upstream connect error（HTTP 502）/,
+  );
+});
+
+check("同步结果汇总与进度文案", () => {
+  const base = {
+    runId: "r",
+    trigger: "manual" as const,
+    scope: "全部",
+    state: "success" as const,
+    total: 9,
+    done: 9,
+    ok: 8,
+    fail: 1,
+    startedAt: "",
+    heartbeatAt: "",
+    results: [],
+  };
+  assert.deepEqual(summarizeSyncJob(base), {
+    text: "同步完成：8 成功 / 1 失败",
+    tone: "error",
+  });
+  assert.deepEqual(summarizeSyncJob({ ...base, ok: 9, fail: 0 }), {
+    text: "同步完成：9 成功 / 0 失败",
+    tone: "success",
+  });
+  // 中断要说出来，不能显示成「同步完成」
+  assert.equal(
+    summarizeSyncJob({ ...base, state: "interrupted", error: "同步进程中断" }).tone,
+    "error",
+  );
+  assert.equal(syncProgressLabel({ ...base, done: 3 }), "同步中 3/9");
+  assert.equal(syncProgressLabel(null), "同步中…");
 });
 
 console.log(`\n全部通过：${passed} 项`);

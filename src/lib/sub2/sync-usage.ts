@@ -3,7 +3,7 @@
  * 数据源：GET /api/v1/usage?start_date&end_date&page&api_key_id
  */
 
-import { prisma } from "@/lib/db";
+import { prisma, parallelUpsert } from "@/lib/db";
 import { sub2Request } from "@/lib/sub2/client";
 
 export interface UsageSyncOptions {
@@ -67,6 +67,62 @@ interface RemoteUsageItem {
   created_at?: string;
 }
 
+/** 把一条远端明细整理成待写入行。raw 只在未归档时写回，见下方 update 分支。 */
+function prepareUsageRow(
+  item: RemoteUsageItem,
+  keyNameByRemote: Map<string, string>,
+) {
+  const remoteId = String(item.id);
+  const remoteKeyId =
+    item.api_key_id != null
+      ? String(item.api_key_id)
+      : item.api_key?.id != null
+        ? String(item.api_key.id)
+        : null;
+  const requestAt = item.created_at ? new Date(item.created_at) : new Date();
+  const day = toShanghaiDay(requestAt);
+  const keyName =
+    (remoteKeyId && keyNameByRemote.get(remoteKeyId)) ||
+    item.api_key?.name ||
+    null;
+  const inputTokens = Math.round(num(item.input_tokens));
+  const outputTokens = Math.round(num(item.output_tokens));
+  const cacheReadTokens = Math.round(num(item.cache_read_tokens));
+
+  const structuredRow = {
+    remoteKeyId,
+    keyName,
+    model: str(item.model),
+    groupId: item.group_id ?? item.group?.id ?? null,
+    groupName: item.group?.name || null,
+    actualCost: num(item.actual_cost),
+    standardCost: num(item.total_cost),
+    rateMultiplier:
+      item.rate_multiplier != null ? num(item.rate_multiplier) : null,
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    totalTokens:
+      Math.round(num(item.total_tokens)) ||
+      inputTokens + outputTokens + cacheReadTokens,
+    requestType: str(item.request_type),
+    stream: !!item.stream,
+    durationMs:
+      item.duration_ms != null ? Math.round(num(item.duration_ms)) : null,
+    requestAt,
+    day,
+  };
+
+  return {
+    remoteId,
+    day,
+    structuredRow,
+    row: { ...structuredRow, raw: JSON.stringify(item).slice(0, 4000) },
+  };
+}
+
+type PreparedUsageRow = ReturnType<typeof prepareUsageRow>;
+
 /**
  * 增量同步使用记录到本地库，并重建受影响日期的日聚合。
  */
@@ -129,82 +185,52 @@ export async function syncUsageLogs(
     const items = data.items || [];
     if (!items.length) break;
 
+    // 整页一次性判「已存在」，再打包写。原来是每条明细先 findUnique 再
+    // create/update —— 一条两次数据库往返，一页 100 条就是 200 次。
+    //
+    // 同一页里出现重复 remoteId 时必须先去重：逐条写时第二条会读到刚写入的
+    // 行走 update 分支，打包写则会变成两条 create，直接撞唯一键让整个事务回滚。
+    // 保留后出现的那条，与逐条写「后写覆盖前写」的结果一致。
+    const rowByRemoteId = new Map<string, PreparedUsageRow>();
     for (const item of items) {
-      const remoteId = String(item.id);
-      const remoteKeyId =
-        item.api_key_id != null
-          ? String(item.api_key_id)
-          : item.api_key?.id != null
-            ? String(item.api_key.id)
-            : null;
-      const requestAt = item.created_at
-        ? new Date(item.created_at)
-        : new Date();
-      const day = toShanghaiDay(requestAt);
-      touchedDays.add(day);
+      const prepared = prepareUsageRow(item, keyNameByRemote);
+      touchedDays.add(prepared.day);
+      rowByRemoteId.set(prepared.remoteId, prepared);
+    }
+    const pageRows = [...rowByRemoteId.values()];
 
-      const keyName =
-        (remoteKeyId && keyNameByRemote.get(remoteKeyId)) ||
-        item.api_key?.name ||
-        null;
-      const groupName = item.group?.name || null;
-      const actualCost = num(item.actual_cost);
-      const standardCost = num(item.total_cost);
-      const inputTokens = Math.round(num(item.input_tokens));
-      const outputTokens = Math.round(num(item.output_tokens));
-      const cacheReadTokens = Math.round(num(item.cache_read_tokens));
-      const totalTokens =
-        Math.round(num(item.total_tokens)) ||
-        inputTokens + outputTokens + cacheReadTokens;
+    const existingRows = await prisma.upstreamUsageLog.findMany({
+      where: { providerId, remoteId: { in: pageRows.map((r) => r.remoteId) } },
+      select: { id: true, remoteId: true, archivedAt: true },
+    });
+    const existingByRemote = new Map(
+      existingRows.map((row) => [row.remoteId, row]),
+    );
 
-      const existing = await prisma.upstreamUsageLog.findUnique({
-        where: {
-          providerId_remoteId: { providerId, remoteId },
-        },
+    // 新行走一条 createMany；已存在的行只能逐条 update ——
+    // archivedAt / archiveId / raw 是归档状态，删了重建会把审计副本的指针弄丢。
+    // 逐条 await 在远端库上太慢，改成有界并发。
+    const fresh = pageRows.filter((r) => !existingByRemote.has(r.remoteId));
+    if (fresh.length) {
+      await prisma.upstreamUsageLog.createMany({
+        data: fresh.map(({ remoteId, row }) => ({ providerId, remoteId, ...row })),
       });
-
-      const structuredRow = {
-        remoteKeyId,
-        keyName,
-        model: str(item.model),
-        groupId: item.group_id ?? item.group?.id ?? null,
-        groupName,
-        actualCost,
-        standardCost,
-        rateMultiplier:
-          item.rate_multiplier != null ? num(item.rate_multiplier) : null,
-        inputTokens,
-        outputTokens,
-        cacheReadTokens,
-        totalTokens,
-        requestType: str(item.request_type),
-        stream: !!item.stream,
-        durationMs:
-          item.duration_ms != null ? Math.round(num(item.duration_ms)) : null,
-        requestAt,
-        day,
-      };
-      const row = {
-        ...structuredRow,
-        raw: JSON.stringify(item).slice(0, 4000),
-      };
-
-      if (existing) {
-        await prisma.upstreamUsageLog.update({
+      inserted += fresh.length;
+    }
+    const stale = pageRows.filter((r) => existingByRemote.has(r.remoteId));
+    await parallelUpsert(
+      stale.map(({ remoteId, structuredRow, row }) => () => {
+        const existing = existingByRemote.get(remoteId)!;
+        return prisma.upstreamUsageLog.update({
           where: { id: existing.id },
           // 归档是不可变审计副本；重复同步只刷新在线结构化字段，
           // 不能把已压缩的 raw 重新塞回数据库并绕过后续清理。
           data: existing.archivedAt ? structuredRow : row,
         });
-        updated++;
-      } else {
-        await prisma.upstreamUsageLog.create({
-          data: { providerId, remoteId, ...row },
-        });
-        inserted++;
-      }
-      fetched++;
-    }
+      }),
+    );
+    updated += stale.length;
+    fetched += pageRows.length;
 
     const totalPages =
       data.pages ||
@@ -290,31 +316,34 @@ async function rebuildDailyForDay(
       .map((row) => [row.remoteKeyId, row.costRateRmb]),
   );
 
-  // 清掉该日旧聚合再写（简单可靠）
-  await prisma.upstreamUsageDaily.deleteMany({ where: { providerId, day } });
-
-  for (const [remoteKeyId, b] of buckets) {
-    const countAsCost = countAsCostByRemote.get(remoteKeyId) ?? false;
-    const rate = frozenRate.get(remoteKeyId) ?? discountRate;
-    await prisma.upstreamUsageDaily.create({
-      data: {
-        providerId,
-        remoteKeyId,
-        keyName: b.keyName,
-        day,
-        requests: b.requests,
-        actualCost: b.actualCost,
-        standardCost: b.standardCost,
-        totalTokens: b.totalTokens,
-        inputTokens: b.inputTokens,
-        outputTokens: b.outputTokens,
-        costRmb: countAsCost ? b.actualCost * rate : 0,
-        costRateRmb: rate,
-        costRateSource: frozenRate.has(remoteKeyId) ? "frozen" : "provider",
-        countAsCost,
-      },
-    });
-  }
+  // 清掉该日旧聚合再写（简单可靠）。删 + 建放进同一个事务：
+  // 分两次自动提交时，中间那一瞬这一天的聚合是空的，恰好被报表读到就会
+  // 看见成本凭空归零。
+  await prisma.$transaction([
+    prisma.upstreamUsageDaily.deleteMany({ where: { providerId, day } }),
+    ...[...buckets].map(([remoteKeyId, b]) => {
+      const countAsCost = countAsCostByRemote.get(remoteKeyId) ?? false;
+      const rate = frozenRate.get(remoteKeyId) ?? discountRate;
+      return prisma.upstreamUsageDaily.create({
+        data: {
+          providerId,
+          remoteKeyId,
+          keyName: b.keyName,
+          day,
+          requests: b.requests,
+          actualCost: b.actualCost,
+          standardCost: b.standardCost,
+          totalTokens: b.totalTokens,
+          inputTokens: b.inputTokens,
+          outputTokens: b.outputTokens,
+          costRmb: countAsCost ? b.actualCost * rate : 0,
+          costRateRmb: rate,
+          costRateSource: frozenRate.has(remoteKeyId) ? "frozen" : "provider",
+          countAsCost,
+        },
+      });
+    }),
+  ]);
 }
 
 /** 查询本地使用明细 */

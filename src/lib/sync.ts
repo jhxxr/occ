@@ -3,6 +3,7 @@ import { decryptSecret, encryptSecret } from "@/lib/crypto";
 import { getSub2ProxyUrl } from "@/lib/sub2/settings";
 import { fetchUpstreamBalance } from "@/lib/adapters";
 import { fetchDownstreamStatsForSite } from "@/lib/downstream-fetch";
+import { withNewApiDbSession } from "@/lib/newapi-db";
 import { syncSub2ApiKeys } from "@/lib/sub2/sync-keys";
 import { syncSub2ApiKeyProvider } from "@/lib/sub2api-key/sync";
 import { detectRechargeOnSync } from "@/lib/recharge";
@@ -405,7 +406,9 @@ async function runUpstreamProviderSync(id: string): Promise<SyncResultItem> {
 
 export async function syncDownstreamSite(id: string): Promise<SyncResultItem> {
   return guardConcurrentSync("downstream", id, "downstream", () =>
-    runDownstreamSiteSync(id),
+    // 整轮下游同步共用一条 NewAPI 连接：这一轮里概览、逐日、模型、充值、
+    // 兑换码、用户列表打的都是同一个库，逐次握手是纯浪费（实测每次 230–860ms）。
+    withNewApiDbSession(() => runDownstreamSiteSync(id)),
   );
 }
 
@@ -499,25 +502,85 @@ async function runDownstreamSiteSync(id: string): Promise<SyncResultItem> {
   };
 }
 
-/** Full sync of all enabled providers & sites */
-export async function syncAll(): Promise<SyncResultItem[]> {
+export interface SyncTarget {
+  kind: SyncResultItem["kind"];
+  id: string;
+  name: string;
+}
+
+/**
+ * 一轮同步要跑的目标。
+ *
+ * 已弃用（retiredAt 有值）的上游必须排除：`relayOnly` 只按 type 过滤，
+ * 而 runUpstreamProviderSync 对已弃用上游一律返回失败（"该上游已弃用"）。
+ * 不排除的话，每次全量同步都会凭空多出几条失败，汇总里的失败数根本没法看，
+ * 定时同步还会把它们当成「需要退避的故障目标」。
+ */
+export async function listSyncTargets(
+  opts: { scope?: "all" | "upstream" } = {},
+): Promise<SyncTarget[]> {
   const [relays, selfHosted, downstreams] = await Promise.all([
-    prisma.upstreamProvider.findMany({ where: { enabled: true, ...relayOnly } }),
     prisma.upstreamProvider.findMany({
-      where: { enabled: true, ...selfHostedOnly },
+      where: { enabled: true, retiredAt: null, ...relayOnly },
+      select: { id: true, name: true },
+      orderBy: { createdAt: "asc" },
     }),
-    prisma.downstreamSite.findMany({ where: { enabled: true } }),
+    prisma.upstreamProvider.findMany({
+      where: { enabled: true, retiredAt: null, ...selfHostedOnly },
+      select: { id: true, name: true },
+      orderBy: { createdAt: "asc" },
+    }),
+    opts.scope === "upstream"
+      ? Promise.resolve([])
+      : prisma.downstreamSite.findMany({
+          where: { enabled: true },
+          select: { id: true, name: true },
+          orderBy: { createdAt: "asc" },
+        }),
   ]);
 
+  return [
+    ...relays.map((r) => ({ kind: "upstream" as const, id: r.id, name: r.name })),
+    ...selfHosted.map((s) => ({
+      kind: "self-hosted" as const,
+      id: s.id,
+      name: s.name,
+    })),
+    ...downstreams.map((d) => ({
+      kind: "downstream" as const,
+      id: d.id,
+      name: d.name,
+    })),
+  ];
+}
+
+/** 同步单个目标；按 kind 分派到对应的实现。 */
+export async function syncTarget(target: SyncTarget): Promise<SyncResultItem> {
+  if (target.kind === "downstream") return syncDownstreamSite(target.id);
+  if (target.kind === "self-hosted") return syncSelfHostedProvider(target.id);
+  return syncUpstreamProvider(target.id);
+}
+
+/**
+ * Full sync of all enabled providers & sites.
+ *
+ * 串行执行：同一供应商的请求本来就要排队（adapters 里的同主机节流），
+ * 而并发跑不同上游会让「正在同步谁」失去意义，出错也更难定位。
+ * `onResult` 用于边跑边上报进度（后台任务用）。
+ */
+export async function syncAll(
+  opts: {
+    scope?: "all" | "upstream";
+    targets?: SyncTarget[];
+    onResult?: (result: SyncResultItem, done: number, total: number) => void | Promise<void>;
+  } = {},
+): Promise<SyncResultItem[]> {
+  const targets = opts.targets ?? (await listSyncTargets({ scope: opts.scope }));
   const results: SyncResultItem[] = [];
-  for (const u of relays) {
-    results.push(await syncUpstreamProvider(u.id));
-  }
-  for (const s of selfHosted) {
-    results.push(await syncSelfHostedProvider(s.id));
-  }
-  for (const d of downstreams) {
-    results.push(await syncDownstreamSite(d.id));
+  for (const target of targets) {
+    const result = await syncTarget(target);
+    results.push(result);
+    await opts.onResult?.(result, results.length, targets.length);
   }
   return results;
 }

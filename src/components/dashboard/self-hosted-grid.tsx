@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import Link from "next/link";
+import { runSyncJob } from "@/lib/sync-client";
 
 export interface SelfHostedCardData {
   id: string;
@@ -42,16 +43,21 @@ export function SelfHostedGrid({
   onSynced?: () => void;
 }) {
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<Record<string, string>>({});
 
   async function syncOne(id: string) {
     setBusyId(id);
+    setError((m) => ({ ...m, [id]: "" }));
     try {
-      await fetch("/api/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target: "self-hosted", id }),
-      });
+      const job = await runSyncJob({ target: "self-hosted", id });
+      const failed = job.results.find((r) => !r.success);
+      if (failed?.error) setError((m) => ({ ...m, [id]: failed.error! }));
       onSynced?.();
+    } catch (e) {
+      setError((m) => ({
+        ...m,
+        [id]: e instanceof Error ? e.message : "同步失败",
+      }));
     } finally {
       setBusyId(null);
     }
@@ -131,13 +137,13 @@ export function SelfHostedGrid({
               </div>
             </div>
 
-            {s.lastError && (
+            {(error[s.id] || s.lastError) && (
               <p className="rounded-[var(--r-md)] border border-coral/25 bg-coral/10 px-2.5 py-1.5 text-xs text-coral">
-                {s.lastError}
+                {error[s.id] || s.lastError}
               </p>
             )}
 
-            {s.groupCount === 0 && !s.lastError && (
+            {s.groupCount === 0 && !s.lastError && !error[s.id] && (
               <p className="rounded-[var(--r-md)] border border-border-subtle bg-surface-2 px-2.5 py-1.5 text-xs text-muted">
                 还没同步到分组，点「同步」拉取管理端数据
               </p>

@@ -7,6 +7,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { formatRmb, cn } from "@/lib/utils";
 import { ExternalLink, RefreshCw, SlidersHorizontal } from "lucide-react";
+import { runSyncJob } from "@/lib/sync-client";
 
 export interface DownstreamCardData {
   id: string;
@@ -41,16 +42,11 @@ export function DownstreamGrid({
     setBusyId(id);
     setMsg((m) => ({ ...m, [id]: "" }));
     try {
-      const res = await fetch("/api/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target: "downstream", id }),
-      });
-      const json = await res.json().catch(() => null);
-      if (!res.ok) {
-        throw new Error(json?.error || "同步失败");
+      const job = await runSyncJob({ target: "downstream", id });
+      const item = job.results[0];
+      if (item && !item.success) {
+        throw new Error(item.error || "同步失败");
       }
-      const item = json?.results?.[0];
       if (item?.usageDays != null) {
         setMsg((m) => ({
           ...m,

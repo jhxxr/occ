@@ -9,6 +9,7 @@ import { Callout } from "@/components/ui/callout";
 import { Segmented } from "@/components/ui/segmented";
 import { Table, THead, TBody, HeadRow, TH, TR, TD } from "@/components/ui/table";
 import { formatRmb, cn } from "@/lib/utils";
+import { errorOf, readJson } from "@/lib/sync-client";
 import {
   AlertTriangle,
   ChevronDown,
@@ -292,14 +293,19 @@ export function ReportView() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ startDay: data.period.startDay, endDay: data.period.endDay }),
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "同步失败");
-      const summary = json.data?.summary || {};
-      const balanceResults = (json.data?.balanceResults || []) as {
-        success: boolean;
-        users?: number;
-        error?: string;
-      }[];
+      // 这个接口仍是同步执行的（带自定义日期区间，可能拉一整月）。
+      // readJson 至少保证网关超时时给出一句能看懂的话，而不是
+      // `Unexpected token '<'`。
+      const json = await readJson(res);
+      if (!res.ok) throw new Error(errorOf(json, "同步失败"));
+      const payload = json.data as
+        | {
+            summary?: { ok?: number; balanceUsers?: number };
+            balanceResults?: { success: boolean; users?: number; error?: string }[];
+          }
+        | undefined;
+      const summary = payload?.summary || {};
+      const balanceResults = payload?.balanceResults || [];
       const balanceErrors = balanceResults
         .filter((row) => !row.success)
         .map((row) => row.error || "未知错误");

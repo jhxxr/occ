@@ -198,6 +198,11 @@ export async function syncDownstreamUsage(
   let grossRevenueRmb = 0;
   let excludedRmb = 0;
   let privateRevenueRmb = 0;
+  // 这张表也是纯派生的：整段重算比逐行 upsert 快两个数量级（见 db.ts 的说明）。
+  // 一轮同步共用一个 syncedAt。
+  const syncedAt = new Date();
+  const totalRows = [];
+  const groupRows = [];
   for (const row of usage.totals) {
     const grossRmb = quotaToRmb(row.quota, quotaPerUnit);
     const excludedPart = quotaToRmb(row.excludedQuota, quotaPerUnit);
@@ -210,7 +215,11 @@ export async function syncDownstreamUsage(
     revenueRmb += payingRmb;
     privateRevenueRmb += privatePart;
 
-    const data = {
+    totalRows.push({
+      downstreamId: siteId,
+      day: row.day,
+      scope: "TOTAL",
+      groupName: "",
       quota: row.quota,
       excludedQuota: row.excludedQuota,
       privateQuota: row.privateQuota,
@@ -226,25 +235,7 @@ export async function syncDownstreamUsage(
       privateResolved: privateResolved && row.privateResolved,
       source: usage.totalSource,
       complete: !usage.failedDays.includes(row.day),
-      syncedAt: new Date(),
-    };
-    await prisma.downstreamUsageDaily.upsert({
-      where: {
-        downstreamId_day_scope_groupName: {
-          downstreamId: siteId,
-          day: row.day,
-          scope: "TOTAL",
-          groupName: "",
-        },
-      },
-      create: {
-        downstreamId: siteId,
-        day: row.day,
-        scope: "TOTAL",
-        groupName: "",
-        ...data,
-      },
-      update: data,
+      syncedAt,
     });
   }
 
@@ -253,7 +244,11 @@ export async function syncDownstreamUsage(
   // 私域也无从拆分，一律记 0 + privateResolved=false。
   for (const row of usage.groups) {
     const grossRmb = quotaToRmb(row.quota, quotaPerUnit);
-    const data = {
+    groupRows.push({
+      downstreamId: siteId,
+      day: row.day,
+      scope: "GROUP",
+      groupName: row.groupName,
       quota: row.quota,
       excludedQuota: 0,
       privateQuota: 0,
@@ -264,29 +259,56 @@ export async function syncDownstreamUsage(
       requests: row.requests,
       excludeResolved: false,
       privateResolved: false,
-      source: "data-export" as const,
+      source: "data-export",
       complete: true,
-      syncedAt: new Date(),
-    };
-    await prisma.downstreamUsageDaily.upsert({
-      where: {
-        downstreamId_day_scope_groupName: {
-          downstreamId: siteId,
-          day: row.day,
-          scope: "GROUP",
-          groupName: row.groupName,
-        },
-      },
-      create: {
-        downstreamId: siteId,
-        day: row.day,
-        scope: "GROUP",
-        groupName: row.groupName,
-        ...data,
-      },
-      update: data,
+      syncedAt,
     });
   }
+
+  // 删除条件必须**恰好**等于要写回的键集合。
+  // TOTAL 的 groupName 固定是空串，按天删就是精确的；
+  // GROUP 还要按天列出分组名 —— 这轮没被报出来的分组（改名、下架、
+  // 历史遗留的空名行）不该被顺手清掉，原来的逐行 upsert 从不删任何行。
+  const writes = [];
+  if (totalRows.length) {
+    const days = [...new Set(totalRows.map((row) => row.day))];
+    writes.push(
+      prisma.downstreamUsageDaily.deleteMany({
+        where: {
+          downstreamId: siteId,
+          scope: "TOTAL",
+          groupName: "",
+          day: { in: days },
+        },
+      }),
+      prisma.downstreamUsageDaily.createMany({ data: totalRows }),
+    );
+  }
+  if (groupRows.length) {
+    const groupsByDay = new Map<string, Set<string>>();
+    for (const row of groupRows) {
+      let names = groupsByDay.get(row.day);
+      if (!names) {
+        names = new Set();
+        groupsByDay.set(row.day, names);
+      }
+      names.add(row.groupName);
+    }
+    writes.push(
+      prisma.downstreamUsageDaily.deleteMany({
+        where: {
+          downstreamId: siteId,
+          scope: "GROUP",
+          OR: [...groupsByDay].map(([day, names]) => ({
+            day,
+            groupName: { in: [...names] },
+          })),
+        },
+      }),
+      prisma.downstreamUsageDaily.createMany({ data: groupRows }),
+    );
+  }
+  if (writes.length) await prisma.$transaction(writes);
 
   const notes: string[] = [];
   if (usage.failedDays.length) {
@@ -395,76 +417,70 @@ export async function syncDownstreamModelUsage(
     return { success: false, synced: 0, error: result.error };
   }
 
-  // 写库：每个 (天, 模型) 写三行
-  let synced = 0;
+  // 写库：每个 (天, 模型) 写三行。
+  //
+  // 这张表是纯派生的（quota/requests 全部来自本轮拉取，没有用户手填字段），
+  // 所以整段重算：删掉本轮要重写的键，再一条 createMany 灌回去。
+  // 逐行 upsert 在远端库上实测 ~692ms/行，一个 7 天区间 189 行要 18 秒；
+  // 这样写是 ~7ms/行。
+  //
+  // 删除条件必须**恰好**等于要写回的键集合，所以按天列出该天的模型，
+  // 而不是 `day in 区间`：某个模型这轮没被上游报出来（限流、改名、下架），
+  // 它那天的历史归因不该跟着一起消失 —— 原来的逐行 upsert 从不删任何行。
+  const modelsByDay = new Map<string, Set<string>>();
   for (const row of result.rows) {
-    const total = row.privateQuota + row.publicQuota;
-    const totalReq = row.privateRequests + row.publicRequests;
+    let models = modelsByDay.get(row.day);
+    if (!models) {
+      models = new Set();
+      modelsByDay.set(row.day, models);
+    }
+    models.add(row.model);
+  }
+  const rows = result.rows.flatMap((row) => [
+    {
+      downstreamId,
+      day: row.day,
+      model: row.model,
+      scope: "TOTAL",
+      quota: row.privateQuota + row.publicQuota,
+      requests: row.privateRequests + row.publicRequests,
+    },
+    {
+      downstreamId,
+      day: row.day,
+      model: row.model,
+      scope: "PRIVATE",
+      quota: row.privateQuota,
+      requests: row.privateRequests,
+    },
+    {
+      downstreamId,
+      day: row.day,
+      model: row.model,
+      scope: "PUBLIC",
+      quota: row.publicQuota,
+      requests: row.publicRequests,
+    },
+  ]);
 
-    await prisma.downstreamModelDaily.upsert({
-      where: {
-        downstreamId_day_model_scope: {
+  if (rows.length) {
+    // 删与建同一个事务：分两次提交时中间那一瞬这些行是空的，
+    // 恰好被报表读到就会看见模型成本凭空归零。
+    await prisma.$transaction([
+      prisma.downstreamModelDaily.deleteMany({
+        where: {
           downstreamId,
-          day: row.day,
-          model: row.model,
-          scope: "TOTAL",
+          OR: [...modelsByDay].map(([day, models]) => ({
+            day,
+            model: { in: [...models] },
+          })),
         },
-      },
-      create: {
-        downstreamId,
-        day: row.day,
-        model: row.model,
-        scope: "TOTAL",
-        quota: total,
-        requests: totalReq,
-      },
-      update: { quota: total, requests: totalReq, updatedAt: new Date() },
-    });
-
-    await prisma.downstreamModelDaily.upsert({
-      where: {
-        downstreamId_day_model_scope: {
-          downstreamId,
-          day: row.day,
-          model: row.model,
-          scope: "PRIVATE",
-        },
-      },
-      create: {
-        downstreamId,
-        day: row.day,
-        model: row.model,
-        scope: "PRIVATE",
-        quota: row.privateQuota,
-        requests: row.privateRequests,
-      },
-      update: { quota: row.privateQuota, requests: row.privateRequests, updatedAt: new Date() },
-    });
-
-    await prisma.downstreamModelDaily.upsert({
-      where: {
-        downstreamId_day_model_scope: {
-          downstreamId,
-          day: row.day,
-          model: row.model,
-          scope: "PUBLIC",
-        },
-      },
-      create: {
-        downstreamId,
-        day: row.day,
-        model: row.model,
-        scope: "PUBLIC",
-        quota: row.publicQuota,
-        requests: row.publicRequests,
-      },
-      update: { quota: row.publicQuota, requests: row.publicRequests, updatedAt: new Date() },
-    });
-
-    synced += 3;
+      }),
+      prisma.downstreamModelDaily.createMany({ data: rows }),
+    ]);
   }
 
-  return { success: true, synced };
+  return { success: true, synced: rows.length };
 }
 
 export interface DownstreamTopupSyncResult {
@@ -516,28 +532,35 @@ export async function syncDownstreamTopups(
     };
   }
 
-  for (const row of fetched.rows) {
-    const data = {
-      userId: row.userId,
-      tradeNo: row.tradeNo,
-      amount: row.amount,
-      moneyRmb: row.moneyRmb,
-      status: row.status,
-      paymentMethod: row.paymentMethod,
-      paymentProvider: row.paymentProvider,
-      source: row.source,
-      sourceRaw: row.sourceRaw,
-      createdAtRemote: row.createdAt,
-      completedAt: row.completedAt,
-      syncedAt: now,
-    };
-    await prisma.downstreamTopup.upsert({
-      where: {
-        downstreamId_remoteId: { downstreamId: siteId, remoteId: row.remoteId },
-      },
-      create: { downstreamId: siteId, remoteId: row.remoteId, ...data },
-      update: data,
-    });
+  // 整段重建，删除范围只取本轮拉到的 remoteId：远端已删除的订单在本地留着
+  // （历史入账凭据不该因为对方清库就消失），与原来的 upsert 行为一致。
+  if (fetched.rows.length) {
+    await prisma.$transaction([
+      prisma.downstreamTopup.deleteMany({
+        where: {
+          downstreamId: siteId,
+          remoteId: { in: fetched.rows.map((row) => row.remoteId) },
+        },
+      }),
+      prisma.downstreamTopup.createMany({
+        data: fetched.rows.map((row) => ({
+          downstreamId: siteId,
+          remoteId: row.remoteId,
+          userId: row.userId,
+          tradeNo: row.tradeNo,
+          amount: row.amount,
+          moneyRmb: row.moneyRmb,
+          status: row.status,
+          paymentMethod: row.paymentMethod,
+          paymentProvider: row.paymentProvider,
+          source: row.source,
+          sourceRaw: row.sourceRaw,
+          createdAtRemote: row.createdAt,
+          completedAt: row.completedAt,
+          syncedAt: now,
+        })),
+      }),
+    ]);
   }
 
   await prisma.downstreamSite.update({

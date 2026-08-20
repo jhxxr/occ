@@ -18,6 +18,7 @@ import {
   KeyRound,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { runSyncJob } from "@/lib/sync-client";
 
 interface Site {
   id: string;
@@ -104,17 +105,12 @@ export default function SelfHostedListPage() {
     setMsg(null);
     setError(null);
     try {
-      const res = await fetch("/api/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target: "self-hosted", id }),
-      });
-      const json = await res.json();
-      const r = json.results?.[0];
+      const job = await runSyncJob({ target: "self-hosted", id });
+      const r = job.results[0];
       if (r?.success) {
-        setMsg(`同步完成：${r.groups ?? 0} 分组 / ${r.accounts ?? 0} 账号`);
+        setMsg("同步完成");
       } else {
-        setError(r?.error || json.error || "同步失败");
+        setError(r?.error || job.error || "同步失败");
       }
       await load();
     } catch (e) {

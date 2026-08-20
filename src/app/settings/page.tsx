@@ -4,7 +4,7 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import { TopBar } from "@/components/layout/top-bar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input, Label } from "@/components/ui/input";
+import { Input, Label, Select } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -15,6 +15,7 @@ import {
   TR,
   TD,
 } from "@/components/ui/table";
+import { cn } from "@/lib/utils";
 import {
   Shield,
   Coins,
@@ -24,6 +25,7 @@ import {
   Plus,
   Trash2,
   Link2,
+  Timer,
 } from "lucide-react";
 
 interface TokenRow {
@@ -40,6 +42,43 @@ interface TokenRow {
   createdAt: string;
 }
 
+interface AutoSyncBackoffEntry {
+  key: string;
+  name: string;
+  failures: number;
+  nextAt: string;
+  lastAt: string;
+  lastError: string;
+  failureClass: "credential" | "rate-limit" | "network";
+}
+
+interface AutoSyncStatus {
+  config: { enabled: boolean; intervalMinutes: number; scope: "all" | "upstream" };
+  hardDisabled: boolean;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastFinishedAt: string | null;
+  lastOk: number | null;
+  lastFail: number | null;
+  lastSkipped: number | null;
+  lastRateLimited: boolean;
+  backoff: AutoSyncBackoffEntry[];
+}
+
+/** 与 auto-sync.ts 的 MIN_INTERVAL_MINUTES 对齐；服务端 zod 才是硬校验 */
+const MIN_AUTO_INTERVAL = 15;
+
+const FAILURE_CLASS_LABEL: Record<AutoSyncBackoffEntry["failureClass"], string> = {
+  credential: "凭据失效 · 需人工处理",
+  "rate-limit": "被上游限流",
+  network: "连接失败",
+};
+
+function timeOf(value: string | null): string {
+  if (!value) return "—";
+  return new Date(value).toLocaleString("zh-CN");
+}
+
 export default function SettingsPage() {
   const [usdCny, setUsdCny] = useState("7.2");
   const [sub2ProxyUrl, setSub2ProxyUrl] = useState("");
@@ -50,6 +89,15 @@ export default function SettingsPage() {
   const [sub2ProxyDirty, setSub2ProxyDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+
+  // 自动同步
+  const [autoSync, setAutoSync] = useState<AutoSyncStatus | null>(null);
+  const [autoEnabled, setAutoEnabled] = useState(false);
+  const [autoInterval, setAutoInterval] = useState("60");
+  const [autoScope, setAutoScope] = useState<"all" | "upstream">("all");
+  const [autoDirty, setAutoDirty] = useState(false);
+  const [autoSaving, setAutoSaving] = useState(false);
+  const [autoMsg, setAutoMsg] = useState<string | null>(null);
 
   // 扩展注入
   const [tokens, setTokens] = useState<TokenRow[]>([]);
@@ -71,6 +119,14 @@ export default function SettingsPage() {
       setUsdCny(String(json.data.usdCny));
       setSub2ProxyUrl(String(json.data.sub2ProxyUrl || ""));
       setSub2ProxyConfigured(!!json.data.sub2ProxyConfigured);
+      if (json.data.autoSync) {
+        const status = json.data.autoSync as AutoSyncStatus;
+        setAutoSync(status);
+        setAutoEnabled(status.config.enabled);
+        setAutoInterval(String(status.config.intervalMinutes));
+        setAutoScope(status.config.scope);
+        setAutoDirty(false);
+      }
       setUsdCnyDirty(false);
       setSub2ProxyDirty(false);
       setSettingsLoaded(true);
@@ -124,6 +180,34 @@ export default function SettingsPage() {
       setMsg(err instanceof Error ? err.message : "保存失败");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function saveAutoSync(e: FormEvent) {
+    e.preventDefault();
+    setAutoSaving(true);
+    setAutoMsg(null);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          autoSync: {
+            enabled: autoEnabled,
+            intervalMinutes: Number(autoInterval),
+            scope: autoScope,
+          },
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "保存失败");
+      if (json.data?.autoSync) setAutoSync(json.data.autoSync as AutoSyncStatus);
+      setAutoDirty(false);
+      setAutoMsg(autoEnabled ? "自动同步已开启" : "自动同步已关闭");
+    } catch (err) {
+      setAutoMsg(err instanceof Error ? err.message : "保存失败");
+    } finally {
+      setAutoSaving(false);
     }
   }
 
@@ -285,6 +369,148 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* 自动同步 */}
+      <Card className="border-violet/20">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base font-semibold text-text normal-case tracking-normal">
+            <Timer className="h-4 w-4 text-violet" />
+            自动同步
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-xs leading-relaxed text-muted">
+            默认关闭。开启后按下面的间隔在后台自动跑一轮同步，跟你点「全量同步」做的事一样。
+            上游是别人的站，所以带了一套护栏：间隔下限 {autoSync ? MIN_AUTO_INTERVAL : 15} 分钟、
+            每轮时间加 ±10% 抖动避免固定时刻、同一主机的请求串行且留间隔、命中限流按
+            <code className="font-data text-cyan"> Retry-After </code>
+            整站退避、连续失败的目标指数退避（凭据类直接退到 6 小时并标出来等你处理）。
+            <strong className="text-secondary">手动同步不受退避影响，随时可以点。</strong>
+          </p>
+
+          {autoSync?.hardDisabled && (
+            <p className="rounded-[var(--r-md)] border border-warn/25 bg-warn/10 px-3 py-2 text-xs text-warn">
+              当前部署设了 <code className="font-data">AUTO_SYNC_ENABLED=false</code>
+              ，自动同步被环境变量硬关，下面的开关不会生效。
+            </p>
+          )}
+
+          <form onSubmit={saveAutoSync} className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="autoEnabled">状态</Label>
+                <Select
+                  id="autoEnabled"
+                  value={autoEnabled ? "on" : "off"}
+                  onChange={(e) => {
+                    setAutoEnabled(e.target.value === "on");
+                    setAutoDirty(true);
+                  }}
+                >
+                  <option value="off">关闭</option>
+                  <option value="on">开启</option>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="autoInterval">间隔（分钟）</Label>
+                <Input
+                  id="autoInterval"
+                  type="number"
+                  min={MIN_AUTO_INTERVAL}
+                  max={1440}
+                  step="5"
+                  value={autoInterval}
+                  onChange={(e) => {
+                    setAutoInterval(e.target.value);
+                    setAutoDirty(true);
+                  }}
+                />
+                <p className="text-xs text-muted">
+                  不能小于 {MIN_AUTO_INTERVAL} 分钟
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="autoScope">范围</Label>
+                <Select
+                  id="autoScope"
+                  value={autoScope}
+                  onChange={(e) => {
+                    setAutoScope(e.target.value === "upstream" ? "upstream" : "all");
+                    setAutoDirty(true);
+                  }}
+                >
+                  <option value="all">全部（上游 + 下游）</option>
+                  <option value="upstream">仅上游</option>
+                </Select>
+              </div>
+            </div>
+
+            {autoMsg && <p className="text-xs text-secondary">{autoMsg}</p>}
+            <Button type="submit" disabled={autoSaving || !autoDirty}>
+              {autoSaving ? "保存中…" : "保存自动同步设置"}
+            </Button>
+          </form>
+
+          {autoSync && (
+            <div className="space-y-2 border-t border-border-subtle pt-3">
+              <div className="grid gap-x-6 gap-y-1 text-xs text-muted sm:grid-cols-2">
+                <p>
+                  上次运行：
+                  <span className="font-data text-secondary">
+                    {timeOf(autoSync.lastFinishedAt)}
+                  </span>
+                  {autoSync.lastOk != null && (
+                    <span className="font-data text-secondary">
+                      {" "}
+                      · {autoSync.lastOk} 成功 / {autoSync.lastFail ?? 0} 失败
+                      {autoSync.lastSkipped ? ` · 跳过 ${autoSync.lastSkipped}` : ""}
+                    </span>
+                  )}
+                </p>
+                <p>
+                  下次预计：
+                  <span className="font-data text-secondary">
+                    {autoSync.config.enabled ? timeOf(autoSync.nextRunAt) : "未开启"}
+                  </span>
+                </p>
+              </div>
+              {autoSync.lastRateLimited && (
+                <p className="text-xs text-warn">
+                  上一轮命中了上游限流，下一轮已自动延后。
+                </p>
+              )}
+              {autoSync.backoff.length > 0 && (
+                <div className="space-y-1.5">
+                  <p className="text-xs font-semibold text-secondary">
+                    退避中的目标（自动同步会跳过，手动仍可同步）
+                  </p>
+                  {autoSync.backoff.map((entry) => (
+                    <div
+                      key={entry.key}
+                      className={cn(
+                        "rounded-[var(--r-md)] border px-2.5 py-1.5 text-xs",
+                        entry.failureClass === "credential"
+                          ? "border-coral/25 bg-coral/10 text-coral"
+                          : "border-warn/25 bg-warn/10 text-warn",
+                      )}
+                    >
+                      <span className="font-medium">{entry.name}</span>
+                      <span className="font-data">
+                        {" "}
+                        · {FAILURE_CLASS_LABEL[entry.failureClass]} · 连续失败{" "}
+                        {entry.failures} 次 · {timeOf(entry.nextAt)} 后重试
+                      </span>
+                      {entry.lastError && (
+                        <span className="block opacity-80">{entry.lastError}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* 浏览器扩展注入 */}
       <Card className="border-cyan/20">

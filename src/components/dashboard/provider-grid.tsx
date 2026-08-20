@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import Link from "next/link";
+import { runSyncJob } from "@/lib/sync-client";
 
 export interface ProviderCardData {
   id: string;
@@ -93,16 +94,21 @@ export function ProviderGrid({
   onSynced?: () => void;
 }) {
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<Record<string, string>>({});
 
   async function syncOne(id: string) {
     setBusyId(id);
+    setError((m) => ({ ...m, [id]: "" }));
     try {
-      await fetch("/api/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target: "upstream", id }),
-      });
+      const job = await runSyncJob({ target: "upstream", id });
+      const failed = job.results.find((r) => !r.success);
+      if (failed?.error) setError((m) => ({ ...m, [id]: failed.error! }));
       onSynced?.();
+    } catch (e) {
+      setError((m) => ({
+        ...m,
+        [id]: e instanceof Error ? e.message : "同步失败",
+      }));
     } finally {
       setBusyId(null);
     }
@@ -180,9 +186,9 @@ export function ProviderGrid({
                 </div>
               </div>
 
-              {p.lastError && (
+              {(error[p.id] || p.lastError) && (
                 <p className="rounded-[var(--r-md)] border border-coral/25 bg-coral/10 px-2.5 py-1.5 text-xs text-coral">
-                  {p.lastError}
+                  {error[p.id] || p.lastError}
                 </p>
               )}
 

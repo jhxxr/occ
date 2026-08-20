@@ -1,5 +1,6 @@
 import { normalizeBaseUrl } from "@/lib/utils";
 import { fetchSub2 } from "@/lib/sub2/proxy";
+import { hostOf, noteRateLimited, withHostGate } from "@/lib/http/host-gate";
 import { addDays, enumerateDays, shanghaiDay } from "@/lib/reporting-period";
 import type {
   DownstreamAdapterInput,
@@ -31,27 +32,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/**
- * 每个主机的请求节流器。
- *
- * 翻日志动辄两百多页，连着打会把对方站点打到限流（甚至连累到正常登录）。
- * 所以同一主机的请求串行 + 保底间隔；遇到 429 就整体退避一段时间，
- * 让这期间排队的请求一起等，而不是各自重试继续加压。
- */
-const hostGate = new Map<string, { chain: Promise<void>; blockedUntil: number }>();
-
-function hostOf(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return url;
-  }
-}
-
-/** 同主机最小请求间隔，压住突发流量 */
-const MIN_REQUEST_GAP_MS = 120;
-/** 命中 429 后整个主机静默多久（会随连续 429 递增） */
-const RATE_LIMIT_COOLDOWN_MS = 3_000;
+/** 同主机串行 + 最小间隔 + 429 退避都在 host-gate 里，见那份文件的说明 */
 const MAX_RETRIES = 3;
 
 async function fetchJson(
@@ -61,17 +42,9 @@ async function fetchJson(
 ): Promise<{ ok: boolean; status: number; data: unknown; text: string }> {
   const { timeoutMs = DEFAULT_TIMEOUT_MS, retries = MAX_RETRIES, ...rest } = init;
   const host = hostOf(url);
-  const gate = hostGate.get(host) || { chain: Promise.resolve(), blockedUntil: 0 };
 
-  // 串到该主机的队尾：同一主机永不并发
-  const run = gate.chain.then(async () => {
+  return withHostGate(url, async () => {
     for (let attempt = 0; ; attempt++) {
-      const now = Date.now();
-      const state = hostGate.get(host);
-      if (state && state.blockedUntil > now) {
-        await sleep(state.blockedUntil - now);
-      }
-
       const controller = new AbortController();
       // 超时必须一直armed到响应体读完为止。只盖到响应头的话，一个先回
       // 200、再把 body 吊住的上游会永远停在 res.text()，而同主机的请求
@@ -86,41 +59,28 @@ async function fetchJson(
 
         // 429 / 503：退避后重试，并让同主机的后续请求一起等
         if ((res.status === 429 || res.status === 503) && attempt < retries) {
-          const retryAfter = Number(res.headers.get("retry-after"));
-          const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
-            ? Math.min(retryAfter * 1000, 60_000)
-            : RATE_LIMIT_COOLDOWN_MS * Math.pow(2, attempt);
-          const cur = hostGate.get(host);
-          if (cur) cur.blockedUntil = Date.now() + waitMs;
+          const waitMs = noteRateLimited(
+            host,
+            res.headers.get("retry-after"),
+            attempt,
+          );
           await sleep(waitMs);
           continue;
         }
 
         const text = await res.text();
-        clearTimeout(timer);
         let data: unknown = null;
         try {
           data = text ? JSON.parse(text) : null;
         } catch {
           data = text;
         }
-        await sleep(MIN_REQUEST_GAP_MS);
         return { ok: res.ok, status: res.status, data, text };
       } finally {
         clearTimeout(timer);
       }
     }
   });
-
-  // 无论成败都要把链条接上，否则一次异常会永久卡住该主机
-  hostGate.set(host, {
-    chain: run.then(
-      () => undefined,
-      () => undefined,
-    ),
-    blockedUntil: gate.blockedUntil,
-  });
-  return run;
 }
 
 function asRecord(v: unknown): Record<string, unknown> | null {

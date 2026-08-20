@@ -5,41 +5,30 @@ import { TopBar } from "@/components/layout/top-bar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input, Label, Select } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import {
-  Table,
-  THead,
-  TBody,
-  HeadRow,
-  TH,
-  TR,
-  TD,
-} from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import {
   Shield,
   Coins,
-  Puzzle,
+  Timer,
+  KeyRound,
   Copy,
   Check,
   Plus,
   Trash2,
-  Link2,
-  Timer,
+  Ban,
 } from "lucide-react";
 
-interface TokenRow {
+interface PublicApiTokenRow {
   id: string;
+  name: string;
   tokenPrefix: string;
-  providerId: string | null;
-  providerName: string | null;
-  label: string;
+  scopes: string[];
   enabled: boolean;
-  expiresAt: string | null;
-  expired: boolean;
   lastUsedAt: string | null;
-  useCount: number;
+  expiresAt: string | null;
+  revokedAt: string | null;
   createdAt: string;
+  updatedAt: string;
 }
 
 interface AutoSyncBackoffEntry {
@@ -53,7 +42,12 @@ interface AutoSyncBackoffEntry {
 }
 
 interface AutoSyncStatus {
-  config: { enabled: boolean; intervalMinutes: number; scope: "all" | "upstream" };
+  config: {
+    enabled: boolean;
+    intervalMinutes: number;
+    scope: "all" | "upstream";
+    stealthRandom: boolean;
+  };
   hardDisabled: boolean;
   nextRunAt: string | null;
   lastRunAt: string | null;
@@ -95,18 +89,37 @@ export default function SettingsPage() {
   const [autoEnabled, setAutoEnabled] = useState(false);
   const [autoInterval, setAutoInterval] = useState("60");
   const [autoScope, setAutoScope] = useState<"all" | "upstream">("all");
+  const [autoStealth, setAutoStealth] = useState(false);
   const [autoDirty, setAutoDirty] = useState(false);
   const [autoSaving, setAutoSaving] = useState(false);
   const [autoMsg, setAutoMsg] = useState<string | null>(null);
 
-  // 扩展注入
-  const [tokens, setTokens] = useState<TokenRow[]>([]);
-  const [tokenLabel, setTokenLabel] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [freshLink, setFreshLink] = useState<string | null>(null);
-  const [freshWarning, setFreshWarning] = useState<string | null>(null);
+  // 对外 API Token（鉴权 /api/public/group-uptime）
+  const [tokens, setTokens] = useState<PublicApiTokenRow[]>([]);
+  const [tokensLoading, setTokensLoading] = useState(true);
+  const [tokensError, setTokensError] = useState<string | null>(null);
+  const [tokenName, setTokenName] = useState("官网状态页");
+  const [tokenExpiry, setTokenExpiry] = useState<"never" | "90" | "365">("never");
+  const [tokenCreating, setTokenCreating] = useState(false);
+  const [tokenMsg, setTokenMsg] = useState<string | null>(null);
+  const [createdToken, setCreatedToken] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [extError, setExtError] = useState<string | null>(null);
+  const [tokenBusyId, setTokenBusyId] = useState<string | null>(null);
+
+  const loadTokens = useCallback(async () => {
+    setTokensLoading(true);
+    setTokensError(null);
+    try {
+      const res = await fetch("/api/settings/api-tokens", { cache: "no-store" });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "加载 Token 失败");
+      setTokens((json.data as PublicApiTokenRow[]) || []);
+    } catch (error) {
+      setTokensError(error instanceof Error ? error.message : "加载 Token 失败");
+    } finally {
+      setTokensLoading(false);
+    }
+  }, []);
 
   const loadSettings = useCallback(async () => {
     setSettingsLoaded(false);
@@ -125,6 +138,7 @@ export default function SettingsPage() {
         setAutoEnabled(status.config.enabled);
         setAutoInterval(String(status.config.intervalMinutes));
         setAutoScope(status.config.scope);
+        setAutoStealth(status.config.stealthRandom === true);
         setAutoDirty(false);
       }
       setUsdCnyDirty(false);
@@ -139,22 +153,84 @@ export default function SettingsPage() {
 
   useEffect(() => {
     void Promise.resolve().then(loadSettings);
-  }, [loadSettings]);
-
-  const loadTokens = useCallback(async () => {
-    try {
-      const res = await fetch("/api/extension/tokens", { cache: "no-store" });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "加载失败");
-      setTokens(json.data || []);
-    } catch (e) {
-      setExtError(e instanceof Error ? e.message : "加载失败");
-    }
-  }, []);
-
-  useEffect(() => {
     void Promise.resolve().then(loadTokens);
-  }, [loadTokens]);
+  }, [loadSettings, loadTokens]);
+
+  async function createToken(e: FormEvent) {
+    e.preventDefault();
+    setTokenCreating(true);
+    setTokenMsg(null);
+    setCreatedToken(null);
+    setCopied(false);
+    try {
+      const body: { name: string; expiresInDays?: number | null } = {
+        name: tokenName.trim() || "对外分组 Uptime",
+      };
+      if (tokenExpiry !== "never") {
+        body.expiresInDays = Number(tokenExpiry);
+      } else {
+        body.expiresInDays = null;
+      }
+      const res = await fetch("/api/settings/api-tokens", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "创建失败");
+      const raw = String(json.data?.token || "");
+      if (!raw) throw new Error("服务端未返回明文 Token");
+      setCreatedToken(raw);
+      setTokenMsg("Token 已生成，请立即复制保存，关闭后无法再查看明文。");
+      await loadTokens();
+    } catch (err) {
+      setTokenMsg(err instanceof Error ? err.message : "创建失败");
+    } finally {
+      setTokenCreating(false);
+    }
+  }
+
+  async function patchToken(
+    id: string,
+    action: "revoke" | "enable" | "disable" | "delete",
+  ) {
+    setTokenBusyId(id);
+    setTokenMsg(null);
+    try {
+      const res = await fetch("/api/settings/api-tokens", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, action }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "操作失败");
+      setTokenMsg(
+        action === "delete"
+          ? "已删除"
+          : action === "revoke"
+            ? "已吊销"
+            : action === "enable"
+              ? "已启用"
+              : "已停用",
+      );
+      await loadTokens();
+    } catch (err) {
+      setTokenMsg(err instanceof Error ? err.message : "操作失败");
+    } finally {
+      setTokenBusyId(null);
+    }
+  }
+
+  async function copyCreatedToken() {
+    if (!createdToken) return;
+    try {
+      await navigator.clipboard.writeText(createdToken);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setTokenMsg("复制失败，请手动选中复制");
+    }
+  }
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -196,6 +272,7 @@ export default function SettingsPage() {
             enabled: autoEnabled,
             intervalMinutes: Number(autoInterval),
             scope: autoScope,
+            stealthRandom: autoStealth,
           },
         }),
       });
@@ -211,62 +288,11 @@ export default function SettingsPage() {
     }
   }
 
-  async function createToken() {
-    setCreating(true);
-    setExtError(null);
-    setFreshLink(null);
-    setFreshWarning(null);
-    setCopied(false);
-    try {
-      const res = await fetch("/api/extension/tokens", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          label: tokenLabel || "浏览器扩展",
-          providerId: null,
-          rotate: false,
-        }),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "生成失败");
-
-      const token: string = json.data.token;
-      // 完整可粘贴的注入链接：扩展保存后直接用
-      const origin =
-        typeof window !== "undefined" ? window.location.origin : "";
-      const link = `${origin}/api/extension/inject?token=${encodeURIComponent(token)}`;
-      setFreshLink(link);
-      setFreshWarning(json.data.warning || "该 token 仅显示一次，请立即保存。");
-      setTokenLabel("");
-      await loadTokens();
-    } catch (e) {
-      setExtError(e instanceof Error ? e.message : "生成失败");
-    } finally {
-      setCreating(false);
-    }
-  }
-
-  async function copyLink() {
-    if (!freshLink) return;
-    await navigator.clipboard.writeText(freshLink);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }
-
-  async function revokeToken(id: string) {
-    if (!confirm("吊销后扩展里的旧链接立刻失效，确认？")) return;
-    await fetch(`/api/extension/tokens?id=${id}`, { method: "DELETE" });
-    if (freshLink?.includes(id)) {
-      setFreshLink(null);
-    }
-    await loadTokens();
-  }
-
   return (
     <div className="space-y-6">
       <TopBar
         title="系统设置"
-        subtitle="汇率、加密与浏览器扩展注入"
+        subtitle="汇率、加密、自动同步与对外 API Token"
         showSync={false}
       />
 
@@ -370,6 +396,208 @@ export default function SettingsPage() {
         </Card>
       </div>
 
+      {/* 对外 API Token */}
+      <Card className="border-cyan/20">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base font-semibold text-text normal-case tracking-normal">
+            <KeyRound className="h-4 w-4 text-cyan" />
+            对外 API Token
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-xs leading-relaxed text-muted">
+            用于鉴权公开接口
+            <code className="mx-1 font-data text-cyan">
+              GET /api/public/group-uptime
+            </code>
+            。只返回中转站「分组」24h Uptime，不含具体上游渠道。
+            Token 明文仅在创建时显示一次，数据库只存 hash。
+          </p>
+
+          <div className="rounded-[var(--r-md)] border border-border-subtle bg-surface-2/60 px-3 py-2.5 text-xs text-secondary">
+            <p className="font-semibold text-text">调用示例</p>
+            <pre className="mt-1.5 overflow-x-auto whitespace-pre-wrap break-all font-data text-[11px] leading-relaxed text-cyan">
+{`curl -H "Authorization: Bearer occ_xxx" \\
+  https://你的控制台域名/api/public/group-uptime`}
+            </pre>
+          </div>
+
+          <form onSubmit={createToken} className="grid gap-3 sm:grid-cols-[1fr_8rem_auto]">
+            <div className="space-y-1.5">
+              <Label htmlFor="tokenName">名称</Label>
+              <Input
+                id="tokenName"
+                value={tokenName}
+                onChange={(e) => setTokenName(e.target.value)}
+                placeholder="官网状态页"
+                maxLength={200}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="tokenExpiry">有效期</Label>
+              <Select
+                id="tokenExpiry"
+                value={tokenExpiry}
+                onChange={(e) =>
+                  setTokenExpiry(e.target.value as "never" | "90" | "365")
+                }
+              >
+                <option value="never">永不过期</option>
+                <option value="90">90 天</option>
+                <option value="365">365 天</option>
+              </Select>
+            </div>
+            <div className="flex items-end">
+              <Button type="submit" disabled={tokenCreating} className="w-full sm:w-auto">
+                <Plus className="h-3.5 w-3.5" />
+                {tokenCreating ? "生成中…" : "生成 Token"}
+              </Button>
+            </div>
+          </form>
+
+          {createdToken && (
+            <div className="rounded-[var(--r-md)] border border-mint/30 bg-mint/10 px-3 py-3">
+              <p className="text-xs font-semibold text-mint">
+                新 Token（只显示一次）
+              </p>
+              <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
+                <code className="min-w-0 flex-1 break-all rounded-md bg-surface-solid px-2.5 py-2 font-data text-[12px] text-text">
+                  {createdToken}
+                </code>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => void copyCreatedToken()}
+                >
+                  {copied ? (
+                    <Check className="h-3.5 w-3.5" />
+                  ) : (
+                    <Copy className="h-3.5 w-3.5" />
+                  )}
+                  {copied ? "已复制" : "复制"}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {tokenMsg && <p className="text-xs text-secondary">{tokenMsg}</p>}
+          {tokensError && (
+            <div className="flex items-center gap-3 text-xs text-coral">
+              <span>{tokensError}</span>
+              <Button type="button" size="sm" variant="secondary" onClick={() => void loadTokens()}>
+                重试
+              </Button>
+            </div>
+          )}
+
+          <div className="space-y-2 border-t border-border-subtle pt-3">
+            <p className="text-xs font-semibold text-secondary">已生成的 Token</p>
+            {tokensLoading ? (
+              <p className="text-xs text-muted">加载中…</p>
+            ) : tokens.length === 0 ? (
+              <p className="text-xs text-muted">还没有 Token，生成后给另一个网站调用。</p>
+            ) : (
+              <ul className="space-y-2">
+                {tokens.map((t) => {
+                  const revoked = !!t.revokedAt;
+                  const expired =
+                    !!t.expiresAt && new Date(t.expiresAt).getTime() <= Date.now();
+                  const status = revoked
+                    ? "已吊销"
+                    : expired
+                      ? "已过期"
+                      : t.enabled
+                        ? "有效"
+                        : "已停用";
+                  const busy = tokenBusyId === t.id;
+                  return (
+                    <li
+                      key={t.id}
+                      className="flex flex-col gap-2 rounded-[var(--r-md)] border border-border-subtle bg-surface-2/50 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-medium text-text">{t.name}</span>
+                          <span
+                            className={cn(
+                              "rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                              revoked || expired
+                                ? "bg-coral/12 text-coral"
+                                : t.enabled
+                                  ? "bg-mint/12 text-mint"
+                                  : "bg-surface-3 text-muted",
+                            )}
+                          >
+                            {status}
+                          </span>
+                        </div>
+                        <p className="mt-1 font-data text-[11px] text-muted">
+                          {t.tokenPrefix}… · {t.scopes.join(", ")} · 创建{" "}
+                          {timeOf(t.createdAt)}
+                          {t.lastUsedAt ? ` · 最近使用 ${timeOf(t.lastUsedAt)}` : ""}
+                          {t.expiresAt ? ` · 到期 ${timeOf(t.expiresAt)}` : " · 永不过期"}
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {!revoked && t.enabled && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            disabled={busy}
+                            onClick={() => void patchToken(t.id, "disable")}
+                          >
+                            停用
+                          </Button>
+                        )}
+                        {!revoked && !t.enabled && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            disabled={busy}
+                            onClick={() => void patchToken(t.id, "enable")}
+                          >
+                            启用
+                          </Button>
+                        )}
+                        {!revoked && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={busy}
+                            onClick={() => void patchToken(t.id, "revoke")}
+                          >
+                            <Ban className="h-3.5 w-3.5" />
+                            吊销
+                          </Button>
+                        )}
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="danger"
+                          disabled={busy}
+                          onClick={() => {
+                            if (confirm(`确定删除 Token「${t.name}」？`)) {
+                              void patchToken(t.id, "delete");
+                            }
+                          }}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          删除
+                        </Button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
       {/* 自动同步 */}
       <Card className="border-violet/20">
         <CardHeader>
@@ -382,10 +610,11 @@ export default function SettingsPage() {
           <p className="text-xs leading-relaxed text-muted">
             默认关闭。开启后按下面的间隔在后台自动跑一轮同步，跟你点「全量同步」做的事一样。
             上游是别人的站，所以带了一套护栏：间隔下限 {autoSync ? MIN_AUTO_INTERVAL : 15} 分钟、
-            每轮时间加 ±10% 抖动避免固定时刻、同一主机的请求串行且留间隔、命中限流按
+            每轮时间加抖动避免固定时刻、同一主机的请求串行且留间隔、命中限流按
             <code className="font-data text-cyan"> Retry-After </code>
             整站退避、连续失败的目标指数退避（凭据类直接退到 6 小时并标出来等你处理）。
-            <strong className="text-secondary">手动同步不受退避影响，随时可以点。</strong>
+            可选「同态随机同步」会加大抖动、打乱目标顺序并在目标之间随机停顿，降低被上游识别为固定脚本巡检的特征。
+            <strong className="text-secondary">手动同步不受退避与同态随机影响，随时可以点。</strong>
           </p>
 
           {autoSync?.hardDisabled && (
@@ -396,7 +625,7 @@ export default function SettingsPage() {
           )}
 
           <form onSubmit={saveAutoSync} className="space-y-4">
-            <div className="grid gap-4 sm:grid-cols-3">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <div className="space-y-1.5">
                 <Label htmlFor="autoEnabled">状态</Label>
                 <Select
@@ -443,6 +672,23 @@ export default function SettingsPage() {
                   <option value="upstream">仅上游</option>
                 </Select>
               </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="autoStealth">同态随机同步</Label>
+                <Select
+                  id="autoStealth"
+                  value={autoStealth ? "on" : "off"}
+                  onChange={(e) => {
+                    setAutoStealth(e.target.value === "on");
+                    setAutoDirty(true);
+                  }}
+                >
+                  <option value="off">关闭</option>
+                  <option value="on">开启</option>
+                </Select>
+                <p className="text-xs text-muted">
+                  打乱顺序与节奏，降低脚本巡检特征
+                </p>
+              </div>
             </div>
 
             {autoMsg && <p className="text-xs text-secondary">{autoMsg}</p>}
@@ -472,6 +718,9 @@ export default function SettingsPage() {
                   <span className="font-data text-secondary">
                     {autoSync.config.enabled ? timeOf(autoSync.nextRunAt) : "未开启"}
                   </span>
+                  {autoSync.config.enabled && autoSync.config.stealthRandom && (
+                    <span className="font-data text-secondary"> · 同态随机</span>
+                  )}
                 </p>
               </div>
               {autoSync.lastRateLimited && (
@@ -509,162 +758,6 @@ export default function SettingsPage() {
               )}
             </div>
           )}
-        </CardContent>
-      </Card>
-
-      {/* 浏览器扩展注入 */}
-      <Card className="border-cyan/20">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base font-semibold text-text normal-case tracking-normal">
-            <Puzzle className="h-4 w-4 text-cyan" />
-            浏览器扩展 · JWT 注入链接
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-5">
-          <p className="text-sm text-secondary leading-relaxed">
-            某些第三方上游不方便存邮箱密码。生成一条长期注入链接，粘到 Chrome / Edge 扩展里，
-            登录面板后一键把 JWT 推回 Orbit。链接本身就是密钥，勿公开分享；泄露立刻吊销。
-          </p>
-
-          <div className="flex gap-3 items-end flex-wrap">
-            <div className="space-y-1.5 flex-1 min-w-[200px]">
-              <Label>备注（可选）</Label>
-              <Input
-                value={tokenLabel}
-                onChange={(e) => setTokenLabel(e.target.value)}
-                placeholder="如：家用浏览器"
-                maxLength={100}
-              />
-            </div>
-            <Button
-              onClick={createToken}
-              disabled={creating}
-            >
-              <Plus className="h-3.5 w-3.5" />
-              {creating ? "生成中…" : "生成注入链接"}
-            </Button>
-          </div>
-
-          {freshLink && (
-            <div className="rounded-lg border border-mint/30 bg-mint/5 p-4 space-y-2">
-              <div className="flex items-center gap-2 text-sm text-mint">
-                <Link2 className="h-4 w-4" />
-                新链接已生成 · 只显示这一次
-              </div>
-              {freshWarning && (
-                <p className="text-xs text-amber">{freshWarning}</p>
-              )}
-              <div className="flex gap-2">
-                <Input
-                  readOnly
-                  value={freshLink}
-                  className="font-data text-xs"
-                  onFocus={(e) => e.currentTarget.select()}
-                />
-                <Button size="sm" variant="secondary" onClick={copyLink}>
-                  {copied ? (
-                    <Check className="h-3.5 w-3.5 text-mint" />
-                  ) : (
-                    <Copy className="h-3.5 w-3.5" />
-                  )}
-                  {copied ? "已复制" : "复制"}
-                </Button>
-              </div>
-              <p className="text-[11px] text-muted">
-                粘贴到扩展的「Orbit 注入链接」输入框 → 保存。之后打开任意已添加的上游面板登录，点「抓取并推送」即可。
-              </p>
-            </div>
-          )}
-
-          {extError && <p className="text-xs text-coral">{extError}</p>}
-
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-medium text-secondary">已签发</h3>
-              <span className="text-[11px] text-muted font-data">
-                {tokens.length} 条
-              </span>
-            </div>
-            {tokens.length === 0 ? (
-              <p className="text-xs text-muted py-4 text-center">
-                还没有注入链接。生成一条，粘到扩展里就能用。
-              </p>
-            ) : (
-              <div className="overflow-x-auto rounded-[var(--r-lg)] border border-border-subtle">
-                <Table>
-                  <THead>
-                    <HeadRow>
-                      <TH className="px-3">前缀</TH>
-                      <TH className="px-3">备注</TH>
-                      <TH className="px-3">绑定</TH>
-                      <TH className="px-3">有效期</TH>
-                      <TH className="px-3">使用</TH>
-                      <TH className="px-3">最近</TH>
-                      <TH className="px-3" />
-                    </HeadRow>
-                  </THead>
-                  <TBody>
-                    {tokens.map((t) => (
-                      <TR key={t.id}>
-                        <TD className="px-3 font-data text-xs text-cyan">
-                          {t.tokenPrefix}…
-                        </TD>
-                        <TD className="px-3 text-xs">{t.label || "—"}</TD>
-                        <TD className="px-3">
-                          {t.providerName ? (
-                            <Badge variant="cyan">{t.providerName}</Badge>
-                          ) : (
-                            <Badge variant="default">按 host 匹配</Badge>
-                          )}
-                          {!t.enabled && (
-                            <Badge variant="coral" className="ml-1">
-                              已停用
-                            </Badge>
-                          )}
-                        </TD>
-                        <TD className="px-3 text-[11px] font-data">
-                          {t.expired ? (
-                            <Badge variant="coral">已过期</Badge>
-                          ) : t.expiresAt ? (
-                            <span className="text-muted">
-                              {new Date(t.expiresAt).toLocaleDateString("zh-CN")}
-                            </span>
-                          ) : (
-                            <span className="text-muted">永久</span>
-                          )}
-                        </TD>
-                        <TD className="px-3 font-data text-xs">
-                          {t.useCount}
-                        </TD>
-                        <TD className="px-3 text-[11px] text-muted font-data">
-                          {t.lastUsedAt
-                            ? new Date(t.lastUsedAt).toLocaleString("zh-CN")
-                            : "从未"}
-                        </TD>
-                        <TD className="px-3 text-right">
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            onClick={() => revokeToken(t.id)}
-                            aria-label="吊销"
-                          >
-                            <Trash2 className="h-3.5 w-3.5 text-coral" />
-                          </Button>
-                        </TD>
-                      </TR>
-                    ))}
-                  </TBody>
-                </Table>
-              </div>
-            )}
-          </div>
-
-          <p className="text-[11px] text-muted leading-relaxed">
-            扩展目录：
-            <code className="font-data text-cyan">F:\newapi\orbit-jwt-grabber</code>
-            。Chrome / Edge → 扩展 → 开发者模式 → 加载已解压的扩展程序。
-            同一上游再次生成会自动轮换旧链接。
-          </p>
         </CardContent>
       </Card>
     </div>

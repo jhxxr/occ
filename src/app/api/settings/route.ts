@@ -28,6 +28,7 @@ const settingsSchema = z
           .max(24 * 60)
           .optional(),
         scope: z.enum(["all", "upstream"]).optional(),
+        stealthRandom: z.boolean().optional(),
       })
       .strict()
       .optional(),

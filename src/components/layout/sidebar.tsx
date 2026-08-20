@@ -4,9 +4,11 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import {
+  Activity,
   ArrowDownToLine,
   Database,
   LayoutDashboard,
+  Layers,
   LineChart,
   LoaderCircle,
   LogOut,
@@ -27,6 +29,8 @@ const navGroups = [
     label: "监控",
     items: [
       { href: "/", label: "总览", icon: LayoutDashboard },
+      { href: "/channels", label: "渠道健康", icon: Activity },
+      { href: "/groups", label: "分组 Uptime", icon: Layers },
       { href: "/reports", label: "收益报表", icon: LineChart },
     ],
   },

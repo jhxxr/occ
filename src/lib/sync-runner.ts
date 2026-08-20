@@ -146,6 +146,11 @@ export interface StartSyncOptions {
   scope?: "all" | "upstream";
   /** 界面上显示的范围描述 */
   label?: string;
+  /**
+   * 目标之间额外停顿（毫秒或每次求一次）。
+   * 自动同步「同态随机」用；手动同步不要传。
+   */
+  interTargetDelayMs?: number | (() => number);
 }
 
 export interface StartSyncResult {
@@ -205,18 +210,25 @@ export async function startSyncJob(
   }
 
   // 故意不 await：请求要立刻返回。任务在 Node 进程里继续跑到底。
-  globalThis.__orbitSyncJobRunning = runJob(fresh, targets).finally(() => {
+  globalThis.__orbitSyncJobRunning = runJob(fresh, targets, {
+    interTargetDelayMs: opts.interTargetDelayMs,
+  }).finally(() => {
     globalThis.__orbitSyncJobRunning = undefined;
   });
 
   return { job: fresh, attached: false };
 }
 
-async function runJob(job: SyncJob, targets: SyncTarget[]): Promise<void> {
+async function runJob(
+  job: SyncJob,
+  targets: SyncTarget[],
+  opts: { interTargetDelayMs?: number | (() => number) } = {},
+): Promise<void> {
   const live: SyncJob = { ...job };
   try {
     await syncAll({
       targets,
+      interTargetDelayMs: opts.interTargetDelayMs,
       onResult: async (result, done, total) => {
         live.results.push(toEntry(result));
         live.done = done;

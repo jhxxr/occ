@@ -804,25 +804,24 @@ model AppSetting {
   value String @db.Text
 }
 
-/// 浏览器扩展注入 JWT 的 token
-///
-/// token 会以 ?token=… 的形式出现在链接里（方便扩展粘贴），也就会落进
-/// 反代访问日志、浏览器历史。所以必须有有效期兜底：泄露的 token 不能永久可用。
-/// expiresAt = null 表示永不过期（仅存量老 token，新建一律带期限）。
-model ExtensionInjectToken {
+/// 对外公开 API Token（仅存 hash，明文只在创建时返回一次）
+model PublicApiToken {
   id          String    @id @default(cuid())
+  name        String    @db.VarChar(200)
+  /// sha256 hex of raw token
   tokenHash   String    @unique @db.VarChar(64)
-  tokenPrefix String    @db.VarChar(20)
-  providerId  String?
-  label       String    @default("") @db.VarChar(200)
+  /// 展示前缀，如 occ_ab12cd
+  tokenPrefix String    @db.VarChar(24)
+  /// 逗号分隔 scope，目前固定 group-uptime:read
+  scopes      String    @default("group-uptime:read") @db.VarChar(200)
   enabled     Boolean   @default(true)
-  /// 过期时刻；null = 不过期（迁移前建的老 token）
-  expiresAt   DateTime?
   lastUsedAt  DateTime?
-  useCount    Int       @default(0)
+  expiresAt   DateTime?
+  revokedAt   DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
-  @@index([providerId])
-  @@index([enabled])
+  @@index([enabled, revokedAt])
+  @@index([tokenPrefix])
 }
+

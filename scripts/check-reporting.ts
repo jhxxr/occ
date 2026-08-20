@@ -55,6 +55,8 @@ import {
   backoffMs,
   classifyFailure,
   nextRunAt,
+  shuffleTargets,
+  stealthGapMs,
   normalizeAutoSyncConfig,
   selectDueTargets,
   type BackoffMap,
@@ -64,12 +66,6 @@ import {
   __withStaleCheck,
   type SyncJob,
 } from "../src/lib/sync-runner.ts";
-import {
-  isTokenExpired,
-  resolveExpiry,
-  DEFAULT_TOKEN_TTL_DAYS,
-  MAX_TOKEN_TTL_DAYS,
-} from "../src/lib/extension-token.ts";
 import { allocateOwnershipCosts } from "../src/lib/cost-allocation.ts";
 import {
   classifyPrepaidUser,
@@ -1045,42 +1041,6 @@ check("伪造 X-Forwarded-For 轮换 IP 仍会被全局限流拦下", () => {
   assert.equal(checkLoginAllowed("9.9.9.9").scope, "global");
 });
 
-console.log("\n扩展 token 有效期");
-
-check("过期与禁用都判为不可用，老 token（null）仍可用", () => {
-  const now = new Date("2026-07-31T00:00:00Z");
-  // token 会出现在 URL 里（进访问日志），过期判定是最后一道闸
-  assert.equal(isTokenExpired({ expiresAt: null }, now), false);
-  assert.equal(
-    isTokenExpired({ expiresAt: new Date("2026-08-30T00:00:00Z") }, now),
-    false,
-  );
-  assert.equal(
-    isTokenExpired({ expiresAt: new Date("2026-07-30T23:59:59Z") }, now),
-    true,
-  );
-  // 边界：到期时刻本身算过期
-  assert.equal(isTokenExpired({ expiresAt: now }, now), true);
-});
-
-check("新建 token 默认带期限，显式传 null 才永久", () => {
-  const now = new Date("2026-07-31T00:00:00Z");
-  const def = resolveExpiry(undefined, now);
-  assert.ok(def, "默认必须有期限，否则泄露的 token 永久可用");
-  assert.equal(
-    Math.round((def.getTime() - now.getTime()) / 86_400_000),
-    DEFAULT_TOKEN_TTL_DAYS,
-  );
-  assert.equal(resolveExpiry(null, now), null);
-  assert.equal(resolveExpiry(0, now), null);
-  // 上限收口，避免传个 99999 天等于永久
-  const huge = resolveExpiry(99_999, now)!;
-  assert.equal(
-    Math.round((huge.getTime() - now.getTime()) / 86_400_000),
-    MAX_TOKEN_TTL_DAYS,
-  );
-});
-
 console.log("\n赠送兑换码签发限制");
 
 check("单码与单批面值上限在服务端生效", () => {
@@ -1122,6 +1082,10 @@ check("间隔下限与上限在归一化时收口", () => {
   assert.equal(normalizeAutoSyncConfig({}).enabled, false);
   assert.equal(normalizeAutoSyncConfig({ enabled: "yes" }).enabled, false);
   assert.equal(normalizeAutoSyncConfig({ scope: "bogus" }).scope, "all");
+  // 同态随机默认关；只有显式 true 才开
+  assert.equal(normalizeAutoSyncConfig({}).stealthRandom, false);
+  assert.equal(normalizeAutoSyncConfig({ stealthRandom: true }).stealthRandom, true);
+  assert.equal(normalizeAutoSyncConfig({ stealthRandom: "yes" as unknown as boolean }).stealthRandom, false);
 });
 
 check("下一轮时刻带抖动，且抖动幅度对称", () => {
@@ -1135,6 +1099,36 @@ check("下一轮时刻带抖动，且抖动幅度对称", () => {
   assert.equal(nextRunAt(60, now, 0.5) - now, base);
   // 即使传了小于下限的间隔，也按下限算
   assert.ok(nextRunAt(1, now, 0.5) - now >= AS.MIN_INTERVAL_MINUTES * 60 * 1000 * 0.9);
+  // 同态随机用更大抖动
+  assert.equal(
+    nextRunAt(60, now, 0, true) - now,
+    Math.round(base * (1 - AS.STEALTH_JITTER_RATIO)),
+  );
+  assert.equal(
+    nextRunAt(60, now, 1, true) - now,
+    Math.round(base * (1 + AS.STEALTH_JITTER_RATIO)),
+  );
+  assert.equal(nextRunAt(60, now, 0.5, true) - now, base);
+});
+
+check("同态随机：打乱顺序且不丢项，停顿落在区间内", () => {
+  const items = ["a", "b", "c", "d", "e"];
+  // 固定伪随机：保证可复现，且确实发生了置换
+  let n = 0;
+  const rand = () => {
+    const seq = [0.9, 0.1, 0.7, 0.3, 0.5, 0.2, 0.8, 0.4, 0.6];
+    return seq[n++ % seq.length]!;
+  };
+  const shuffled = shuffleTargets(items, rand);
+  assert.equal(shuffled.length, items.length);
+  assert.deepEqual([...shuffled].sort(), [...items].sort());
+  assert.notDeepEqual(shuffled, items);
+
+  n = 0;
+  const gap = stealthGapMs(rand);
+  assert.ok(gap >= AS.STEALTH_GAP_MIN_SEC * 1000);
+  assert.ok(gap <= AS.STEALTH_GAP_MAX_SEC * 1000);
+  assert.ok(Number.isInteger(gap));
 });
 
 check("错误按是否会自愈分类", () => {

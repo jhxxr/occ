@@ -5,7 +5,12 @@ import { readJson } from "@/lib/sync-client";
 import type { SyncJobView } from "@/lib/sync-client";
 
 interface AutoSyncSummary {
-  config: { enabled: boolean; intervalMinutes: number; scope: "all" | "upstream" };
+  config: {
+    enabled: boolean;
+    intervalMinutes: number;
+    scope: "all" | "upstream";
+    stealthRandom?: boolean;
+  };
   nextRunAt: string | null;
   backoff: { key: string }[];
 }
@@ -65,7 +70,7 @@ export function SyncStatusLine() {
   }
   if (auto?.config.enabled) {
     parts.push(
-      `自动同步 每 ${auto.config.intervalMinutes} 分钟${auto.config.scope === "upstream" ? "（仅上游）" : ""}`,
+      `自动同步 每 ${auto.config.intervalMinutes} 分钟${auto.config.scope === "upstream" ? "（仅上游）" : ""}${auto.config.stealthRandom ? " · 同态随机" : ""}`,
     );
     if (auto.backoff.length) parts.push(`${auto.backoff.length} 个目标退避中`);
   } else if (auto) {

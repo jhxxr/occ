@@ -6,18 +6,20 @@
  *
  * 1. 默认关闭。开了才跑，间隔下限 15 分钟（zod 校验拒绝更小的值）。
  * 2. ±10% 抖动：不贴整点，容器重启也不会每次都踩同一时刻。
- * 3. 数据库租约（CAS）：多副本 / 重启都不会同时跑两轮。
- * 4. 全程串行，且所有出网请求都过 host-gate（同主机串行 + 最小间隔 + 429 退避）。
- * 5. 按目标退避 + 错误分类：
+ * 3. 可选「同态随机同步」：更大调度抖动 + 打乱目标顺序 + 目标之间随机停顿，
+ *    让自动巡检更不像固定脚本；手动同步不受影响。
+ * 4. 数据库租约（CAS）：多副本 / 重启都不会同时跑两轮。
+ * 5. 全程串行，且所有出网请求都过 host-gate（同主机串行 + 最小间隔 + 429 退避）。
+ * 6. 按目标退避 + 错误分类：
  *    - 凭据类（登录失败 / 401 / 403）→ 直接退到上限并标「需人工处理」。
  *      这类错误重试一万次也不会好，而「每小时拿错密码去撞对方登录接口」
  *      恰恰是最像攻击的行为。
  *    - 限流类（429 / 过于频繁）→ 起步就 ×4。
  *    - 网络类 → 15 分钟起指数退避。
  *    成功即清零。
- * 6. 一轮里只要出现限流特征，整个下一轮延后（对方是按站限流的，
+ * 7. 一轮里只要出现限流特征，整个下一轮延后（对方是按站限流的，
  *    只退避单个目标不够）。
- * 7. **手动同步完全不受退避影响** —— 退避只约束定时器。
+ * 8. **手动同步完全不受退避与同态随机影响** —— 这些只约束定时器。
  *
  * 配置与退避状态都放 AppSetting，没有新表：这些都是可重建的运行时状态。
  */
@@ -43,8 +45,13 @@ const BACKOFF_MAX_MS = 6 * 60 * 60 * 1000;
 /** 限流类起步倍数：对方已经明说「太快了」，就别只退一档 */
 const RATE_LIMIT_MULTIPLIER = 4;
 
-/** 抖动幅度 */
+/** 普通抖动幅度：不贴整点即可 */
 const JITTER_RATIO = 0.1;
+/** 同态随机：更大调度抖动，避免「每整点附近扫一轮」的节奏 */
+const STEALTH_JITTER_RATIO = 0.35;
+/** 同态随机：目标之间额外停顿（秒），打散固定巡检节奏 */
+const STEALTH_GAP_MIN_SEC = 8;
+const STEALTH_GAP_MAX_SEC = 75;
 
 /** 租约超过这个时长视为持有者已死 */
 const LEASE_STALE_MS = 30 * 60 * 1000;
@@ -60,12 +67,21 @@ export interface AutoSyncConfig {
   enabled: boolean;
   intervalMinutes: number;
   scope: AutoSyncScope;
+  /**
+   * 同态随机同步。开启后自动同步会：
+   * - 用更大的调度抖动
+   * - 每轮打乱目标顺序
+   * - 目标之间插入随机停顿
+   * 目的是降低「固定脚本巡检」特征；不改变同步内容，手动同步不受影响。
+   */
+  stealthRandom: boolean;
 }
 
 export const DEFAULT_AUTO_SYNC_CONFIG: AutoSyncConfig = {
   enabled: false,
   intervalMinutes: DEFAULT_INTERVAL_MINUTES,
   scope: "all",
+  stealthRandom: false,
 };
 
 /** 环境变量硬关：即使数据库里开着也不跑（给不想要定时任务的部署留后门） */
@@ -82,6 +98,7 @@ export function normalizeAutoSyncConfig(raw: unknown): AutoSyncConfig {
       ? Math.min(MAX_INTERVAL_MINUTES, Math.max(MIN_INTERVAL_MINUTES, Math.round(minutes)))
       : DEFAULT_INTERVAL_MINUTES,
     scope: value.scope === "upstream" ? "upstream" : "all",
+    stealthRandom: value.stealthRandom === true,
   };
 }
 
@@ -319,11 +336,39 @@ async function writeLease(state: LeaseState, expectRaw: string | null): Promise<
   return claimed.count === 1;
 }
 
-/** 带抖动的下一次运行时刻。取整：这是个时间戳，没有小数的意义。 */
-export function nextRunAt(intervalMinutes: number, now = Date.now(), rand = Math.random()): number {
+/**
+ * 带抖动的下一次运行时刻。取整：这是个时间戳，没有小数的意义。
+ * `stealth` 开时用更大抖动，让自动巡检不要总落在同一时段附近。
+ */
+export function nextRunAt(
+  intervalMinutes: number,
+  now = Date.now(),
+  rand = Math.random(),
+  stealth = false,
+): number {
   const base = Math.max(MIN_INTERVAL_MINUTES, intervalMinutes) * 60 * 1000;
-  const jitter = base * JITTER_RATIO * (rand * 2 - 1);
+  const ratio = stealth ? STEALTH_JITTER_RATIO : JITTER_RATIO;
+  const jitter = base * ratio * (rand * 2 - 1);
   return Math.round(now + base + jitter);
+}
+
+/** Fisher–Yates 打乱；只用于自动同步的目标顺序，手动仍按创建序。 */
+export function shuffleTargets<T>(items: T[], rand: () => number = Math.random): T[] {
+  const out = items.slice();
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    const tmp = out[i]!;
+    out[i] = out[j]!;
+    out[j] = tmp;
+  }
+  return out;
+}
+
+/** 同态随机：两个目标之间额外等一会儿（毫秒）。 */
+export function stealthGapMs(rand: () => number = Math.random): number {
+  const span = STEALTH_GAP_MAX_SEC - STEALTH_GAP_MIN_SEC;
+  const seconds = STEALTH_GAP_MIN_SEC + rand() * span;
+  return Math.round(seconds * 1000);
 }
 
 export async function getAutoSyncStatus(): Promise<AutoSyncStatus> {
@@ -390,7 +435,9 @@ export async function runAutoSyncTick(
   const claimed = await writeLease(
     {
       ...(lease.state ?? {}),
-      nextRunAt: new Date(nextRunAt(config.intervalMinutes, now)).toISOString(),
+      nextRunAt: new Date(
+        nextRunAt(config.intervalMinutes, now, Math.random(), config.stealthRandom),
+      ).toISOString(),
       lastRunAt: new Date(now).toISOString(),
       runningToken: token,
     },
@@ -400,7 +447,11 @@ export async function runAutoSyncTick(
 
   const targets = await listSyncTargets({ scope: config.scope });
   const map = await getBackoffMap();
-  const { due: dueTargets, skipped } = selectDueTargets(targets, map, now);
+  const { due: rawDueTargets, skipped } = selectDueTargets(targets, map, now);
+  // 同态随机只动自动同步的顺序与节奏；列表内容不变
+  const dueTargets = config.stealthRandom
+    ? shuffleTargets(rawDueTargets)
+    : rawDueTargets;
 
   if (!dueTargets.length) {
     await finishLease(token, {
@@ -409,16 +460,22 @@ export async function runAutoSyncTick(
       skipped: skipped.length,
       rateLimited: false,
       intervalMinutes: config.intervalMinutes,
+      stealthRandom: config.stealthRandom,
     });
     return { ran: false, reason: "所有目标都在退避中", skipped: skipped.length };
   }
 
   // 记下开跑时刻，用来判断这一轮里有没有新的限流命中
   const startedAt = Date.now();
+  const labelScope = config.scope === "upstream" ? "仅上游" : "全部";
   const { job: started, attached } = await startSyncJob({
     trigger: "auto",
     targets: dueTargets,
-    label: `自动同步（${config.scope === "upstream" ? "仅上游" : "全部"}）`,
+    label: config.stealthRandom
+      ? `自动同步 · 同态随机（${labelScope}）`
+      : `自动同步（${labelScope}）`,
+    // 目标间随机停顿：打散「创建序连环扫」的脚本特征
+    interTargetDelayMs: config.stealthRandom ? stealthGapMs : undefined,
   });
 
   if (attached) {
@@ -429,6 +486,7 @@ export async function runAutoSyncTick(
       skipped: skipped.length,
       rateLimited: false,
       intervalMinutes: config.intervalMinutes,
+      stealthRandom: config.stealthRandom,
     });
     return { ran: false, reason: "已有同步任务在跑" };
   }
@@ -455,6 +513,7 @@ export async function runAutoSyncTick(
     skipped: skipped.length,
     rateLimited,
     intervalMinutes: config.intervalMinutes,
+    stealthRandom: config.stealthRandom,
   });
 
   return {
@@ -473,13 +532,14 @@ async function finishLease(
     skipped: number;
     rateLimited: boolean;
     intervalMinutes: number;
+    stealthRandom: boolean;
   },
 ): Promise<void> {
   const lease = await readLease();
   if (lease.state?.runningToken !== token) return; // 被接管了，别覆盖别人的状态
 
   const now = Date.now();
-  const base = nextRunAt(info.intervalMinutes, now);
+  const base = nextRunAt(info.intervalMinutes, now, Math.random(), info.stealthRandom);
   const next = info.rateLimited
     ? Math.min(now + BACKOFF_MAX_MS, now + (base - now) * RATE_LIMIT_MULTIPLIER)
     : base;
@@ -538,5 +598,8 @@ export const AUTO_SYNC_TUNING = {
   BACKOFF_MAX_MS,
   RATE_LIMIT_MULTIPLIER,
   JITTER_RATIO,
+  STEALTH_JITTER_RATIO,
+  STEALTH_GAP_MIN_SEC,
+  STEALTH_GAP_MAX_SEC,
   LEASE_STALE_MS,
 } as const;

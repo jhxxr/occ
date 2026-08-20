@@ -65,23 +65,6 @@ export function decryptSecret(bundle: string): string {
   }
 }
 
-export function hashExtensionToken(token: string): string {
-  return createHash("sha256").update(token).digest("hex");
-}
-
-export function createExtensionToken(): {
-  token: string;
-  tokenHash: string;
-  tokenPrefix: string;
-} {
-  const token = `oct_${randomBytes(32).toString("hex")}`;
-  return {
-    token,
-    tokenHash: hashExtensionToken(token),
-    tokenPrefix: token.slice(0, 12),
-  };
-}
-
 /** Mask a key for UI display: show first 4 and last 4 chars. */
 export function maskSecret(value: string, visible = 4): string {
   if (!value) return "";

@@ -67,17 +67,6 @@ Before changing versions, stop the service and copy `./data` to a dated backup. 
 
 If the container cannot write to `./data`, check `docker compose logs orbit` for a permission error and adjust ownership on the host directory to match the container user.
 
-## Upgrading extension tokens
-
-Before deploying an image that contains the `hash_extension_tokens` migration, back up `./data`. The migration preserves application/provider data but intentionally revokes every legacy extension inject token because plaintext tokens cannot be safely converted to one-way hashes in SQLite migration SQL.
-
-After the upgrade:
-
-- Sign in and create replacement extension tokens.
-- Save each token when it is created; it is shown only once.
-- Configure extensions to send `X-Orbit-Token` or `Authorization: Bearer`.
-- Do not reuse old `?token=...` URLs; query-string authentication is no longer accepted.
-
 ## Operations
 
 - Stop the service and back up the deployment directory before changing image versions; archiving `occ/` captures `compose.yml`, `.env`, and `./data` together.

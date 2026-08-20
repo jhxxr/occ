@@ -613,12 +613,26 @@ export async function syncAll(
     scope?: "all" | "upstream";
     targets?: SyncTarget[];
     onResult?: (result: SyncResultItem, done: number, total: number) => void | Promise<void>;
+    /**
+     * 两个目标之间额外停顿。可传固定毫秒，或每次返回毫秒的函数。
+     * 仅自动同步的「同态随机」使用；手动全量同步不传，保持原节奏。
+     */
+    interTargetDelayMs?: number | (() => number);
   } = {},
 ): Promise<SyncResultItem[]> {
   const targets = opts.targets ?? (await listSyncTargets({ scope: opts.scope }));
   const results: SyncResultItem[] = [];
-  for (const target of targets) {
-    const result = await syncTarget(target);
+  for (let i = 0; i < targets.length; i++) {
+    if (i > 0 && opts.interTargetDelayMs != null) {
+      const delay =
+        typeof opts.interTargetDelayMs === "function"
+          ? opts.interTargetDelayMs()
+          : opts.interTargetDelayMs;
+      if (delay > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+    const result = await syncTarget(targets[i]!);
     results.push(result);
     await opts.onResult?.(result, results.length, targets.length);
   }

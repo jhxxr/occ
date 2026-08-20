@@ -3,12 +3,10 @@ import type { NextRequest } from "next/server";
 import { COOKIE_NAME, verifySessionTokenEdge } from "@/lib/auth-edge";
 
 const PUBLIC_PATHS = ["/login"];
-const PUBLIC_API_PREFIXES = ["/api/auth/login"];
-// 扩展用注入 token 自行鉴权（不走登录 cookie），得放行到路由自己判。
-// 两条都只读/只认 token，不返回任何凭据明文。
-const PUBLIC_API_EXACT = [
-  "/api/extension/inject",
-  "/api/extension/providers",
+const PUBLIC_API_PREFIXES = [
+  "/api/auth/login",
+  // 对外 Token 鉴权接口（路由内校验 Bearer，不走登录 Cookie）
+  "/api/public",
 ];
 
 function isPublic(pathname: string): boolean {
@@ -16,10 +14,8 @@ function isPublic(pathname: string): boolean {
   // 动态段能吃掉点号，所以 /api/self-hosted/<id>.png 会命中 .png 规则
   // 直接绕过登录检查（那条路由的 POST 会触发同步、改分组/账号）。
   if (pathname.startsWith("/api/")) {
-    return (
-      PUBLIC_API_PREFIXES.some(
-        (p) => pathname === p || pathname.startsWith(`${p}/`),
-      ) || PUBLIC_API_EXACT.includes(pathname)
+    return PUBLIC_API_PREFIXES.some(
+      (p) => pathname === p || pathname.startsWith(`${p}/`),
     );
   }
 

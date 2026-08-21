@@ -129,13 +129,47 @@ function uptimeRatio(uptime24h: number | null): number {
 }
 
 function monitorName(g: PublicGroupUptime): string {
-  const site = g.siteName?.trim() || "站点";
-  const label = g.label?.trim() || g.group?.trim() || "未分组";
-  return `${site} · ${label}`;
+  // 站点名已在 publicGroupList 分组标题里展示，monitor 只保留分组标签
+  return g.label?.trim() || g.group?.trim() || "未分组";
 }
 
 function groupBucketName(g: PublicGroupUptime): string {
   return g.siteName?.trim() || "默认";
+}
+
+/** 故障靠前；正常其次；静默 / 闲置 / 无调用沉底 */
+const KUMA_HEALTH_SORT: Record<PublicGroupUptime["health"], number> = {
+  critical: 0,
+  degraded: 1,
+  healthy: 2,
+  silent: 3,
+  idle: 4,
+  disabled: 5,
+};
+
+function isQuietGroup(g: PublicGroupUptime): boolean {
+  return (
+    g.health === "silent" ||
+    g.health === "idle" ||
+    g.health === "disabled" ||
+    g.requests24h === 0 ||
+    g.monitoredCount === 0
+  );
+}
+
+function sortGroupsForKuma(groups: PublicGroupUptime[]): PublicGroupUptime[] {
+  return [...groups].sort((a, b) => {
+    const hs = KUMA_HEALTH_SORT[a.health] - KUMA_HEALTH_SORT[b.health];
+    if (hs !== 0) return hs;
+    const aq = isQuietGroup(a) ? 1 : 0;
+    const bq = isQuietGroup(b) ? 1 : 0;
+    if (aq !== bq) return aq - bq;
+    const ua = a.uptime24h ?? 101;
+    const ub = b.uptime24h ?? 101;
+    if (ua !== ub) return ua - ub;
+    if (b.requests24h !== a.requests24h) return b.requests24h - a.requests24h;
+    return monitorName(a).localeCompare(monitorName(b), "zh-CN");
+  });
 }
 
 /** 按站点拆成 Kuma publicGroupList */
@@ -158,7 +192,7 @@ export function toKumaStatusPage(
     id: publicGroupId(siteName),
     name: siteName,
     weight: idx + 1,
-    monitorList: groups.map((g) => ({
+    monitorList: sortGroupsForKuma(groups).map((g) => ({
       id: publicMonitorId(g.key),
       name: monitorName(g),
       sendUrl: 0,

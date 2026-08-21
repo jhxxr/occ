@@ -981,13 +981,14 @@ function scoreChannel(
   };
 }
 
+/** 故障靠前；正常其次；静默 / 闲置 / 禁用沉底 */
 const HEALTH_SORT: Record<ChannelHealthLevel, number> = {
   critical: 0,
   degraded: 1,
-  silent: 2,
-  disabled: 3,
+  healthy: 2,
+  silent: 3,
   idle: 4,
-  healthy: 5,
+  disabled: 5,
 };
 
 function sortChannels(rows: ChannelHealthRow[]): ChannelHealthRow[] {
@@ -1198,6 +1199,24 @@ export function aggregateGroups(channels: ChannelHealthRow[]): GroupUptimeRow[] 
   return groups.sort((a, b) => {
     const hs = HEALTH_SORT[a.health] - HEALTH_SORT[b.health];
     if (hs !== 0) return hs;
+    // 静默 / 无调用 / 无监控 的分组自动沉底
+    const aQuiet =
+      a.health === "silent" ||
+      a.health === "idle" ||
+      a.health === "disabled" ||
+      a.requests24h === 0 ||
+      a.monitoredCount === 0
+        ? 1
+        : 0;
+    const bQuiet =
+      b.health === "silent" ||
+      b.health === "idle" ||
+      b.health === "disabled" ||
+      b.requests24h === 0 ||
+      b.monitoredCount === 0
+        ? 1
+        : 0;
+    if (aQuiet !== bQuiet) return aQuiet - bQuiet;
     const ua = a.uptime24h ?? 101;
     const ub = b.uptime24h ?? 101;
     if (ua !== ub) return ua - ub;

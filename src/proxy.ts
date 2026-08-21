@@ -11,6 +11,12 @@ const PUBLIC_API_PREFIXES = [
   "/api/status-page",
 ];
 
+/** NewAPI 基础 URL = https://host/u/<token> ，后续拼 /api/status-page/... */
+function isPublicUptimePrefix(pathname: string): boolean {
+  // /u/<token>/api/status-page/... 或 /u/<token>/api/status-page/heartbeat/...
+  return /^\/u\/[^/]+\/api\/status-page(\/|$)/.test(pathname);
+}
+
 function isPublic(pathname: string): boolean {
   // API 一律按接口鉴权，绝不套用静态资源那套后缀白名单。
   // 动态段能吃掉点号，所以 /api/self-hosted/<id>.png 会命中 .png 规则
@@ -20,6 +26,8 @@ function isPublic(pathname: string): boolean {
       (p) => pathname === p || pathname.startsWith(`${p}/`),
     );
   }
+
+  if (isPublicUptimePrefix(pathname)) return true;
 
   if (PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`))) {
     return true;

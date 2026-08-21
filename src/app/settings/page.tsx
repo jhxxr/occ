@@ -415,15 +415,15 @@ export default function SettingsPage() {
           <div className="rounded-[var(--r-md)] border border-border-subtle bg-surface-2/60 px-3 py-2.5 text-xs text-secondary">
             <p className="font-semibold text-text">NewAPI Uptime 绑定（推荐）</p>
             <p className="mt-1 text-[11px] leading-relaxed text-muted">
-              对齐 Uptime Kuma 状态页 URL：把 Token 直接放进路径当 slug，无需 Header / Query。
+              Token 放进「基础 URL」，后面路径完全对齐 Uptime Kuma；别名 slug 可随便填。
             </p>
             <pre className="mt-1.5 overflow-x-auto whitespace-pre-wrap break-all font-data text-[11px] leading-relaxed text-cyan">
-{`URL  = https://你的控制台域名
-Slug = occ_xxxxxxxx
+{`基础 URL = https://你的控制台域名/u/occ_xxxxxxxx
+别名 Slug = orbit
 
-实际请求：
-  GET /api/status-page/occ_xxxxxxxx
-  GET /api/status-page/heartbeat/occ_xxxxxxxx`}
+NewAPI 实际请求：
+  GET {基础URL}/api/status-page/orbit
+  GET {基础URL}/api/status-page/heartbeat/orbit`}
             </pre>
             <p className="mt-2 font-semibold text-text">原始 JSON（可选）</p>
             <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all font-data text-[11px] leading-relaxed text-cyan">

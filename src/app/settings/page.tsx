@@ -94,7 +94,7 @@ export default function SettingsPage() {
   const [autoSaving, setAutoSaving] = useState(false);
   const [autoMsg, setAutoMsg] = useState<string | null>(null);
 
-  // 对外 API Token（鉴权 /api/public/group-uptime）
+  // 对外 API Token（鉴权 /api/status-page/<token> 与 /api/public/group-uptime）
   const [tokens, setTokens] = useState<PublicApiTokenRow[]>([]);
   const [tokensLoading, setTokensLoading] = useState(true);
   const [tokensError, setTokensError] = useState<string | null>(null);
@@ -406,17 +406,27 @@ export default function SettingsPage() {
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-xs leading-relaxed text-muted">
-            用于鉴权公开接口
-            <code className="mx-1 font-data text-cyan">
-              GET /api/public/group-uptime
-            </code>
-            。只返回中转站「分组」24h Uptime，不含具体上游渠道。
-            Token 明文仅在创建时显示一次，数据库只存 hash。
+            用于鉴权公开 Uptime 接口。只返回中转站「分组」24h 可用性，不含具体上游渠道。
+            时区固定
+            <code className="mx-1 font-data text-cyan">Asia/Shanghai</code>
+            。Token 明文仅在创建时显示一次，数据库只存 hash。
           </p>
 
           <div className="rounded-[var(--r-md)] border border-border-subtle bg-surface-2/60 px-3 py-2.5 text-xs text-secondary">
-            <p className="font-semibold text-text">调用示例</p>
+            <p className="font-semibold text-text">NewAPI Uptime 绑定（推荐）</p>
+            <p className="mt-1 text-[11px] leading-relaxed text-muted">
+              对齐 Uptime Kuma 状态页 URL：把 Token 直接放进路径当 slug，无需 Header / Query。
+            </p>
             <pre className="mt-1.5 overflow-x-auto whitespace-pre-wrap break-all font-data text-[11px] leading-relaxed text-cyan">
+{`URL  = https://你的控制台域名
+Slug = occ_xxxxxxxx
+
+实际请求：
+  GET /api/status-page/occ_xxxxxxxx
+  GET /api/status-page/heartbeat/occ_xxxxxxxx`}
+            </pre>
+            <p className="mt-2 font-semibold text-text">原始 JSON（可选）</p>
+            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all font-data text-[11px] leading-relaxed text-cyan">
 {`curl -H "Authorization: Bearer occ_xxx" \\
   https://你的控制台域名/api/public/group-uptime`}
             </pre>

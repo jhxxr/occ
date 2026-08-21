@@ -12,8 +12,11 @@ export const dynamic = "force-dynamic";
  * GET /api/public/group-uptime
  *
  * 对外只读接口：返回中转站「分组」24h Uptime（不含具体渠道/上游）。
- * 鉴权：Authorization: Bearer <token>
- * 也兼容 ?token=（不推荐，仅便于临时调试）
+ * 鉴权：Authorization: Bearer <token>，也兼容 ?token=
+ *
+ * 若要对接 NewAPI 的 Uptime Kuma 绑定，请改用路径 token 形态（推荐）：
+ *   GET /api/status-page/<token>
+ *   GET /api/status-page/heartbeat/<token>
  *
  * 可选 query：
  * - siteName= 按站点显示名过滤

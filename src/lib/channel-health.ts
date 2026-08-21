@@ -654,10 +654,22 @@ async function loadAggregates(
   return out;
 }
 
+/** Asia/Shanghai 固定 UTC+8（无夏令时） */
+const SHANGHAI_OFFSET_SEC = 8 * 3600;
+
 function hourBucketStartSec(nowSec: number, hoursAgo: number): number {
-  // 对齐到整点（UTC）；展示时再转本地。心跳格用 UTC 整点即可稳定拼接。
-  const currentHour = Math.floor(nowSec / 3600) * 3600;
+  // 对齐到 Asia/Shanghai 整点；与报表日界一致，避免 UTC 整点把 08:00 切到前一天。
+  const currentHour =
+    Math.floor((nowSec + SHANGHAI_OFFSET_SEC) / 3600) * 3600 -
+    SHANGHAI_OFFSET_SEC;
   return currentHour - hoursAgo * 3600;
+}
+
+function shanghaiHourLabel(hourStartSec: number): string {
+  const hour = Math.floor(
+    ((hourStartSec + SHANGHAI_OFFSET_SEC) % 86400 + 86400) % 86400 / 3600,
+  );
+  return `${String(hour).padStart(2, "0")}:00`;
 }
 
 function heartbeatTone(
@@ -689,11 +701,9 @@ function buildHeartbeats(
     const hit = hourly?.get(start);
     const requests = hit?.requests || 0;
     const issues = hit?.issues || 0;
-    const d = new Date(start * 1000);
-    const label = `${String(d.getHours()).padStart(2, "0")}:00`;
     out.push({
       hourStart: unixToIso(start) || new Date(start * 1000).toISOString(),
-      label,
+      label: shanghaiHourLabel(start),
       requests,
       issues,
       issueRate: issueRate(issues, requests),
@@ -705,7 +715,7 @@ function buildHeartbeats(
 }
 
 /**
- * 按 channel × UTC 整点小时聚合近 heartbeatHours 的请求/问题。
+ * 按 channel × Asia/Shanghai 整点小时聚合近 heartbeatHours 的请求/问题。
  * key = channelId → (hourStartSec → HourAgg)
  */
 async function loadHourlyHeartbeats(
@@ -734,10 +744,11 @@ async function loadHourlyHeartbeats(
   // 多取 1 小时边界，避免整点切分漏边
   const rangeStart = hourBucketStartSec(nowSec, hours - 1);
 
+  // Shanghai 整点：FLOOR((ts+8h)/3600)*3600 - 8h
   const [rows] = await conn.query<RowDataPacket[]>(
     `SELECT
         \`${channelCol}\` AS channel_id,
-        FLOOR(created_at / 3600) * 3600 AS hour_start,
+        FLOOR((created_at + ${SHANGHAI_OFFSET_SEC}) / 3600) * 3600 - ${SHANGHAI_OFFSET_SEC} AS hour_start,
         COUNT(*) AS requests,
         ${issueExpr} AS issues,
         ${useExpr} AS avg_use
@@ -1041,17 +1052,42 @@ function mergeHeartbeats(
 
 function pickGroupHealth(rows: ChannelHealthRow[]): ChannelHealthLevel {
   if (rows.length === 0) return "idle";
-  // 组状态取最差故障档；无故障时再看静默/闲置/禁用/健康
-  let best = 99;
-  let level: ChannelHealthLevel = "healthy";
+  // 故障优先；组内只要有一条 Up，整体就是 Up（不因部分渠道静默/闲置把整组打成 Silent）
+  let hasCritical = false;
+  let hasDegraded = false;
+  let hasHealthy = false;
+  let hasSilent = false;
+  let hasIdle = false;
+  let hasDisabled = false;
   for (const r of rows) {
-    const rank = HEALTH_SORT[r.health];
-    if (rank < best) {
-      best = rank;
-      level = r.health;
+    switch (r.health) {
+      case "critical":
+        hasCritical = true;
+        break;
+      case "degraded":
+        hasDegraded = true;
+        break;
+      case "healthy":
+        hasHealthy = true;
+        break;
+      case "silent":
+        hasSilent = true;
+        break;
+      case "idle":
+        hasIdle = true;
+        break;
+      case "disabled":
+        hasDisabled = true;
+        break;
     }
   }
-  return level;
+  if (hasCritical) return "critical";
+  if (hasDegraded) return "degraded";
+  if (hasHealthy) return "healthy";
+  if (hasSilent) return "silent";
+  if (hasIdle) return "idle";
+  if (hasDisabled) return "disabled";
+  return "idle";
 }
 
 /** 按 site + group 聚合渠道 uptime */

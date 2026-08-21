@@ -5,8 +5,10 @@ import { COOKIE_NAME, verifySessionTokenEdge } from "@/lib/auth-edge";
 const PUBLIC_PATHS = ["/login"];
 const PUBLIC_API_PREFIXES = [
   "/api/auth/login",
-  // 对外 Token 鉴权接口（路由内校验 Bearer，不走登录 Cookie）
+  // 对外 Token 鉴权接口（路由内校验 Bearer / 路径 token，不走登录 Cookie）
   "/api/public",
+  // Uptime Kuma 兼容：/api/status-page/<token> 与 heartbeat
+  "/api/status-page",
 ];
 
 function isPublic(pathname: string): boolean {

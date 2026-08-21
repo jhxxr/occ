@@ -141,19 +141,26 @@ export async function deletePublicApiToken(id: string): Promise<void> {
 }
 
 /**
- * 从 Authorization: Bearer <token> 或 ?token= 校验。
+ * 从 Authorization: Bearer / 路径 slug / ?token= 校验。
  * 成功返回 token 元数据；失败返回 null。
+ *
+ * 路径 token 用于对齐 Uptime Kuma：
+ *   GET /api/status-page/<token>
+ *   GET /api/status-page/heartbeat/<token>
  */
 export async function verifyBearerToken(
   authorizationHeader: string | null,
   queryToken?: string | null,
   requiredScope = GROUP_UPTIME_SCOPE,
+  pathToken?: string | null,
 ): Promise<PublicApiTokenPublic | null> {
   let raw = "";
   if (authorizationHeader) {
     const m = authorizationHeader.match(/^Bearer\s+(.+)$/i);
     if (m?.[1]) raw = m[1].trim();
   }
+  // 路径 token 优先于 query，方便 NewAPI Uptime 绑定直接把 occ_xxx 当 slug
+  if (!raw && pathToken) raw = pathToken.trim();
   if (!raw && queryToken) raw = queryToken.trim();
   if (!raw) return null;
 
@@ -189,7 +196,7 @@ export async function verifyBearerToken(
   return toPublic(row);
 }
 
-/** 从请求头解析 Bearer */
+/** 从请求头 / query / 路径解析 Token */
 export function extractBearer(req: {
   headers: { get(name: string): string | null };
   nextUrl?: { searchParams: URLSearchParams };
@@ -198,4 +205,12 @@ export function extractBearer(req: {
     authorization: req.headers.get("authorization"),
     queryToken: req.nextUrl?.searchParams.get("token") ?? null,
   };
+}
+
+/** 校验路径里的 token（Uptime Kuma slug） */
+export async function verifyPathToken(
+  pathToken: string | null | undefined,
+  requiredScope = GROUP_UPTIME_SCOPE,
+): Promise<PublicApiTokenPublic | null> {
+  return verifyBearerToken(null, null, requiredScope, pathToken);
 }

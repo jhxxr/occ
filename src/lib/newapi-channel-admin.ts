@@ -32,6 +32,58 @@ interface NewApiEnvelope<T> {
   data?: T;
 }
 
+export interface CreatedChannelInput {
+  name: string;
+  type: number;
+  baseUrl: string;
+  key: string;
+  models: string[];
+  group: string;
+  priority: number;
+  status: number;
+  autoBan: number;
+}
+
+export interface SafeChannelRecord {
+  id: number;
+  name: string;
+  type: number | null;
+  group: string;
+  models: string[];
+  priority: number | null;
+  status: number | null;
+  autoBan: number | null;
+}
+
+function safeChannel(value: unknown): SafeChannelRecord {
+  const row = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const models = typeof row.models === "string"
+    ? row.models.split(",").map((item) => item.trim()).filter(Boolean)
+    : Array.isArray(row.models)
+      ? row.models.filter((item): item is string => typeof item === "string")
+      : [];
+  return {
+    id: Number(row.id || 0),
+    name: typeof row.name === "string" ? row.name : "",
+    type: typeof row.type === "number" ? row.type : null,
+    group: typeof row.group === "string" ? row.group : "",
+    models,
+    priority: typeof row.priority === "number" ? row.priority : null,
+    status: typeof row.status === "number" ? row.status : null,
+    autoBan: typeof row.auto_ban === "number" ? row.auto_ban : null,
+  };
+}
+
+function channelItems(value: unknown): unknown[] {
+  const root = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const data = root.data;
+  if (Array.isArray(data)) return data;
+  if (data && typeof data === "object" && Array.isArray((data as Record<string, unknown>).items)) {
+    return (data as Record<string, unknown>).items as unknown[];
+  }
+  return [];
+}
+
 interface DetectModelData {
   channel_id?: number;
   channel_name?: string;
@@ -88,6 +140,55 @@ function adminRequest(site: ChannelAdminSite) {
     baseUrl: normalizeBaseUrl(site.baseUrl),
     headers: newApiAdminHeaders(adminKey, site.adminUserId || 1),
   };
+}
+
+export async function createChannel(
+  site: ChannelAdminSite,
+  input: CreatedChannelInput,
+): Promise<SafeChannelRecord> {
+  const { baseUrl, headers } = adminRequest(site);
+  if (!input.key.trim()) throw new Error("渠道 Key 不能为空");
+  if (!input.baseUrl.trim()) throw new Error("渠道 Base URL 不能为空");
+  if (!input.models.length) throw new Error("至少选择一个渠道模型");
+  const response = await fetchJson(`${baseUrl}/api/channel/`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      mode: "single",
+      channel: {
+        name: input.name,
+        type: input.type,
+        base_url: input.baseUrl,
+        key: input.key,
+        models: input.models.join(","),
+        group: input.group,
+        priority: input.priority,
+        status: input.status,
+        auto_ban: input.autoBan,
+      },
+    }),
+    timeoutMs: 30_000,
+    retries: 0,
+  });
+  const root = responseError<unknown>(response, "创建渠道失败");
+  const created = root.data && typeof root.data === "object" ? root.data as Record<string, unknown> : null;
+  let id = Number(created?.id || 0);
+  if (!id) {
+    const listed = await fetchJson(`${baseUrl}/api/channel/?p=0&page_size=1000`, {
+      method: "GET", headers, timeoutMs: 30_000, retries: 0,
+    });
+    const match = channelItems(listed.data)
+      .map((item) => safeChannel(item))
+      .filter((item) => item.name === input.name)
+      .sort((a, b) => b.id - a.id)[0];
+    id = match?.id || 0;
+  }
+  if (!id) throw new Error("创建渠道成功但无法回读新渠道 ID");
+  const read = await fetchJson(`${baseUrl}/api/channel/${id}`, {
+    method: "GET", headers, timeoutMs: 30_000, retries: 0,
+  });
+  const readRoot = responseError<unknown>(read, "读取新建渠道失败");
+  return safeChannel(readRoot.data || created);
 }
 
 function responseError<T>(

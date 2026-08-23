@@ -7,6 +7,7 @@ import { TopBar } from "@/components/layout/top-bar";
 import { BusinessOverview } from "@/components/operations/business-overview";
 import { ChannelOperationsTable } from "@/components/operations/channel-operations-table";
 import { OptimizationQueue } from "@/components/operations/optimization-queue";
+import { ChannelCreateDialog } from "@/components/operations/channel-create-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
@@ -86,7 +87,7 @@ export function OperationsView() {
         <OptimizationQueue actions={data.actions} onOpen={openAction} />
       </section>
       <section id="channel-matrix" className="scroll-mt-4 space-y-3">
-        <div className="flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-base font-semibold text-text">渠道经营矩阵</h2><p className="mt-1 text-xs text-muted">渠道消耗是下游日志面值；当前倍率仅用于现在的调度判断，不是历史毛利。</p></div><Button size="sm" variant="secondary" disabled={refreshing} onClick={() => void load(true)}><RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />{refreshing ? "聚合中…" : "刷新全部"}</Button></div>
+        <div className="flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-base font-semibold text-text">渠道经营矩阵</h2><p className="mt-1 text-xs text-muted">渠道消耗是下游日志面值；当前倍率仅用于现在的调度判断，不是历史毛利。</p></div><div className="flex items-center gap-2"><ChannelCreateDialog siteId={siteId === "all" ? data.sites[0]?.id || "" : siteId} onCreated={() => void load(true)} /><Button size="sm" variant="secondary" disabled={refreshing} onClick={() => void load(true)}><RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />{refreshing ? "聚合中…" : "刷新全部"}</Button></div></div>
         <div className="flex flex-wrap gap-2 rounded-[var(--r-lg)] border border-border-subtle bg-surface p-3"><Select className="h-9 w-auto min-w-32" value={siteId} onChange={(e) => setSiteId(e.target.value)} aria-label="站点筛选"><option value="all">全部站点</option>{data.sites.map((site) => <option key={site.id} value={site.id}>{site.name}</option>)}</Select><Select className="h-9 w-auto min-w-28" value={health} onChange={(e) => setHealth(e.target.value)} aria-label="健康筛选"><option value="all">全部状态</option><option value="critical">严重</option><option value="degraded">降级</option><option value="healthy">正常</option><option value="silent">静默</option><option value="idle">闲置</option><option value="disabled">禁用</option></Select><Select className="h-9 w-auto min-w-28" value={cost} onChange={(e) => setCost(e.target.value)} aria-label="成本筛选"><option value="all">全部成本</option><option value="known">成本已知</option><option value="unknown">成本未知</option></Select><Button size="sm" variant={suggestionsOnly ? "default" : "ghost"} onClick={() => setSuggestionsOnly((value) => !value)}>只看有建议</Button><div className="relative min-w-48 flex-1"><Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" /><Input className="h-9 pl-9" placeholder="搜渠道 / 分组 / 上游 / 模型" value={query} onChange={(e) => setQuery(e.target.value)} /></div><span className="self-center text-xs text-muted">{sorted.length} / {data.channels.length}</span></div>
         <ChannelOperationsTable channels={sorted} actions={data.actions} openKey={openKey} onToggle={toggle} />
       </section>

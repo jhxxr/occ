@@ -707,6 +707,23 @@ export function ChannelHealthView() {
                     )}
                   </div>
 
+                  <section className="rounded-[12px] border border-border-subtle bg-surface-2/50 p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-semibold text-text">渠道运营与模型</h3>
+                        <p className="mt-1 text-[11px] leading-relaxed text-muted">
+                          在全局运营控制台中结合成本、消耗、毛利和健康状态统一管理。
+                        </p>
+                      </div>
+                      <Link
+                        href={`/operations?siteId=${encodeURIComponent(detail.channel.siteId)}&channelId=${detail.channel.channelId}`}
+                        className="inline-flex h-8 items-center rounded-[var(--r-md)] bg-accent px-3 text-xs font-semibold text-on-accent hover:opacity-90"
+                      >
+                        前往运营控制台
+                      </Link>
+                    </div>
+                  </section>
+
                   <section>
                     <h3 className="mb-2.5 text-sm font-semibold text-text">
                       24h 模型拆分

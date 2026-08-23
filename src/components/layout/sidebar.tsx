@@ -7,6 +7,7 @@ import {
   Activity,
   ArrowDownToLine,
   Database,
+  Gauge,
   LayoutDashboard,
   Layers,
   LineChart,
@@ -37,6 +38,7 @@ const navGroups = [
   {
     label: "资源",
     items: [
+      { href: "/operations", label: "运营控制台", icon: Gauge },
       { href: "/providers", label: "上游", icon: Server },
       { href: "/downstream", label: "下游", icon: ArrowDownToLine },
       { href: "/self-hosted", label: "自建", icon: Database },

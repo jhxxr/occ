@@ -35,7 +35,7 @@ function sleep(ms: number): Promise<void> {
 /** 同主机串行 + 最小间隔 + 429 退避都在 host-gate 里，见那份文件的说明 */
 const MAX_RETRIES = 3;
 
-async function fetchJson(
+export async function fetchJson(
   url: string,
   init: RequestInit & { timeoutMs?: number; retries?: number } = {},
   proxyUrl?: string | null,
@@ -593,7 +593,7 @@ export async function fetchUpstreamBalance(
  *   Authorization: <token>   (NOT Bearer)
  *   New-API-User: <userId>   (must match token owner, root usually 1)
  */
-function newApiAdminHeaders(token: string, userId: number): HeadersInit {
+export function newApiAdminHeaders(token: string, userId: number): HeadersInit {
   const raw = token.startsWith("Bearer ") ? token.slice(7).trim() : token.trim();
   return {
     "Content-Type": "application/json",

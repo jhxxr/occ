@@ -1,0 +1,33 @@
+"use client";
+
+import { ChevronDown, ChevronUp, Settings2 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { ChannelModelManager } from "@/components/channels/channel-model-manager";
+import { Table, TBody, TD, TH, THead, TR, HeadRow, TableWrap } from "@/components/ui/table";
+import type { OperationsChannel } from "@/lib/operations";
+import type { OptimizationAction } from "@/lib/channel-scheduler";
+import { cn } from "@/lib/utils";
+
+const HEALTH_LABEL: Record<string, string> = { critical: "严重", degraded: "降级", silent: "静默", disabled: "禁用", idle: "闲置", healthy: "正常" };
+
+export function ChannelOperationsTable({ channels, actions, openKey, onToggle }: { channels: OperationsChannel[]; actions: OptimizationAction[]; openKey: string | null; onToggle: (channel: OperationsChannel) => void }) {
+  const actionsById = new Map(actions.map((item) => [item.id, item]));
+  return (
+    <div className="space-y-3">
+      <div className="hidden rounded-[var(--r-lg)] border border-border-subtle bg-surface lg:block">
+        <TableWrap><Table className="min-w-[1180px]"><THead><HeadRow><TH>渠道</TH><TH>状态</TH><TH className="text-right">24h / 7d 请求</TH><TH className="text-right">24h 消耗</TH><TH>当前成本信号</TH><TH>路由</TH><TH>建议</TH><TH className="w-12" /></HeadRow></THead><TBody>{channels.map((channel) => {
+          const key = `${channel.siteId}:${channel.channelId}`; const expanded = key === openKey; const channelActions = channel.actionIds.map((id) => actionsById.get(id)).filter(Boolean) as OptimizationAction[];
+          return <RowGroup key={key} channel={channel} actions={channelActions} expanded={expanded} onToggle={() => onToggle(channel)} />;
+        })}</TBody></Table></TableWrap>
+      </div>
+      <div className="space-y-3 lg:hidden">{channels.map((channel) => { const key = `${channel.siteId}:${channel.channelId}`; const expanded = key === openKey; const channelActions = channel.actionIds.map((id) => actionsById.get(id)).filter(Boolean) as OptimizationAction[]; return <div key={key} className="rounded-[var(--r-lg)] border border-border-subtle bg-surface p-4"><div className="flex items-start justify-between gap-2"><div><div className="flex flex-wrap items-center gap-1.5"><span className="font-medium text-text">{channel.name}</span><Badge>#{channel.channelId}</Badge><HealthBadge health={channel.health} /></div><p className="mt-1 text-[11px] text-muted">{channel.siteName} · {channel.group || "未分组"}</p></div><Button size="icon" variant="ghost" onClick={() => onToggle(channel)} aria-label="展开渠道管理"><Settings2 className="h-4 w-4" /></Button></div><div className="mt-3 grid grid-cols-2 gap-2 text-xs"><Mini label="24h / 7d 请求" value={`${channel.requests24h} / ${channel.requests7d}`} /><Mini label="24h 面值消耗" value={`$${channel.quotaUsd24h.toFixed(2)}`} /><Mini label="当前倍率" value={channel.rateMultiplier == null ? "成本未知" : `${channel.rateMultiplier} · #${channel.costRank}/${channel.costRankedCount}`} /><Mini label="路由" value={`P${channel.priority} · AutoBan ${channel.autoBan ? "开" : "关"}`} /></div>{channelActions[0] && <p className="mt-3 rounded-lg bg-tint-warn px-3 py-2 text-[11px] text-secondary">{channelActions[0].title}：{channelActions[0].reason}</p>}{expanded && <div className="mt-4"><ChannelModelManager siteId={channel.siteId} channelId={channel.channelId} currentModels={channel.models} /></div>}</div>; })}</div>
+    </div>
+  );
+}
+
+function RowGroup({ channel, actions, expanded, onToggle }: { channel: OperationsChannel; actions: OptimizationAction[]; expanded: boolean; onToggle: () => void }) {
+  return <><TR tone={actions.some((item) => item.severity === "critical" || item.severity === "high") ? "warn" : undefined}><TD><div className="max-w-[190px] truncate font-medium text-text">{channel.name}</div><div className="text-[11px] text-muted">{channel.siteName} · #{channel.channelId} · {channel.group || "未分组"}</div><div className="mt-1 text-[10px] text-muted">{channel.modelCount} 个模型</div></TD><TD><div className="flex flex-wrap gap-1"><Badge variant={channel.enabled ? "mint" : "default"}>{channel.enabled ? "启用" : "停用"}</Badge><HealthBadge health={channel.health} /></div><div className="mt-1 text-[10px] text-muted">问题率 {channel.issueRate24h == null ? "—" : `${(channel.issueRate24h * 100).toFixed(1)}%`} · {channel.responseTimeMs == null ? "未测速" : `${(channel.responseTimeMs / 1000).toFixed(1)}s`}</div></TD><TD className="text-right font-data text-xs">{channel.requests24h} / {channel.requests7d}</TD><TD className="text-right font-data text-xs">${channel.quotaUsd24h.toFixed(2)}<div className="text-[10px] text-muted">7d ${channel.quotaUsd7d.toFixed(2)}</div></TD><TD>{channel.rateMultiplier == null ? <Badge variant="amber">成本未知</Badge> : <><div className="font-data text-xs font-semibold text-text">×{channel.rateMultiplier} <span className="text-muted">· #{channel.costRank}/{channel.costRankedCount}</span></div><div className="max-w-[180px] truncate text-[10px] text-muted">{channel.providerName} / {channel.keyLabel}{channel.countAsCost === false ? " · 不计成本" : ""}</div></>}</TD><TD><div className="font-data text-xs">P{channel.priority}</div><div className="text-[10px] text-muted">AutoBan {channel.autoBan ? "开" : "关"}</div></TD><TD>{actions.length ? <div className="max-w-[220px]"><Badge variant={actions[0].severity === "critical" ? "coral" : actions[0].severity === "high" ? "amber" : "default"}>{actions[0].title}</Badge>{actions.length > 1 && <span className="ml-1 text-[10px] text-muted">+{actions.length - 1}</span>}<p className="mt-1 line-clamp-2 text-[10px] text-muted">{actions[0].reason}</p></div> : <span className="text-xs text-muted">—</span>}</TD><TD><Button size="icon" variant="ghost" onClick={onToggle} aria-label={expanded ? "收起模型管理" : "展开模型管理"}>{expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}</Button></TD></TR>{expanded && <tr><td colSpan={8} className="bg-surface-2/30 px-4 py-4"><ChannelModelManager siteId={channel.siteId} channelId={channel.channelId} currentModels={channel.models} /></td></tr>}</>;
+}
+function HealthBadge({ health }: { health: string }) { return <Badge variant={health === "critical" ? "coral" : health === "degraded" ? "amber" : health === "healthy" ? "mint" : "default"}>{HEALTH_LABEL[health] || health}</Badge>; }
+function Mini({ label, value }: { label: string; value: string }) { return <div className="rounded-lg bg-surface-2 px-2.5 py-2"><p className="text-[10px] text-muted">{label}</p><p className={cn("mt-0.5 font-data text-secondary", value === "成本未知" && "text-amber")}>{value}</p></div>; }

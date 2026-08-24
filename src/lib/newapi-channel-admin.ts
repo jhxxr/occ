@@ -391,8 +391,8 @@ export interface ChannelTestResult {
 }
 
 /**
- * 触发 NewAPI 渠道测速（POST /api/channel/test/<id>?model=）。
- * NewAPI 返回 { success, time }，time 是秒（浮点）；失败时 message 带原因。
+ * 触发 NewAPI 渠道测速（GET /api/channel/test/<id>?model=）。
+ * NewAPI 返回顶层 { success, message, time, error_code }，time 单位为秒。
  */
 export async function testChannel(
   site: ChannelAdminSite,
@@ -402,17 +402,28 @@ export async function testChannel(
   const { baseUrl, headers } = adminRequest(site);
   const query = model ? `?model=${encodeURIComponent(model)}` : "";
   const res = await fetchJson(`${baseUrl}/api/channel/test/${channelId}${query}`, {
-    method: "POST",
+    method: "GET",
     headers,
     timeoutMs: 120_000,
     retries: 0,
   });
-  const root = responseError<{ time?: number; message?: string }>(res, "测速失败");
-  const timeSec = typeof root.data?.time === "number" ? root.data.time : null;
+  const root = res.data && typeof res.data === "object" && !Array.isArray(res.data)
+    ? res.data as { success?: boolean; message?: string; time?: number; error_code?: string }
+    : null;
+  if (!res.ok || !root || root.success === false) {
+    throw new Error(
+      root?.message ||
+      (root?.error_code ? `测速失败（${root.error_code}）` : `测速失败 (HTTP ${res.status})`),
+    );
+  }
+  const timeSec = typeof root.time === "number" && Number.isFinite(root.time)
+    ? root.time
+    : null;
   return {
     timeMs: timeSec != null ? Math.round(timeSec * 1000) : null,
     message:
-      (typeof root.data?.message === "string" && root.data.message) ||
-      (timeSec != null ? `耗时 ${timeSec.toFixed(2)}s` : "测速完成"),
+      timeSec != null
+        ? `耗时 ${timeSec.toFixed(2)}s`
+        : root.message || "测速完成",
   };
 }

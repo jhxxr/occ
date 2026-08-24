@@ -17,7 +17,9 @@ export interface OperationsChannel {
   enabled: boolean;
   health: string;
   priority: number;
+  weight: number;
   autoBan: boolean;
+  remark: string;
   models: string[];
   modelCount: number;
   requests24h: number;
@@ -114,6 +116,7 @@ export async function getOperationsData(): Promise<OperationsPayload> {
       enabled: channel.enabled,
       health: channel.health,
       priority: channel.priority,
+      weight: channel.weight,
       autoBan: channel.autoBan,
       requests24h: channel.d1.requests,
       requests7d: channel.d7.requests,
@@ -144,7 +147,9 @@ export async function getOperationsData(): Promise<OperationsPayload> {
       enabled: channel.enabled,
       health: channel.health,
       priority: channel.priority,
+      weight: channel.weight,
       autoBan: channel.autoBan,
+      remark: channel.remark,
       models: channel.models,
       modelCount: channel.modelCount,
       requests24h: channel.d1.requests,

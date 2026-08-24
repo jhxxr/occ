@@ -1,10 +1,11 @@
 /**
- * NewAPI 渠道模型确认的唯一写入出口。
+ * 下游 NewAPI 渠道管理写入的唯一出口（模型确认 / 渠道编辑 / 启停 / 删除 / 测速）。
  *
- * 安全约束：写请求只构造 id/add_models/remove_models/ignore_models，绝不把
- * GET 渠道对象中的 key、base_url 或 models 裸串回传，也绝不写入
- * UpstreamModelUpdateAutoSyncEnabled。detect 只更新 settings 中的待确认列表，
- * updateModels=false，不改变路由使用的 models/abilities。
+ * 安全约束：
+ * - 写请求一律「服务端先 GET 完整渠道对象再合并覆盖」，绝不把 GET 到的
+ *   key 裸串回传浏览器；只有用户显式填写新 Key 时才替换 key 字段。
+ * - 返回给上层的 SafeChannelRecord 不含任何凭证字段。
+ * - 写操作 retries: 0，避免提交结果未知时重复执行。
  */
 
 import type { DownstreamSite } from "@prisma/client";
@@ -279,5 +280,139 @@ export async function applyModelUpdates(
       .split(",")
       .map((model) => model.trim())
       .filter(Boolean),
+  };
+}
+
+export interface ChannelEditInput {
+  name?: string;
+  baseUrl?: string;
+  /** 用户显式填写的新 Key；空/undefined 表示不改动现有凭据 */
+  key?: string;
+  models?: string[];
+  group?: string;
+  priority?: number;
+  weight?: number;
+  status?: number;
+  autoBan?: number;
+  remark?: string;
+}
+
+/**
+ * GET 完整渠道对象（含 key）→ 合并覆盖 → PUT /api/channel/。
+ * NewAPI 的 PUT 是整对象更新：缺的字段会被清掉，所以必须先回读再改。
+ * 回读的 key 只在内存中流转：用户没填新 Key 就原样带回，绝不返回给浏览器。
+ */
+export async function updateChannel(
+  site: ChannelAdminSite,
+  channelId: number,
+  input: ChannelEditInput,
+): Promise<SafeChannelRecord> {
+  const { baseUrl, headers } = adminRequest(site);
+
+  const getRes = await fetchJson(`${baseUrl}/api/channel/${channelId}`, {
+    method: "GET", headers, timeoutMs: 30_000, retries: 0,
+  });
+  const getRoot = responseError<Record<string, unknown>>(getRes, "读取渠道失败");
+  const current = getRoot.data && typeof getRoot.data === "object"
+    ? getRoot.data as Record<string, unknown>
+    : null;
+  if (!current) throw new Error("读取渠道失败：响应缺少 data");
+
+  const nextModels = input.models != null
+    ? [...input.models]
+    : typeof current.models === "string"
+      ? current.models.split(",").map((m) => m.trim()).filter(Boolean)
+      : [];
+
+  const payload: Record<string, unknown> = {
+    ...current,
+    id: channelId,
+    name: input.name?.trim() || current.name,
+    base_url: input.baseUrl?.trim() || current.base_url,
+    key: input.key?.trim() ? input.key.trim() : current.key,
+    models: nextModels.join(","),
+    group: input.group ?? current.group,
+    priority: input.priority ?? current.priority,
+    weight: input.weight ?? current.weight,
+    status: input.status ?? current.status,
+    auto_ban: input.autoBan ?? current.auto_ban,
+    remark: input.remark ?? current.remark,
+  };
+
+  const putRes = await fetchJson(`${baseUrl}/api/channel/`, {
+    method: "PUT",
+    headers,
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    retries: 0,
+  });
+  responseError<unknown>(putRes, "保存渠道失败");
+
+  // PUT 响应不带渠道对象，回读一次拿规范化后的记录
+  const read = await fetchJson(`${baseUrl}/api/channel/${channelId}`, {
+    method: "GET", headers, timeoutMs: 30_000, retries: 0,
+  });
+  const readRoot = responseError<unknown>(read, "回读渠道失败");
+  return safeChannel(readRoot.data);
+}
+
+const STATUS_ENABLED = 1;
+const STATUS_MANUALLY_DISABLED = 2;
+
+/** 启用 / 手动禁用。NewAPI status：1=启用，2=手动禁用。 */
+export async function setChannelStatus(
+  site: ChannelAdminSite,
+  channelId: number,
+  enabled: boolean,
+): Promise<SafeChannelRecord> {
+  return updateChannel(site, channelId, {
+    status: enabled ? STATUS_ENABLED : STATUS_MANUALLY_DISABLED,
+  });
+}
+
+/** 删除渠道。NewAPI DELETE /api/channel/<id>。不可恢复。 */
+export async function deleteChannel(
+  site: ChannelAdminSite,
+  channelId: number,
+): Promise<void> {
+  const { baseUrl, headers } = adminRequest(site);
+  const res = await fetchJson(`${baseUrl}/api/channel/${channelId}`, {
+    method: "DELETE",
+    headers,
+    timeoutMs: 30_000,
+    retries: 0,
+  });
+  responseError<unknown>(res, "删除渠道失败");
+}
+
+export interface ChannelTestResult {
+  timeMs: number | null;
+  message: string;
+}
+
+/**
+ * 触发 NewAPI 渠道测速（POST /api/channel/test/<id>?model=）。
+ * NewAPI 返回 { success, time }，time 是秒（浮点）；失败时 message 带原因。
+ */
+export async function testChannel(
+  site: ChannelAdminSite,
+  channelId: number,
+  model?: string,
+): Promise<ChannelTestResult> {
+  const { baseUrl, headers } = adminRequest(site);
+  const query = model ? `?model=${encodeURIComponent(model)}` : "";
+  const res = await fetchJson(`${baseUrl}/api/channel/test/${channelId}${query}`, {
+    method: "POST",
+    headers,
+    timeoutMs: 120_000,
+    retries: 0,
+  });
+  const root = responseError<{ time?: number; message?: string }>(res, "测速失败");
+  const timeSec = typeof root.data?.time === "number" ? root.data.time : null;
+  return {
+    timeMs: timeSec != null ? Math.round(timeSec * 1000) : null,
+    message:
+      (typeof root.data?.message === "string" && root.data.message) ||
+      (timeSec != null ? `耗时 ${timeSec.toFixed(2)}s` : "测速完成"),
   };
 }

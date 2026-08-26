@@ -14,6 +14,13 @@ import { useState } from "react";
 import Link from "next/link";
 import { runSyncJob } from "@/lib/sync-client";
 
+const MAX_GROUP_CHIPS = 8;
+
+/** 去掉多余尾零：0.4 → "0.4"、1.50 → "1.5"、2.00 → "2" */
+function fmtRate(v: number): string {
+  return String(Number(v.toFixed(2)));
+}
+
 export interface SelfHostedCardData {
   id: string;
   name: string;
@@ -24,6 +31,7 @@ export interface SelfHostedCardData {
   lastConsumed: number | null;
   hasAdminKey: boolean;
   groupCount: number;
+  groups: { name: string; sellRate: number; track: boolean }[];
   accountCount: number;
   trackedGroups: number;
   trackedAccounts: number;
@@ -136,6 +144,40 @@ export function SelfHostedGrid({
                 </div>
               </div>
             </div>
+
+            {s.groups.length > 0 && (
+              <div className="rounded-[var(--r-md)] border border-border-subtle bg-surface-2/50 px-2.5 py-2">
+                <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted">
+                  分组 · 卖出倍率
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {s.groups.slice(0, MAX_GROUP_CHIPS).map((g) => (
+                    <span
+                      key={g.name}
+                      title={`${g.name} ×${fmtRate(g.sellRate)}${
+                        g.track ? "" : "（未追踪）"
+                      }`}
+                      className={cn(
+                        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-data tabular-nums",
+                        g.track
+                          ? "border-mint/25 bg-mint/12 text-mint"
+                          : "border-border-subtle bg-surface-solid text-muted",
+                      )}
+                    >
+                      <span className="max-w-[7.5rem] truncate font-medium">
+                        {g.name}
+                      </span>
+                      <span className="font-semibold">×{fmtRate(g.sellRate)}</span>
+                    </span>
+                  ))}
+                  {s.groups.length > MAX_GROUP_CHIPS && (
+                    <span className="inline-flex items-center px-1 text-[11px] text-muted">
+                      +{s.groups.length - MAX_GROUP_CHIPS}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
 
             {(error[s.id] || s.lastError) && (
               <p className="rounded-[var(--r-md)] border border-coral/25 bg-coral/10 px-2.5 py-1.5 text-xs text-coral">

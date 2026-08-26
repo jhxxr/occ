@@ -926,6 +926,13 @@ export async function getDashboardData() {
     const accounts = shAccounts.filter((a) => a.providerId === s.id);
     const daily = shMonthDaily.filter((d) => d.providerId === s.id);
     const trackedAccounts = accounts.filter((a) => a.track);
+    // 首页要一眼看到每个自建渠道的分组与卖出倍率：追踪分组排前，同名稳定排序
+    const groupCards = [...groups]
+      .sort((a, b) => {
+        if (a.track !== b.track) return a.track ? -1 : 1;
+        return a.name.localeCompare(b.name, "zh-CN");
+      })
+      .map((g) => ({ name: g.name, sellRate: g.sellRate, track: g.track }));
 
     const monthOfficialCost = daily.reduce((sum, d) => sum + d.officialCost, 0);
     const monthSellRevenueRmb = daily.reduce((sum, d) => sum + d.sellRevenueRmb, 0);
@@ -953,6 +960,7 @@ export async function getDashboardData() {
       lastConsumed: s.lastConsumed,
       hasAdminKey: !!s.apiKey,
       groupCount: groups.length,
+      groups: groupCards,
       accountCount: accounts.length,
       trackedGroups: groups.filter((g) => g.track).length,
       trackedAccounts: trackedAccounts.length,

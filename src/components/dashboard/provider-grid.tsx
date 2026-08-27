@@ -14,6 +14,12 @@ import {
 import { useState } from "react";
 import Link from "next/link";
 import { runSyncJob } from "@/lib/sync-client";
+import {
+  compareGroups,
+  groupCategory,
+  platformVariant,
+  type GroupRateLike,
+} from "@/lib/sub2/group-category";
 
 export interface ProviderCardData {
   id: string;
@@ -29,6 +35,83 @@ export interface ProviderCardData {
   lastError: string | null;
   balanceRmb: number | null;
   isLow: boolean;
+  groups: GroupRateLike[];
+}
+
+const MAX_GROUP_CHIPS = 8;
+
+/** 去掉多余尾零：0.4 → "0.4"、1.50 → "1.5"、2.00 → "2" */
+function fmtRate(v: number): string {
+  const n = Number(v);
+  return Number.isFinite(n) ? String(Number(n.toFixed(2))) : "—";
+}
+
+/** 分类后的分组节：按类型分节、同类型低倍率在前，与「密钥/分组」详情页口径一致。 */
+function categorizedGroups(groups: GroupRateLike[]) {
+  const sections: { key: string; label: string; items: GroupRateLike[] }[] = [];
+  const index = new Map<string, number>();
+  for (const g of [...groups].sort(compareGroups)) {
+    const cat = groupCategory(g);
+    let i = index.get(cat.key);
+    if (i == null) {
+      i = sections.length;
+      index.set(cat.key, i);
+      sections.push({ key: cat.key, label: cat.label, items: [] });
+    }
+    sections[i].items.push(g);
+  }
+  return sections;
+}
+
+/** 紧凑的分组×倍率条：分类标签 + 胶囊，超出折叠，不让卡片越长越大。 */
+function GroupRateStrip({ groups }: { groups: GroupRateLike[] }) {
+  if (groups.length === 0) return null;
+  const sections = categorizedGroups(groups);
+  let remaining = MAX_GROUP_CHIPS;
+  const shown: { key: string; label: string; items: GroupRateLike[] }[] = [];
+  for (const s of sections) {
+    if (remaining <= 0) break;
+    const items = s.items.slice(0, remaining);
+    shown.push({ ...s, items });
+    remaining -= items.length;
+  }
+  const total = groups.length;
+  const hidden = total - shown.reduce((n, s) => n + s.items.length, 0);
+
+  return (
+    <div className="rounded-[var(--r-md)] border border-border-subtle bg-surface-2/50 px-2.5 py-2">
+      <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted">
+        分组 · 倍率
+      </div>
+      <div className="space-y-1">
+        {shown.map((s) => (
+          <div key={s.key} className="flex flex-wrap items-center gap-1">
+            <Badge
+              variant={s.key === "image" ? "amber" : platformVariant(s.key)}
+              className="px-1.5 py-0 text-[10px]"
+            >
+              {s.label}
+            </Badge>
+            {s.items.map((g) => (
+              <span
+                key={`${s.key}-${g.name}`}
+                title={`${g.name} ×${fmtRate(g.rate_multiplier)}`}
+                className="inline-flex items-center gap-1 rounded-full border border-cyan/25 bg-cyan/12 px-2 py-0.5 text-[11px] font-data tabular-nums text-cyan"
+              >
+                <span className="max-w-[6.5rem] truncate font-medium">
+                  {g.name}
+                </span>
+                <span className="font-semibold">×{fmtRate(g.rate_multiplier)}</span>
+              </span>
+            ))}
+          </div>
+        ))}
+        {hidden > 0 && (
+          <div className="px-1 text-[11px] text-muted">+{hidden} 更多分组</div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function BalanceMeter({
@@ -185,6 +268,8 @@ export function ProviderGrid({
                   </div>
                 </div>
               </div>
+
+              <GroupRateStrip groups={p.groups} />
 
               {(error[p.id] || p.lastError) && (
                 <p className="rounded-[var(--r-md)] border border-coral/25 bg-coral/10 px-2.5 py-1.5 text-xs text-coral">

@@ -639,6 +639,42 @@ export async function syncAll(
   return results;
 }
 
+/** 中转上游「分组 × 倍率」缓存解析：数据在同步时已写入 groupRatesJson，首页只读不拉远端。 */
+export interface CachedGroupRate {
+  id: number;
+  name: string;
+  platform: string;
+  description: string;
+  rate_multiplier: number;
+  allow_image_generation: boolean;
+  image_rate_multiplier: number | null;
+}
+
+function parseGroupRatesJson(json: string | null | undefined): CachedGroupRate[] {
+  if (!json) return [];
+  try {
+    const arr = JSON.parse(json);
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((g): g is Record<string, unknown> => !!g && typeof g === "object")
+      .map((g) => ({
+        id: Number(g.id ?? 0),
+        name: String(g.name ?? ""),
+        platform: String(g.platform ?? ""),
+        description: String(g.description ?? ""),
+        rate_multiplier: Number(g.rate_multiplier ?? 0),
+        allow_image_generation: !!g.allow_image_generation,
+        image_rate_multiplier:
+          g.image_rate_multiplier == null
+            ? null
+            : Number(g.image_rate_multiplier),
+      }))
+      .filter((g) => g.name);
+  } catch {
+    return [];
+  }
+}
+
 /** Aggregate dashboard payload for the UI */
 export async function getDashboardData() {
   const usdCny = await getUsdCnyRate();
@@ -1209,6 +1245,7 @@ export async function getDashboardData() {
       balanceRmb:
         p.lastBalance != null ? p.lastBalance * p.discountRate : null,
       isLow: p.lastBalance != null && p.lastBalance < p.alertThreshold,
+      groups: parseGroupRatesJson(p.groupRatesJson),
     })),
     sites: sites.map((s) => ({
       id: s.id,

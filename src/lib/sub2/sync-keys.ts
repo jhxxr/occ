@@ -9,7 +9,7 @@
  */
 
 import { prisma } from "@/lib/db";
-import { listKeys, fetchKeyUsageStats } from "@/lib/sub2/client";
+import { listKeys, listGroups, fetchKeyUsageStats } from "@/lib/sub2/client";
 import { withSyncLock } from "@/lib/sync-lock";
 
 export interface KeyCostSyncResult {
@@ -161,6 +161,30 @@ async function runSub2ApiKeysSync(
     where: { id: providerId },
     data: { lastBusinessConsumed: totalBusinessUsd },
   });
+
+  // 顺手缓存「分组 × 倍率」供首页一眼对比。单独 try/catch：拉分组失败
+  // 不能连累整轮 Key 成本同步 —— 分组只是展示增强，不是账本数据。
+  try {
+    const groups = await listGroups(providerId);
+    await prisma.upstreamProvider.update({
+      where: { id: providerId },
+      data: {
+        groupRatesJson: JSON.stringify(
+          groups.map((g) => ({
+            id: g.id,
+            name: g.name,
+            platform: g.platform ?? "",
+            description: g.description ?? "",
+            rate_multiplier: g.rate_multiplier,
+            allow_image_generation: !!g.allow_image_generation,
+            image_rate_multiplier: g.image_rate_multiplier ?? null,
+          })),
+        ),
+      },
+    });
+  } catch {
+    // 忽略：保留上一次的缓存即可
+  }
 
   return {
     keys: items.length,

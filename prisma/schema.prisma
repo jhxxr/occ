@@ -36,6 +36,9 @@ model UpstreamProvider {
   lastBusinessConsumed   Float?
   lastSyncAt             DateTime?
   lastError              String?   @db.Text
+  /// 首页「分组 × 倍率」缓存：同步时拉一次 /groups/available，避免每次打开首页都实时打第三方面板触发限流。
+  /// JSON: [{id,name,platform,description,rate_multiplier,allow_image_generation,image_rate_multiplier}]
+  groupRatesJson         String?   @db.Text
   /// null = 正常使用；有值 = 已弃用。enabled=false 仍可单独表示临时停用。
   retiredAt              DateTime?
   /// NORMAL | BALANCE_LOSS

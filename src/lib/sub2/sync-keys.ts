@@ -9,7 +9,12 @@
  */
 
 import { prisma } from "@/lib/db";
-import { listKeys, listGroups, fetchKeyUsageStats } from "@/lib/sub2/client";
+import {
+  listKeys,
+  listGroups,
+  fetchKeyUsageStats,
+  type Sub2KeyUsageStat,
+} from "@/lib/sub2/client";
 import { withSyncLock } from "@/lib/sync-lock";
 
 export interface KeyCostSyncResult {
@@ -61,7 +66,18 @@ async function runSub2ApiKeysSync(
   }
   const ids = items.map((k) => k.id);
 
-  const usage = await fetchKeyUsageStats(providerId, ids);
+  // 一次把全部 Key（最多 MAX_KEY_PAGES × 100 = 2000 个）塞进一个 POST 会让上游
+  // dashboard 统计接口扛不住，超过 30s 兜底超时直接 abort（"The operation was
+  // aborted"）。按批拆分，每批 100 个，逐批合并；单批失败仍抛给外层走整号回退。
+  const usage: Record<string, Sub2KeyUsageStat> = {};
+  const USAGE_BATCH_SIZE = 100;
+  for (let i = 0; i < ids.length; i += USAGE_BATCH_SIZE) {
+    const batch = await fetchKeyUsageStats(
+      providerId,
+      ids.slice(i, i + USAGE_BATCH_SIZE),
+    );
+    Object.assign(usage, batch);
+  }
   const existing = await prisma.upstreamApiKey.findMany({
     where: { providerId },
   });

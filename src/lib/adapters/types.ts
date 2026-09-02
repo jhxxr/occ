@@ -275,8 +275,10 @@ export interface ModelDailyRow {
   model: string;
   privateQuota: number;
   publicQuota: number;
+  excludedQuota: number;
   privateRequests: number;
   publicRequests: number;
+  excludedRequests: number;
 }
 
 export interface DownstreamModelDailyResult {

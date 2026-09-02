@@ -477,8 +477,8 @@ model DownstreamRedemptionCode {
   syncedAt        DateTime  @default(now())
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
-
   downstream DownstreamSite @relation(fields: [downstreamId], references: [id], onDelete: Cascade)
+  creditLot  DownstreamCreditLot?
 
   @@unique([downstreamId, remoteId])
   @@index([downstreamId, status])
@@ -519,14 +519,24 @@ model DownstreamRechargeOperation {
 model DownstreamCreditLot {
   id             String   @id @default(cuid())
   downstreamId   String
-  userId         Int
+  /// NULL until a gift card is redeemed; direct private lots have the user immediately.
+  userId         Int?
   operationId    String?
+  redemptionId   String?  @unique
   /// Stable idempotency key for externally sourced lots and replay-safe writes.
   ledgerKey      String?  @unique @db.VarChar(200)
+  /// PRIVATE_DIRECT | GIFT_CARD_SALE | ADMIN_BONUS | REDEEM_CODE | OPENING_UNKNOWN
   source         String   @default("OPENING_UNKNOWN") @db.VarChar(30)
+  /// PRIVATE | PUBLIC | NONE. Cash lots are frozen to their funding owner.
+  ownership      String   @default("NONE") @db.VarChar(20)
   originalQuota  Float    @default(0)
   remainingQuota Float    @default(0)
+  /// Credited face value, before payment processing fees.
+  faceValueRmb   Float?
+  /// Cash actually received. Recognized revenue is prorated from this value.
   cashBasisRmb   Float?
+  /// Historical managed cards are assumed to have no fee until edited.
+  assumedNoFee   Boolean  @default(false)
   occurredAt     DateTime @default(now())
   note           String?  @db.Text
   createdAt      DateTime @default(now())
@@ -534,10 +544,12 @@ model DownstreamCreditLot {
 
   downstream  DownstreamSite               @relation(fields: [downstreamId], references: [id], onDelete: Cascade)
   operation   DownstreamRechargeOperation? @relation(fields: [operationId], references: [id], onDelete: SetNull)
+  redemption  DownstreamRedemptionCode?    @relation(fields: [redemptionId], references: [id], onDelete: SetNull)
   allocations DownstreamCreditAllocation[]
 
   @@index([downstreamId, userId, occurredAt])
   @@index([downstreamId, source])
+  @@index([downstreamId, ownership, occurredAt])
 }
 
 model DownstreamCreditAllocation {
@@ -659,20 +671,21 @@ model DownstreamChannelDay {
 /// 逐条日志不参与收入计算 —— 那是 TOTAL 行的职责 —— 这张表只服务于一件事：
 /// 按模型摊成本，提高私域 / 公共各自的毛利精度。
 ///
-/// scope 三档：
-/// - TOTAL ：该模型全站所有付费用户的消费
+/// scope 四档：
+/// - TOTAL ：该模型全站全部账号的消费（仅供与上游成本总账核对）
 /// - PRIVATE：私域用户（自己推广的）在该模型上的消费
 /// - PUBLIC ：公共池用户在该模型上的消费
+/// - EXCLUDED：测试/管理员账号的消费；其成本不分配给公共池
 ///
-/// 同一 (站点, 天, 模型) 下三条 scope 同时落库，保证私域+公共不会因为
-/// 各自拉取时间差而产生总计不一致。
+/// 同一 (站点, 天, 模型) 下四条 scope 同时落库，保证私域、公共池和
+/// 剔除账号不会因为各自拉取时间差而产生总计不一致。
 model DownstreamModelDaily {
   id           String   @id @default(cuid())
   downstreamId String
   day          String   @db.VarChar(10)
   /// 原始日志里的 model_name，比如 gpt-5.6-sol、claude-opus-5
   model        String   @db.VarChar(100)
-  /// TOTAL | PRIVATE | PUBLIC
+  /// TOTAL | PRIVATE | PUBLIC | EXCLUDED
   scope        String   @default("TOTAL") @db.VarChar(10)
   /// 该归属的模型消费面值
   quota        Float    @default(0)

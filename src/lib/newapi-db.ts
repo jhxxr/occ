@@ -815,8 +815,10 @@ export async function dbFetchModelDaily(
     {
       privateQuota: number;
       publicQuota: number;
+      excludedQuota: number;
       privateReq: number;
       publicReq: number;
+      excludedReq: number;
     }
   >();
   let scanned = 0;
@@ -826,7 +828,7 @@ export async function dbFetchModelDaily(
     const day = String(r.day || "");
     if (!day || day < input.startDay || day > input.endDay) continue;
     const username = String(r.username || "");
-    if (!username || excludeSet.has(username)) continue;
+    if (!username) continue;
     const model = String(r.model_name || "");
     if (!model) continue;
     const quota = Number(r.quota) || 0;
@@ -839,10 +841,15 @@ export async function dbFetchModelDaily(
     const cur = buckets.get(bk) || {
       privateQuota: 0,
       publicQuota: 0,
+      excludedQuota: 0,
       privateReq: 0,
       publicReq: 0,
+      excludedReq: 0,
     };
-    if (privateSet.has(username)) {
+    if (excludeSet.has(username)) {
+      cur.excludedQuota += quota;
+      cur.excludedReq += requests;
+    } else if (privateSet.has(username)) {
       cur.privateQuota += quota;
       cur.privateReq += requests;
     } else {
@@ -864,8 +871,10 @@ export async function dbFetchModelDaily(
         model,
         privateQuota: v.privateQuota,
         publicQuota: v.publicQuota,
+        excludedQuota: v.excludedQuota,
         privateRequests: v.privateReq,
         publicRequests: v.publicReq,
+        excludedRequests: v.excludedReq,
       };
     }),
     scanned,

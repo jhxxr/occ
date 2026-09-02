@@ -1494,10 +1494,19 @@ export async function fetchDownstreamModelDaily(
     (input.privateUsernames || []).map((n) => n.trim()).filter(Boolean),
   );
 
-  // (天, 模型).TOTAL / PRIVATE / PUBLIC
+  // (天, 模型).PRIVATE / PUBLIC / EXCLUDED
+  // EXCLUDED is retained separately: test/admin usage burns upstream cost but
+  // must never become public-pool consumption or public-pool cost.
   const buckets = new Map<
     string,
-    { privateQuota: number; publicQuota: number; privateReq: number; publicReq: number }
+    {
+      privateQuota: number;
+      publicQuota: number;
+      excludedQuota: number;
+      privateReq: number;
+      publicReq: number;
+      excludedReq: number;
+    }
   >();
   let scanned = 0;
   let resolved = false;
@@ -1554,11 +1563,15 @@ export async function fetchDownstreamModelDaily(
           const cur = buckets.get(bk) || {
             privateQuota: 0,
             publicQuota: 0,
+            excludedQuota: 0,
             privateReq: 0,
             publicReq: 0,
+            excludedReq: 0,
           };
-          const isPrivate = privateSet.has(username);
-          if (isPrivate) {
+          if (excludeSet.has(username)) {
+            cur.excludedQuota += quota;
+            cur.excludedReq++;
+          } else if (privateSet.has(username)) {
             cur.privateQuota += quota;
             cur.privateReq++;
           } else {
@@ -1589,8 +1602,10 @@ export async function fetchDownstreamModelDaily(
           model,
           privateQuota: v.privateQuota,
           publicQuota: v.publicQuota,
+          excludedQuota: v.excludedQuota,
           privateRequests: v.privateReq,
           publicRequests: v.publicReq,
+          excludedRequests: v.excludedReq,
         };
       }),
       scanned,

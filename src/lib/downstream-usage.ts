@@ -369,8 +369,9 @@ export async function syncAllDownstreamUsage(
 /**
  * 同步单站点按模型×归属的日用量。
  *
- * 写入 DownstreamModelDaily：每天每个模型三行（TOTAL/PRIVATE/PUBLIC）。
+ * 写入 DownstreamModelDaily：每天每个模型四行（TOTAL/PRIVATE/PUBLIC/EXCLUDED）。
  * 用于报表按模型成本率算私域/公共各自的真实成本，比收入占比摊法精准。
+ * EXCLUDED 单独保留，避免测试账号成本被混进公共池。
  */
 export async function syncDownstreamModelUsage(
   downstreamId: string,
@@ -417,7 +418,7 @@ export async function syncDownstreamModelUsage(
     return { success: false, synced: 0, error: result.error };
   }
 
-  // 写库：每个 (天, 模型) 写三行。
+  // 写库：每个 (天, 模型) 写四行。测试账号消耗单独存放，不能计入公共池。
   //
   // 这张表是纯派生的（quota/requests 全部来自本轮拉取，没有用户手填字段），
   // 所以整段重算：删掉本轮要重写的键，再一条 createMany 灌回去。
@@ -442,8 +443,8 @@ export async function syncDownstreamModelUsage(
       day: row.day,
       model: row.model,
       scope: "TOTAL",
-      quota: row.privateQuota + row.publicQuota,
-      requests: row.privateRequests + row.publicRequests,
+      quota: row.privateQuota + row.publicQuota + row.excludedQuota,
+      requests: row.privateRequests + row.publicRequests + row.excludedRequests,
     },
     {
       downstreamId,
@@ -460,6 +461,14 @@ export async function syncDownstreamModelUsage(
       scope: "PUBLIC",
       quota: row.publicQuota,
       requests: row.publicRequests,
+    },
+    {
+      downstreamId,
+      day: row.day,
+      model: row.model,
+      scope: "EXCLUDED",
+      quota: row.excludedQuota,
+      requests: row.excludedRequests,
     },
   ]);
 

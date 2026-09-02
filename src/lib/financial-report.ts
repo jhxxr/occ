@@ -182,8 +182,10 @@ export interface FinancialReport {
     publicRmb: number;
     /** 分摊给私域、由私域收入承担的成本 */
     privateCostRmb: number;
-    /** 分摊给公共池、运营方需要优先收回的成本 */
+    /** 分摊给公共池、运营方需要优先收回的成本（不含测试账号） */
     publicCostRmb: number;
+    /** 测试/管理员账号产生的成本；不归属私域或公共池 */
+    excludedCostRmb: number;
     privateMarginPct: number | null;
     publicMarginPct: number | null;
     /** 私域收入占总收入比例（仅用于分摊无法模型对齐的成本） */
@@ -539,7 +541,15 @@ export async function buildFinancialReport(
 
   const allocationBySiteDay = new Map<
     string,
-    { bonusRmb: number; privateBonusRmb: number; bonusQuota: number }
+    {
+      bonusRmb: number;
+      privateBonusRmb: number;
+      bonusQuota: number;
+      cashFaceRmb: number;
+      privateCashFaceRmb: number;
+      privateCashRmb: number;
+      publicCashRmb: number;
+    }
   >();
   const quotaPerUnitBySiteDay = new Map(
     totalRows.map((row) => [
@@ -549,7 +559,6 @@ export async function buildFinancialReport(
   );
   for (const allocation of creditAllocations) {
     if (allocation.ownership === "EXCLUDED") continue;
-    if (allocation.source !== "ADMIN_BONUS" && allocation.source !== "REDEEM_CODE") continue;
     // 旧 allocation 可能是在管理员角色尚未纳入赠送台账时生成的；
     // 当前仍是管理员的用户不能再次从已经排除管理员的付费收入里扣减。
     const allocationUser = userSnapshotBySite
@@ -561,22 +570,60 @@ export async function buildFinancialReport(
       bonusRmb: 0,
       privateBonusRmb: 0,
       bonusQuota: 0,
+      cashFaceRmb: 0,
+      privateCashFaceRmb: 0,
+      privateCashRmb: 0,
+      publicCashRmb: 0,
     };
-    const bonusRmb = allocation.consumedQuota /
-      (quotaPerUnitBySiteDay.get(key) || DEFAULT_QUOTA_PER_UNIT);
-    current.bonusRmb += bonusRmb;
-    if (allocation.ownership === "PRIVATE") current.privateBonusRmb += bonusRmb;
-    current.bonusQuota += allocation.consumedQuota;
+    const recognizedRmb = Math.max(0, allocation.recognizedRmb || 0);
+    const isCash = allocation.source === "PRIVATE_DIRECT" || allocation.source === "GIFT_CARD_SALE";
+    if (isCash) {
+      const faceValueRmb = allocation.consumedQuota /
+        (quotaPerUnitBySiteDay.get(key) || DEFAULT_QUOTA_PER_UNIT);
+      current.cashFaceRmb += faceValueRmb;
+      if (allocation.source === "PRIVATE_DIRECT") {
+        current.privateCashFaceRmb += faceValueRmb;
+        current.privateCashRmb += recognizedRmb;
+      } else {
+        current.publicCashRmb += recognizedRmb;
+      }
+    }
+    if (allocation.source === "ADMIN_BONUS" || allocation.source === "REDEEM_CODE") {
+      const bonusRmb = allocation.consumedQuota /
+        (quotaPerUnitBySiteDay.get(key) || DEFAULT_QUOTA_PER_UNIT);
+      current.bonusRmb += bonusRmb;
+      if (allocation.ownership === "PRIVATE") current.privateBonusRmb += bonusRmb;
+      current.bonusQuota += allocation.consumedQuota;
+    }
     allocationBySiteDay.set(key, current);
   }
 
   for (const row of totalRows) {
     const allocation = allocationBySiteDay.get(`${row.downstreamId}|${row.day}`);
-    const rowRevenue = Math.max(0, (row.revenueRmb || 0) - (allocation?.bonusRmb || 0));
-    const rowPrivateRevenue = Math.max(
+    const rowPaidFaceRmb = Math.max(0, (row.revenueRmb || 0) - (allocation?.bonusRmb || 0));
+    const rowPrivatePaidFaceRmb = Math.max(
       0,
       (row.privateRevenueRmb || 0) - (allocation?.privateBonusRmb || 0),
     );
+    // A funding allocation replaces only the corresponding consumed face value.
+    // Other users on the same site/day may have ordinary NewAPI payments, which
+    // remain recognized at face value instead of disappearing from the report.
+    const rowPrivateRevenue = Math.max(
+      0,
+      rowPrivatePaidFaceRmb - (allocation?.privateCashFaceRmb || 0),
+    ) + (allocation?.privateCashRmb || 0);
+    const rowPublicPaidFaceRmb = Math.max(
+      0,
+      rowPaidFaceRmb - rowPrivatePaidFaceRmb,
+    );
+    const rowPublicRevenue = Math.max(
+      0,
+      rowPublicPaidFaceRmb - Math.max(
+        0,
+        (allocation?.cashFaceRmb || 0) - (allocation?.privateCashFaceRmb || 0),
+      ),
+    ) + (allocation?.publicCashRmb || 0);
+    const rowRevenue = rowPrivateRevenue + rowPublicRevenue;
     revenueByDay.set(row.day, (revenueByDay.get(row.day) || 0) + rowRevenue);
     grossByDay.set(
       row.day,
@@ -803,17 +850,23 @@ export async function buildFinancialReport(
     );
   }
 
-  // 下游模型用量：按 天|模型 聚合所有站点，再拿 PRIVATE/TOTAL 比例
-  const modelQuota = new Map<string, { total: number; private: number }>();
+  // 下游模型用量：按 天|模型 聚合全部、私域与测试账号消费。
+  // 测试账号成本只从公共池中拆出；不能把它当成公共池的经营成本。
+  const modelQuota = new Map<
+    string,
+    { total: number; private: number; excluded: number }
+  >();
   for (const row of downstreamModelDaily) {
     const key = `${row.day}|${row.model}`;
-    const cur = modelQuota.get(key) || { total: 0, private: 0 };
+    const cur = modelQuota.get(key) || { total: 0, private: 0, excluded: 0 };
     if (row.scope === "TOTAL") cur.total += row.quota || 0;
     else if (row.scope === "PRIVATE") cur.private += row.quota || 0;
+    else if (row.scope === "EXCLUDED") cur.excluded += row.quota || 0;
     modelQuota.set(key, cur);
   }
 
   let privateModelCost = 0;
+  let excludedModelCost = 0;
   let modelAllocatedCostRmb = 0;
   for (const log of upstreamUsageLogs) {
     if (!log.model) continue;
@@ -827,15 +880,23 @@ export async function buildFinancialReport(
 
     const costRmb = (log.actualCost || 0) * rate;
     const modelPrivateShare = Math.min(1, Math.max(0, down.private / down.total));
+    const modelExcludedShare = Math.min(
+      1 - modelPrivateShare,
+      Math.max(0, down.excluded / down.total),
+    );
     modelAllocatedCostRmb += costRmb;
     privateModelCost += costRmb * modelPrivateShare;
+    excludedModelCost += costRmb * modelExcludedShare;
   }
 
-  // 还没按模型对齐的上游成本 + 全部额外成本，按收入占比回退分摊
+  // 还没按模型对齐的上游成本 + 全部额外成本，按收入占比回退分摊。
+  // 无法按模型识别的测试号成本不能可靠地从公共池拆出，因此保守地留在
+  // 总账中并给出数据覆盖警告；只有有逐模型归因的部分会进入 excludedCostRmb。
   const fallbackUpstreamCost = Math.max(0, upstreamCostRmb - modelAllocatedCostRmb);
   const fallbackCostRmb = round2(fallbackUpstreamCost + operatingRmb + orphan.totalRmb);
   const allocation = allocateOwnershipCosts({
     totalCostRmb,
+    excludedCostRmb: excludedModelCost,
     privateRevenueRmb,
     publicRevenueRmb,
     privateModelCostRmb: privateModelCost,
@@ -844,6 +905,7 @@ export async function buildFinancialReport(
   const {
     privateCostRmb,
     publicCostRmb,
+    excludedCostRmb,
     privateProfitRmb: privateProfit,
     publicProfitRmb: publicProfit,
   } = allocation;
@@ -854,6 +916,11 @@ export async function buildFinancialReport(
   const allocationSource: FinancialReport["profit"]["allocationSource"] =
     modelAllocatedCostRmb > 0 ? "model" : "revenue-share";
 
+  if (excludedCostRmb > 0) {
+    warnings.push(
+      `已从公共池成本中剔除 ${formatCny(excludedCostRmb)} 测试/管理员账号的可精确归因成本`,
+    );
+  }
   if (upstreamCostRmb > 0 && modelCoveragePct < 100) {
     warnings.push(
       `私域/公共成本已有 ${modelCoveragePct.toFixed(1)}% 按模型精确对齐，其余成本仍按收入占比分摊`,
@@ -904,7 +971,10 @@ export async function buildFinancialReport(
       return sum + (site.revenueCurrency === "USD" ? rev * usdCny : rev);
     }, 0),
   );
-  const bonusRemaining = summarizeBonusRemaining(bonusLots, ownershipBySite, {
+  const bonusRemaining = summarizeBonusRemaining(bonusLots.filter((lot) => lot.userId != null).map((lot) => ({
+    ...lot,
+    userId: lot.userId!,
+  })), ownershipBySite, {
     quotaPerUnitBySite,
     userSnapshotBySite,
     enabledSiteIds: enabledSiteIdSet,
@@ -1020,6 +1090,7 @@ export async function buildFinancialReport(
       publicRmb: publicProfit,
       privateCostRmb,
       publicCostRmb,
+      excludedCostRmb,
       privateMarginPct:
         privateRevenueRmb > 0 ? pct(privateProfit, privateRevenueRmb) : null,
       publicMarginPct:

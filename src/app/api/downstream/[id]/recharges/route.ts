@@ -6,6 +6,7 @@ import {
   createGiftRedemptions,
   syncDownstreamRedemptions,
 } from "@/lib/downstream-redemption";
+import { syncManagedCreditLedger } from "@/lib/downstream-credit-ledger";
 import {
   checkGiftIssuanceAllowed,
   recordGiftIssuance,
@@ -44,7 +45,16 @@ export async function GET(_req: NextRequest, ctx: Ctx) {
     orderBy: [{ createdAtRemote: "desc" }, { remoteId: "desc" }],
     take: 200,
   });
-  return NextResponse.json({ data: { site, codes } });
+  const lots = await prisma.downstreamCreditLot.findMany({
+    where: { downstreamId: id, source: { in: ["PRIVATE_DIRECT", "GIFT_CARD_SALE"] } },
+    orderBy: [{ occurredAt: "desc" }, { createdAt: "desc" }],
+  });
+  const users = await prisma.downstreamUserBalance.findMany({
+    where: { downstreamId: id, complete: true },
+    select: { userId: true, username: true, role: true },
+    orderBy: { userId: "asc" },
+  });
+  return NextResponse.json({ data: { site, codes, lots, users } });
 }
 
 export async function POST(req: NextRequest, ctx: Ctx) {
@@ -57,6 +67,63 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   const { id } = await ctx.params;
   try {
     const body = await req.json();
+    if (body.action === "private-direct") {
+      const userId = Number(body.userId);
+      const faceValueRmb = Number(body.faceValueRmb);
+      const cashBasisRmb = Number(body.cashBasisRmb);
+      const occurredAt = body.occurredAt ? new Date(body.occurredAt) : new Date();
+      const site = await prisma.downstreamSite.findUnique({ where: { id }, select: { quotaPerDollar: true, excludeUserIds: true } });
+      if (!site) return NextResponse.json({ error: "站点不存在" }, { status: 404 });
+      if (!Number.isInteger(userId) || !(faceValueRmb > 0) || !(cashBasisRmb >= 0) || cashBasisRmb > faceValueRmb || Number.isNaN(occurredAt.getTime())) {
+        return NextResponse.json({ error: "请填写有效的用户、面值、到账金额和时间；到账金额不能高于面值" }, { status: 400 });
+      }
+      let excluded: unknown = [];
+      try { excluded = JSON.parse(site.excludeUserIds || "[]"); } catch { /* invalid legacy list is handled as empty */ }
+      if (Array.isArray(excluded) && excluded.map(Number).includes(userId)) {
+        return NextResponse.json({ error: "剔除账号不能录入私域资金" }, { status: 400 });
+      }
+      await prisma.downstreamCreditLot.create({
+        data: {
+          downstreamId: id, userId, source: "PRIVATE_DIRECT", ownership: "PRIVATE",
+          originalQuota: faceValueRmb * (site.quotaPerDollar || 500_000),
+          remainingQuota: faceValueRmb * (site.quotaPerDollar || 500_000),
+          faceValueRmb, cashBasisRmb, occurredAt,
+          note: String(body.note || "").slice(0, 500) || null,
+        },
+      });
+      const ledger = await syncManagedCreditLedger(id);
+      return NextResponse.json({ data: { ledger } });
+    }
+    if (body.action === "gift-card-sale") {
+      const codeIds = Array.isArray(body.codeIds) ? body.codeIds.map(String).filter(Boolean) : [];
+      const cashBasisRmb = Number(body.cashBasisRmb);
+      const occurredAt = body.occurredAt ? new Date(body.occurredAt) : new Date();
+      if (!codeIds.length || !(cashBasisRmb >= 0) || Number.isNaN(occurredAt.getTime())) {
+        return NextResponse.json({ error: "请选择兑换码并填写有效到账金额和时间" }, { status: 400 });
+      }
+      const codes = await prisma.downstreamRedemptionCode.findMany({ where: { id: { in: codeIds }, downstreamId: id, giftManaged: true } });
+      if (codes.length !== codeIds.length) return NextResponse.json({ error: "只能登记 Orbit 创建的礼品卡" }, { status: 400 });
+      const site = await prisma.downstreamSite.findUnique({ where: { id }, select: { quotaPerDollar: true } });
+      if (!site) return NextResponse.json({ error: "站点不存在" }, { status: 404 });
+      const faceTotal = codes.reduce((sum, code) => sum + code.quota / (site.quotaPerDollar || 500_000), 0);
+      if (cashBasisRmb > faceTotal) return NextResponse.json({ error: "总到账金额不能高于所选礼品卡面值" }, { status: 400 });
+      await prisma.$transaction(codes.map((code) => {
+        const faceValueRmb = code.quota / (site.quotaPerDollar || 500_000);
+        const received = faceTotal ? cashBasisRmb * faceValueRmb / faceTotal : 0;
+        return prisma.downstreamCreditLot.upsert({
+          where: { ledgerKey: `gift-sale:${id}:${code.remoteId}` },
+          create: {
+            downstreamId: id, userId: code.usedUserId,
+            ledgerKey: `gift-sale:${id}:${code.remoteId}`, source: "GIFT_CARD_SALE", ownership: "PUBLIC",
+            originalQuota: code.quota, remainingQuota: code.quota, faceValueRmb, cashBasisRmb: received,
+            assumedNoFee: false, occurredAt, note: String(body.note || "").slice(0, 500) || null,
+          },
+          update: { userId: code.usedUserId, faceValueRmb, cashBasisRmb: received, assumedNoFee: false, occurredAt, note: String(body.note || "").slice(0, 500) || null },
+        });
+      }));
+      const ledger = await syncManagedCreditLedger(id);
+      return NextResponse.json({ data: { ledger } });
+    }
     const quota = Number(body.quota);
     const count = Number(body.count);
     const site = await prisma.downstreamSite.findUnique({

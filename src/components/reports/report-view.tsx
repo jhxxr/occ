@@ -53,6 +53,7 @@ interface ReportPayload {
     publicRmb: number;
     privateCostRmb: number;
     publicCostRmb: number;
+    excludedCostRmb: number;
     privateMarginPct: number | null;
     publicMarginPct: number | null;
     privateShare: number;

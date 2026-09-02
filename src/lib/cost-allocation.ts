@@ -1,5 +1,7 @@
 export interface OwnershipCostAllocationInput {
   totalCostRmb: number;
+  /** Testing/admin cost that is deliberately outside both funding pools. */
+  excludedCostRmb: number;
   privateRevenueRmb: number;
   publicRevenueRmb: number;
   privateModelCostRmb: number;
@@ -9,8 +11,10 @@ export interface OwnershipCostAllocationInput {
 export interface OwnershipCostAllocation {
   privateCostRmb: number;
   publicCostRmb: number;
+  excludedCostRmb: number;
   privateProfitRmb: number;
   publicProfitRmb: number;
+  excludedProfitRmb: number;
   measuredProfitRmb: number;
 }
 
@@ -32,20 +36,25 @@ export function allocateOwnershipCosts(
   );
   const privateShare =
     totalRevenueRmb > 0 ? input.privateRevenueRmb / totalRevenueRmb : 1;
+  const excludedCostRmb = round2(Math.max(0, input.excludedCostRmb));
+  const fundableCostRmb = Math.max(0, input.totalCostRmb - excludedCostRmb);
   const privateCostRmb = round2(
     input.privateModelCostRmb + input.fallbackCostRmb * privateShare,
   );
-  const publicCostRmb = round2(input.totalCostRmb - privateCostRmb);
+  const publicCostRmb = round2(Math.max(0, fundableCostRmb - privateCostRmb));
   const privateProfitRmb = round2(
     input.privateRevenueRmb - privateCostRmb,
   );
   const publicProfitRmb = round2(input.publicRevenueRmb - publicCostRmb);
+  const excludedProfitRmb = round2(-excludedCostRmb);
 
   return {
     privateCostRmb,
     publicCostRmb,
+    excludedCostRmb,
     privateProfitRmb,
     publicProfitRmb,
+    excludedProfitRmb,
     measuredProfitRmb: round2(totalRevenueRmb - input.totalCostRmb),
   };
 }

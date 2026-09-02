@@ -101,19 +101,25 @@ export async function syncDownstreamRedemptions(downstreamId: string) {
       )
       .map((row) =>
         prisma.downstreamCreditLot.upsert({
-          where: { ledgerKey: `redeem:${downstreamId}:${row.remoteId}` },
+          // Redemption-code rows are rebuilt during sync, so their local primary keys
+          // are not stable. The remote card id is the durable idempotency key instead.
+          where: { ledgerKey: `gift-sale:${downstreamId}:${row.remoteId}` },
           create: {
             downstreamId,
             userId: row.usedUserId!,
-            ledgerKey: `redeem:${downstreamId}:${row.remoteId}`,
-            source: "REDEEM_CODE",
+            ledgerKey: `gift-sale:${downstreamId}:${row.remoteId}`,
+            source: "GIFT_CARD_SALE",
+            ownership: "PUBLIC",
             originalQuota: row.quota,
             remainingQuota: row.quota,
-            cashBasisRmb: 0,
+            faceValueRmb: row.quota / (site.quotaPerDollar || 500_000),
+            cashBasisRmb: row.quota / (site.quotaPerDollar || 500_000),
+            assumedNoFee: true,
             occurredAt: row.redeemedAt!,
-            note: `赠送兑换码：${row.name || `#${row.remoteId}`}`,
+            note: `历史礼品卡，暂按无手续费：${row.name || `#${row.remoteId}`}`,
           },
-          update: {},
+          // Keep manually recorded settlement amount, fee and date intact.
+          update: { userId: row.usedUserId! },
         }),
       ),
   );

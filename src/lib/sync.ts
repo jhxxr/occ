@@ -1147,7 +1147,10 @@ export async function getDashboardData() {
       quota: balance.quota,
     });
   }
-  const bonusRemaining = summarizeBonusRemaining(bonusLots, ownershipBySite, {
+  const bonusRemaining = summarizeBonusRemaining(bonusLots.filter((lot) => lot.userId != null).map((lot) => ({
+    ...lot,
+    userId: lot.userId!,
+  })), ownershipBySite, {
     quotaPerUnitBySite,
     userSnapshotBySite,
     enabledSiteIds: enabledSiteIdSet,

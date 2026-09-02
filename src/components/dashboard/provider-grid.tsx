@@ -38,7 +38,38 @@ export interface ProviderCardData {
   groups: GroupRateLike[];
 }
 
-const MAX_GROUP_CHIPS = 8;
+type ChipColor = "cyan" | "mint" | "amber" | "violet" | "coral";
+
+/** 类型胶囊配色：同类一色，与「密钥/分组」页 platformVariant 同源。 */
+const CHIP_STYLES: Record<ChipColor, string> = {
+  cyan: "border-cyan/25 bg-cyan/12 text-cyan",
+  mint: "border-mint/25 bg-mint/12 text-mint",
+  amber: "border-amber/25 bg-amber/12 text-amber",
+  violet: "border-violet/25 bg-violet/12 text-violet",
+  coral: "border-coral/25 bg-coral/12 text-coral",
+};
+const TEXT_STYLES: Record<ChipColor, string> = {
+  cyan: "text-cyan",
+  mint: "text-mint",
+  amber: "text-amber",
+  violet: "text-violet",
+  coral: "text-coral",
+};
+/** 类型标签用实底胶囊，与分组浅底芯片区分开，不易看混。 */
+const SECTION_BADGE_STYLES: Record<ChipColor, string> = {
+  cyan: "bg-cyan text-white",
+  mint: "bg-mint text-white",
+  amber: "bg-amber text-white",
+  violet: "bg-violet text-white",
+  coral: "bg-coral text-white",
+};
+
+/** 类型标签 → 颜色：生图固定 amber，其余交给 platformVariant，未知落入 cyan。 */
+function sectionColor(key: string): ChipColor {
+  if (key === "image") return "amber";
+  const v = platformVariant(key);
+  return v === "default" ? "cyan" : v;
+}
 
 /** 去掉多余尾零：0.4 → "0.4"、1.50 → "1.5"、2.00 → "2" */
 function fmtRate(v: number): string {
@@ -63,52 +94,50 @@ function categorizedGroups(groups: GroupRateLike[]) {
   return sections;
 }
 
-/** 紧凑的分组×倍率条：分类标签 + 胶囊，超出折叠，不让卡片越长越大。 */
+/** 分组×倍率条：按类型分节、同类型低倍率在前；全量显示，分组多时卡片随之变高。 */
 function GroupRateStrip({ groups }: { groups: GroupRateLike[] }) {
   if (groups.length === 0) return null;
   const sections = categorizedGroups(groups);
-  let remaining = MAX_GROUP_CHIPS;
-  const shown: { key: string; label: string; items: GroupRateLike[] }[] = [];
-  for (const s of sections) {
-    if (remaining <= 0) break;
-    const items = s.items.slice(0, remaining);
-    shown.push({ ...s, items });
-    remaining -= items.length;
-  }
-  const total = groups.length;
-  const hidden = total - shown.reduce((n, s) => n + s.items.length, 0);
 
   return (
     <div className="rounded-[var(--r-md)] border border-border-subtle bg-surface-2/50 px-2.5 py-2">
       <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted">
         分组 · 倍率
       </div>
-      <div className="space-y-1">
-        {shown.map((s) => (
-          <div key={s.key} className="flex flex-wrap items-center gap-1">
-            <Badge
-              variant={s.key === "image" ? "amber" : platformVariant(s.key)}
-              className="px-1.5 py-0 text-[10px]"
-            >
-              {s.label}
-            </Badge>
-            {s.items.map((g) => (
-              <span
-                key={`${s.key}-${g.name}`}
-                title={`${g.name} ×${fmtRate(g.rate_multiplier)}`}
-                className="inline-flex items-center gap-1 rounded-full border border-cyan/25 bg-cyan/12 px-2 py-0.5 text-[11px] font-data tabular-nums text-cyan"
+      <div className="space-y-1.5">
+        {sections.map((s) => {
+          const color = sectionColor(s.key);
+          return (
+            <div key={s.key} className="flex flex-wrap items-center gap-1">
+              <Badge
+                variant={color}
+                className={cn(
+                  "shrink-0 border-transparent px-1.5 py-0.5 text-[10px]",
+                  SECTION_BADGE_STYLES[color],
+                )}
               >
-                <span className="max-w-[6.5rem] truncate font-medium">
-                  {g.name}
+                {s.label}
+              </Badge>
+              {s.items.map((g) => (
+                <span
+                  key={`${s.key}-${g.name}`}
+                  title={`${g.name} ×${fmtRate(g.rate_multiplier)}`}
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-data tabular-nums",
+                    CHIP_STYLES[color],
+                  )}
+                >
+                  <span className="max-w-[7rem] truncate font-medium">
+                    {g.name}
+                  </span>
+                  <span className={cn("font-semibold", TEXT_STYLES[color])}>
+                    ×{fmtRate(g.rate_multiplier)}
+                  </span>
                 </span>
-                <span className="font-semibold">×{fmtRate(g.rate_multiplier)}</span>
-              </span>
-            ))}
-          </div>
-        ))}
-        {hidden > 0 && (
-          <div className="px-1 text-[11px] text-muted">+{hidden} 更多分组</div>
-        )}
+              ))}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -212,7 +241,7 @@ export function ProviderGrid({
   }
 
   return (
-    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+    <div className="grid items-start gap-4 sm:grid-cols-2 xl:grid-cols-3">
       {providers.map((p) => {
         const thresholdRmb = p.alertThreshold * p.discountRate;
         return (

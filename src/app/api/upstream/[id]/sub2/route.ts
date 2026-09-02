@@ -44,7 +44,17 @@ export async function GET(req: NextRequest, ctx: Ctx) {
 
     const localByRemote = new Map(localKeys.map((k) => [k.remoteKeyId, k]));
     const ids = remoteKeys.items.map((k) => k.id);
-    const usage = await fetchKeyUsageStats(id, ids).catch(() => ({} as Record<string, never>));
+    // 与后台同步保持一致，分批请求避免 Key 较多时触发上游请求超时。
+    const usage: Record<
+      string,
+      { total_actual_cost?: number; today_actual_cost?: number }
+    > = {};
+    for (let i = 0; i < ids.length; i += 100) {
+      const batch = await fetchKeyUsageStats(id, ids.slice(i, i + 100)).catch(
+        () => ({} as typeof usage),
+      );
+      Object.assign(usage, batch);
+    }
 
     const keys = remoteKeys.items.map((k) => {
       const local = localByRemote.get(String(k.id));
